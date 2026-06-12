@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-06-12
+
+First standalone release. This repo no longer tracks upstream `nicobailon/pi-subagents`; versioning is plain semver. See [AGENTS.md](AGENTS.md) for the release model.
+
 ### Added
 - `subagents.agentOverrides.<name>.toolsPrepend` / `toolsAppend`: additive tool overrides for builtin and custom agents, composing `toolsPrepend + tools + toolsAppend` with first-occurrence dedupe.
 

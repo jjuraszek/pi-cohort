@@ -1,17 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Fork release helper for jjuraszek/pi-subagents.
+# Release helper for jjuraszek/pi-subagents.
 #
-# Tag scheme: v<upstream-base>-jj.<n>  (see AGENTS.md "Fork & release model").
-#   <upstream-base>  upstream vX.Y.Z this fork's main is rebased onto
-#   jj               fork marker (Jacek Juraszek)
-#   <n>              fork patch counter on that base, starting at 1
-#
+# This repo is a standalone semver project (no longer tracking an upstream).
+# Tag scheme: v<major>.<minor>.<patch>  (see AGENTS.md "Release model").
 # package.json version mirrors the tag without the leading "v".
 #
-# This fork is consumed via git tag pins in pi settings.json. There is NO npm
-# publish step. Do not run `npm publish`.
+# This package is consumed via git tag pins in pi settings.json. There is NO
+# npm publish step. Do not run `npm publish`.
 
 usage() {
   cat <<'EOF'
@@ -19,18 +16,20 @@ Usage:
   release.sh [--dry-run] [--no-update-pins] <mode>
 
 Modes:
-  current              Tag the version already in package.json (no bump).
-                       Use for the first fork release or when the version was
-                       set by hand as part of a feature commit.
-  fork                 Bump -jj.<n> (same upstream base), commit, tag, release.
-  rebase <X.Y.Z>       Set a new upstream base, reset to -jj.1, commit, tag,
-                       release. Run AFTER `git rebase upstream/main`.
+  current   Tag the version already in package.json (no bump). Use when the
+            version was set by hand as part of a feature commit.
+  patch     Bump patch (X.Y.Z -> X.Y.Z+1), commit, tag, release.
+  minor     Bump minor (X.Y.Z -> X.Y+1.0), commit, tag, release.
+  major     Bump major (X.Y.Z -> X+1.0.0), commit, tag, release.
+
+Any pre-release suffix on the current version (e.g. -jj.2) is dropped when
+bumping: 0.26.0-jj.2 + minor -> 0.27.0.
 
 Examples:
+  release.sh minor
+  release.sh patch
   release.sh current
-  release.sh fork
-  release.sh rebase 0.27.0
-  release.sh --dry-run fork
+  release.sh --dry-run minor
   release.sh --no-update-pins current   # skip ~/.pi/agent*/settings.json pin bump
 
 Default behavior: after pushing the new tag, every ~/.pi/agent*/settings.json
@@ -52,14 +51,7 @@ done
 
 MODE="${1:-}"
 case "$MODE" in
-  current|fork) ;;
-  rebase)
-    REBASE_BASE="${2:-}"
-    if [[ ! "$REBASE_BASE" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-      echo "error: rebase mode requires an upstream base version like 0.27.0" >&2
-      exit 1
-    fi
-    ;;
+  current|patch|minor|major) ;;
   "")
     usage; exit 1 ;;
   *)
@@ -96,14 +88,15 @@ compute_next_version() {
   node -e '
     const cur = process.argv[1];
     const mode = process.argv[2];
-    const rebaseBase = process.argv[3] || "";
-    const m = cur.match(/^(\d+\.\d+\.\d+)-jj\.(\d+)$/);
     if (mode === "current") { process.stdout.write(cur); process.exit(0); }
-    if (mode === "rebase") { process.stdout.write(`${rebaseBase}-jj.1`); process.exit(0); }
-    // fork
-    if (!m) { console.error(`current version ${cur} is not <base>-jj.<n>; use rebase mode`); process.exit(1); }
-    process.stdout.write(`${m[1]}-jj.${Number(m[2]) + 1}`);
-  ' "$cur" "$MODE" "${REBASE_BASE:-}"
+    const m = cur.match(/^(\d+)\.(\d+)\.(\d+)/);
+    if (!m) { console.error(`current version ${cur} is not semver`); process.exit(1); }
+    let [maj, min, pat] = [Number(m[1]), Number(m[2]), Number(m[3])];
+    if (mode === "major") { maj += 1; min = 0; pat = 0; }
+    else if (mode === "minor") { min += 1; pat = 0; }
+    else if (mode === "patch") { pat += 1; }
+    process.stdout.write(`${maj}.${min}.${pat}`);
+  ' "$cur" "$MODE"
 }
 
 update_settings_pins() {
@@ -174,7 +167,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   echo "  new tag:         $NEW_TAG"
   echo "  branch:          $CURRENT_BRANCH"
   if [[ -n "$(git status --porcelain)" ]]; then
-    echo "  note: working tree is not clean; a real release stops until clean (current mode)."
+    echo "  note: working tree is not clean; a real release stops until clean."
   fi
   if [[ "$MODE" != "current" ]]; then
     echo "  would set package.json version to $NEW_VERSION and commit"
@@ -195,8 +188,9 @@ if [[ "$CURRENT_BRANCH" != "main" ]]; then
   exit 1
 fi
 
+require_clean_tree
+
 if [[ "$MODE" != "current" ]]; then
-  require_clean_tree
   node -e '
     const fs = require("fs");
     const p = require("./package.json");
@@ -205,8 +199,6 @@ if [[ "$MODE" != "current" ]]; then
   ' "$NEW_VERSION"
   run git add package.json
   run git commit -m "Release ${NEW_VERSION}"
-else
-  require_clean_tree
 fi
 
 run npm run build --if-present
