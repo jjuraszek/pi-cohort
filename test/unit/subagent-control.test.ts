@@ -268,11 +268,18 @@ describe("in-flight turn activity state", () => {
 		}), "needs_attention");
 	});
 
-	it("keeps a streaming turn calm: a recent productive signal resets the silence clock", () => {
+	it("a recent productive signal during an in-flight turn keeps it calm (active_long_running)", () => {
 		assert.equal(deriveActivityState({
-			config: ceilingConfig, startedAt: 0, lastActivityAt: 1_150, now: 1_200,
-			inFlightTurn: true, lastProductiveSignalAt: 1_150,
-		}), undefined);
+			config: ceilingConfig, startedAt: 0, lastActivityAt: 0, now: 400,
+			inFlightTurn: true, lastProductiveSignalAt: 350,
+		}), "active_long_running");
+	});
+
+	it("treats an in-flight turn with no prior productive signal as calm under the ceiling", () => {
+		assert.equal(deriveActivityState({
+			config: ceilingConfig, startedAt: 0, lastActivityAt: 0, now: 400,
+			inFlightTurn: true,
+		}), "active_long_running");
 	});
 
 	it("flags genuine idle (no turn open) as needs_attention", () => {
