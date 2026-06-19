@@ -75,7 +75,10 @@ Established by reading the source, not assumed:
   start/resume from the active session's existing cost (so `Σ$` does not start
   below the built-in `$` after a resume), and cleared on `session_shutdown`. An
   async job detached from a **prior** session is out of scope and not counted.
-- **Format: bare `Σ$X.XXX`**, three decimals to match the built-in `$`. No
+- **Format: `│ Σ$X.XXX`**, three decimals to match the built-in `$`. The leading
+  `│` divider separates our figure from the preceding extension status on the
+  shared, space-joined footer status line (without it a bare `Σ$` reads as the
+  neighbour's number, e.g. `navigator: (read-only) Σ$192.006`). No other
   annotation or subagent-delta suffix.
 
 ## Architecture

@@ -54,7 +54,7 @@ test("zero/absent cost adds nothing, never NaN", () => {
 });
 
 test("formatGrandTotal renders three decimals with sigma", () => {
-    assert.equal(formatGrandTotal(3.75), "Σ$3.750");
+    assert.equal(formatGrandTotal(3.75), "│ Σ$3.750");
 });
 
 test("recordSyncCost never lowers an existing value", () => {

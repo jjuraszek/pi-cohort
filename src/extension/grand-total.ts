@@ -36,7 +36,10 @@ export function recompute(gt: GrandTotal): number {
 }
 
 export function formatGrandTotal(total: number): string {
-	return `Σ$${total.toFixed(3)}`;
+	// Leading divider separates this from the preceding extension status on the
+	// shared footer line (statuses are space-joined, so a bare `Σ$` reads as the
+	// neighbour's figure).
+	return `│ Σ$${total.toFixed(3)}`;
 }
 
 export function renderGrandTotal(state: SubagentState): void {
