@@ -7,6 +7,7 @@
 - `cost:external` cross-extension cost protocol: any extension can emit cumulative-per-source LLM spend on the `pi.events` `"cost:external"` channel; pi-subagents folds it into `Σ$` and surfaces a per-source breakdown in `subagent({ action: "doctor" })`.
 
 ### Changed
+- Project persona/chain discovery now walks from cwd to the git root and aggregates every `.agents` + `.pi/agents` (chains: `.pi/chains`), nearest level winning name collisions, with `realpath` dedup for symlinked `.pi` levels and a no-git fallback to the single nearest root. Project `.pi/settings.json` `agentOverrides` / `disableBuiltins` merge across the same levels (nearest wins); override/create writes still target the nearest root. Behavior-additive (nearest still wins), but review before bumping a pinned tag: agents/overrides defined at ancestor levels become visible where they previously were not.
 - All package footer statuses are now wrapped in `│ ... │` box-drawing dividers so they stay visually isolated regardless of extension load order.
 
 ### Removed

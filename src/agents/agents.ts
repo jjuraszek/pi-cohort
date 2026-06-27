@@ -210,6 +210,57 @@ function cloneOverrideValue(override: BuiltinAgentOverrideConfig): BuiltinAgentO
 	};
 }
 
+function resolveRealPath(p: string): string {
+	try {
+		return fs.realpathSync(p);
+	} catch {
+		return path.resolve(p);
+	}
+}
+
+function findGitRoot(startDir: string): string | null {
+	let currentDir = startDir;
+	while (true) {
+		if (fs.existsSync(path.join(currentDir, ".git"))) {
+			return resolveRealPath(currentDir);
+		}
+		const parentDir = path.dirname(currentDir);
+		if (parentDir === currentDir) return null;
+		currentDir = parentDir;
+	}
+}
+
+// Project levels from cwd up to and including the git root, FARTHEST-FIRST.
+// Marker predicate matches findNearestProjectRoot (.pi OR .agents), so a level
+// carrying only .pi/settings.json or only .pi/chains still participates.
+// Returns raw (non-realpath) paths so callers build file paths consistent with
+// how they received cwd. Realpath is used only internally for dedup. Falls back
+// to at most the single nearest project root when not inside a git repo.
+function enumerateProjectLevels(cwd: string): string[] {
+	const gitRoot = findGitRoot(cwd);
+	if (!gitRoot) {
+		const nearest = findNearestProjectRoot(cwd);
+		return nearest ? [nearest] : [];
+	}
+
+	const levels: string[] = [];
+	const seen = new Set<string>();
+	let currentDir = cwd;
+	while (true) {
+		const resolved = resolveRealPath(currentDir);
+		const hasMarker = isDirectory(path.join(currentDir, ".pi")) || isDirectory(path.join(currentDir, ".agents"));
+		if (hasMarker && !seen.has(resolved)) {
+			seen.add(resolved);
+			levels.push(currentDir);
+		}
+		if (resolved === gitRoot) break;
+		const parentDir = path.dirname(currentDir);
+		if (parentDir === currentDir) break;
+		currentDir = parentDir;
+	}
+	return levels.reverse();
+}
+
 function findNearestProjectRoot(cwd: string): string | null {
 	let currentDir = cwd;
 	while (true) {
@@ -412,6 +463,37 @@ function readSubagentSettings(filePath: string | null): SubagentSettings {
 		if (override) parsed[name] = override;
 	}
 	return { overrides: parsed, disableBuiltins };
+}
+
+// Merge project .pi/settings.json across every enumerated level, farthest-first
+// so the nearest level's values land last and win. agentOverrides merge per
+// name with whole-object replacement (disjoint fields do NOT compose);
+// disableBuiltins takes the nearest-defined value as-is. A malformed level
+// (readSubagentSettings throws) is warned and skipped, never aborting the merge.
+function readMergedProjectSubagentSettings(cwd: string): SubagentSettings {
+	const levels = enumerateProjectLevels(cwd);
+	if (levels.length === 0) return EMPTY_SUBAGENT_SETTINGS;
+
+	const overrides: Record<string, BuiltinAgentOverrideConfig> = {};
+	let disableBuiltins: boolean | undefined;
+	for (const level of levels) {
+		const settingsPath = path.join(level, ".pi", "settings.json");
+		let levelSettings: SubagentSettings;
+		try {
+			levelSettings = readSubagentSettings(settingsPath);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			console.warn(`Skipping malformed subagent settings at '${settingsPath}': ${message}`);
+			continue;
+		}
+		for (const [name, override] of Object.entries(levelSettings.overrides)) {
+			overrides[name] = override;
+		}
+		if (levelSettings.disableBuiltins !== undefined) {
+			disableBuiltins = levelSettings.disableBuiltins;
+		}
+	}
+	return { overrides, disableBuiltins };
 }
 
 function composeOverrideTools(
@@ -627,6 +709,10 @@ export function saveBuiltinAgentOverride(
 	scope: "user" | "project",
 	override: BuiltinAgentOverrideConfig,
 ): string {
+	// Reads merge project settings across every level cwd->git root (see
+	// readMergedProjectSubagentSettings), but writes target only the NEAREST
+	// project root: edits from a subdir land at the closest writable anchor
+	// instead of silently mutating an ancestor's settings.
 	const filePath = scope === "project" ? getProjectAgentSettingsPath(cwd) : getUserAgentSettingsPath();
 	if (!filePath) throw new Error("Project override is not available here. No project config root was found.");
 
@@ -862,16 +948,25 @@ function isDirectory(p: string): boolean {
 // Roots are listed LOWEST -> HIGHEST priority. Downstream merging is
 // last-writer-wins (Map.set / mergeAgentsForScope), so a later root overrides an
 // earlier one on name collision. Builtins are loaded separately from
-// BUILTIN_AGENTS_DIR and sit BELOW every root here:
+// BUILTIN_AGENTS_DIR and sit BELOW every root here. Project discovery is NOT a
+// single root: enumerateProjectLevels walks cwd -> git root and aggregates every
+// level that has .pi or .agents (farthest-first), so each level contributes its
+// own .agents / .pi/agents pair and nearest wins:
 //
 //   builtin
-//     < ~/.agents                      global, cross-harness convention
-//     < <PI_CODING_AGENT_DIR>/agents    pi profile (PI_CODING_AGENT_DIR defaults to ~/.pi/agent)
-//     < <repo>/.agents                  project, legacy layout
-//     < <repo>/.pi/agents               project, preferred layout (highest)
+//     < ~/.agents                              global, cross-harness convention
+//     < <PI_CODING_AGENT_DIR>/agents            pi profile (PI_CODING_AGENT_DIR defaults to ~/.pi/agent)
+//     < <farthest project level>/.agents        project, legacy layout
+//     < <farthest project level>/.pi/agents     project, preferred layout
+//     < ...                                     intermediate levels
+//     < <nearest project level>/.agents
+//     < <nearest project level>/.pi/agents      (highest)
 //
-// PI_CODING_AGENT_DIR relocates the pi profile root; it does NOT sandbox
-// discovery. ~/.agents is always scanned regardless of PI_CODING_AGENT_DIR.
+// Any project level outranks all user roots; nearest project level wins; within a
+// level .pi/agents beats .agents. With no git root, the walk falls back to the
+// single nearest project root (findNearestProjectRoot). PI_CODING_AGENT_DIR
+// relocates the pi profile root; it does NOT sandbox discovery. ~/.agents is
+// always scanned regardless of PI_CODING_AGENT_DIR.
 //
 // All roots are read flat (see listFilesFlat): only top-level *.md personas are
 // loaded; subdirectories such as skills/ are never scanned.
@@ -889,31 +984,48 @@ function preferredUserAgentDir(): string {
 	return dirs[dirs.length - 1];
 }
 
+// Dedup expanded read dirs by realpath, keeping the NEAREST occurrence and
+// repositioning it last among distinct dirs (the consuming Map is last-writer-
+// wins). Walking from the end makes a nearest .pi that symlinks to a farther
+// real dir win over a same-level .agents, which first-position dedup inverts.
+function dedupeByRealPath(dirs: string[]): string[] {
+	const seen = new Set<string>();
+	const result: string[] = [];
+	for (let i = dirs.length - 1; i >= 0; i--) {
+		const real = resolveRealPath(dirs[i]);
+		if (seen.has(real)) continue;
+		seen.add(real);
+		result.push(dirs[i]);
+	}
+	return result.reverse();
+}
+
 function resolveNearestProjectAgentDirs(cwd: string): { readDirs: string[]; preferredDir: string | null } {
-	const projectRoot = findNearestProjectRoot(cwd);
-	if (!projectRoot) return { readDirs: [], preferredDir: null };
+	const levels = enumerateProjectLevels(cwd);
+	if (levels.length === 0) return { readDirs: [], preferredDir: null };
 
-	const legacyDir = path.join(projectRoot, ".agents");
-	const preferredDir = path.join(projectRoot, ".pi", "agents");
-	const readDirs: string[] = [];
-	if (isDirectory(legacyDir)) readDirs.push(legacyDir);
-	if (isDirectory(preferredDir)) readDirs.push(preferredDir);
-
-	return {
-		readDirs,
-		preferredDir,
-	};
+	const candidates: string[] = [];
+	for (const level of levels) {
+		const legacyDir = path.join(level, ".agents");
+		const preferredDir = path.join(level, ".pi", "agents");
+		if (isDirectory(legacyDir)) candidates.push(legacyDir);
+		if (isDirectory(preferredDir)) candidates.push(preferredDir);
+	}
+	const nearestLevel = levels[levels.length - 1];
+	return { readDirs: dedupeByRealPath(candidates), preferredDir: path.join(nearestLevel, ".pi", "agents") };
 }
 
 function resolveNearestProjectChainDirs(cwd: string): { readDirs: string[]; preferredDir: string | null } {
-	const projectRoot = findNearestProjectRoot(cwd);
-	if (!projectRoot) return { readDirs: [], preferredDir: null };
+	const levels = enumerateProjectLevels(cwd);
+	if (levels.length === 0) return { readDirs: [], preferredDir: null };
 
-	const preferredDir = path.join(projectRoot, ".pi", "chains");
-	return {
-		readDirs: isDirectory(preferredDir) ? [preferredDir] : [],
-		preferredDir,
-	};
+	const candidates: string[] = [];
+	for (const level of levels) {
+		const chainsDir = path.join(level, ".pi", "chains");
+		if (isDirectory(chainsDir)) candidates.push(chainsDir);
+	}
+	const nearestLevel = levels[levels.length - 1];
+	return { readDirs: dedupeByRealPath(candidates), preferredDir: path.join(nearestLevel, ".pi", "chains") };
 }
 const BUILTIN_AGENTS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "agents");
 
@@ -923,7 +1035,7 @@ export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryRe
 	const userSettingsPath = getUserAgentSettingsPath();
 	const projectSettingsPath = getProjectAgentSettingsPath(cwd);
 	const userSettings = scope === "project" ? EMPTY_SUBAGENT_SETTINGS : readSubagentSettings(userSettingsPath);
-	const projectSettings = scope === "user" ? EMPTY_SUBAGENT_SETTINGS : readSubagentSettings(projectSettingsPath);
+	const projectSettings = scope === "user" ? EMPTY_SUBAGENT_SETTINGS : readMergedProjectSubagentSettings(cwd);
 
 	const builtinAgents = applyBuiltinOverrides(
 		loadAgentsFromDir(BUILTIN_AGENTS_DIR, "builtin"),
@@ -974,7 +1086,7 @@ export function discoverAgentsAll(cwd: string): {
 	const userSettingsPath = getUserAgentSettingsPath();
 	const projectSettingsPath = getProjectAgentSettingsPath(cwd);
 	const userSettings = readSubagentSettings(userSettingsPath);
-	const projectSettings = readSubagentSettings(projectSettingsPath);
+	const projectSettings = readMergedProjectSubagentSettings(cwd);
 
 	const builtin = applyBuiltinOverrides(
 		loadAgentsFromDir(BUILTIN_AGENTS_DIR, "builtin"),

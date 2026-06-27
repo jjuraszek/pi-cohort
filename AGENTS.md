@@ -65,8 +65,30 @@ Divergences from the fork origin that are now part of this codebase:
 | `agentOverrides` applied to user/project custom agents | `src/agents/agents.ts` |
 | flat discovery + explicit precedence + skip `SKILL.md` | `src/agents/agents.ts` |
 | `toolsPrepend` / `toolsAppend` additive override fields | `src/agents/agents.ts` |
+| git-root-bounded walk + multi-level aggregation for personas/chains/settings | `src/agents/agents.ts` |
 
-Flat discovery is the single source of truth for persona precedence. It lives in `resolveUserAgentDirs()` / `preferredUserAgentDir()` (`src/agents/agents.ts`) plus the `listFilesFlat` / `isAgentFileName` / `isChainFileName` helpers. Precedence (lowest→highest): `builtin < ~/.agents < <PI_CODING_AGENT_DIR>/agents < <repo>/.agents < <repo>/.pi/agents`. Reads are flat (top-level only); `SKILL.md` and `*.chain.md` are never agents. `PI_CODING_AGENT_DIR` relocates the pi profile root but is **not** a discovery sandbox.
+Flat discovery is the single source of truth for persona precedence. It lives in `resolveUserAgentDirs()` / `preferredUserAgentDir()` (`src/agents/agents.ts`) plus the `listFilesFlat` / `isAgentFileName` / `isChainFileName` helpers, and the multi-level walk helpers `findGitRoot` / `enumerateProjectLevels` / `dedupeByRealPath` / `readMergedProjectSubagentSettings`.
+
+Project persona/chain discovery walks from cwd up to the git root (detected by a `.git` file or directory; no subprocess) and aggregates every level via `enumerateProjectLevels()`. The marker predicate is `.pi` OR `.agents` - the same as `findNearestProjectRoot` - so a level carrying only `.pi/settings.json` or only `.pi/chains` still participates. `dedupeByRealPath` collapses symlinked `.pi` levels on the expanded read-dir list, catching symlinks that survive the per-level realpath dedup in `enumerateProjectLevels` (a nearest `.pi` symlinked to a farther real `.pi` yields distinct level dirs but identical `<level>/.pi/agents` paths). When no git root is found, discovery falls back to the single nearest project root.
+
+Precedence (lowest->highest):
+
+```
+builtin
+  < ~/.agents
+  < <PI_CODING_AGENT_DIR>/agents
+  < [farthest project level]/.agents
+  < [farthest project level]/.pi/agents
+  < ...
+  < [nearest project level]/.agents
+  < [nearest project level]/.pi/agents   (highest)
+```
+
+Any project level outranks all user levels. Among project levels, nearest wins. Within one level, `.pi/agents` beats `.agents`. Chains aggregate `<level>/.pi/chains` across the same walk with the same nearest-wins rule.
+
+Project `.pi/settings.json` `agentOverrides` and `disableBuiltins` merge across all walked levels via `readMergedProjectSubagentSettings` (farthest-first, nearest overwrites). `agentOverrides` merge is whole-object replacement per agent name - disjoint fields do not compose across levels. Override/create **writes** target the nearest project root's `.pi/settings.json` (intentional read-merge / nearest-write asymmetry). Note: a builtin override's displayed source path (`override.path`) always points at the nearest project settings file even when the winning value came from a farther level - attribution is nearest-by-design; there is no per-override provenance tracking.
+
+Reads are flat (top-level only); `SKILL.md` and `*.chain.md` are never agents. `PI_CODING_AGENT_DIR` relocates the pi profile root but is **not** a discovery sandbox.
 
 ## Testing
 

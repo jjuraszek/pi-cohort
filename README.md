@@ -403,19 +403,24 @@ Agent locations, lowest to highest priority:
 | Builtin | `<agent-dir>/extensions/subagent/agents/` |
 | User (global) | `~/.agents/*.md` |
 | User (pi profile) | `<PI_CODING_AGENT_DIR>/agents/*.md` |
-| Project (legacy) | `<repo>/.agents/*.md` |
-| Project (preferred) | `<repo>/.pi/agents/*.md` |
+| Project (legacy) * | `<level>/.agents/*.md` |
+| Project (preferred) * | `<level>/.pi/agents/*.md` |
+
+\* Project roots are discovered at every level from cwd up to the git root, not just the repo root - see the walk description below.
 
 > **Fork note.** This fork (`jjuraszek/pi-subagents`) diverges from upstream here: discovery reads each root **flat** (top-level `*.md` only), the two user roots are ordered `~/.agents < <PI_CODING_AGENT_DIR>/agents`, and `SKILL.md` is never loaded as an agent. See [AGENTS.md](AGENTS.md).
 
 `<PI_CODING_AGENT_DIR>` defaults to `~/.pi/agent` when the env var is unset (see [`PI_CODING_AGENT_DIR`](#pi_coding_agent_dir)). Setting it relocates the pi profile root but does **not** sandbox discovery - `~/.agents` is always scanned as the lowest-priority user layer regardless.
+
+Project agents are discovered by walking from cwd up to the git root and aggregating every level that contains `.pi` or `.agents`. Nearest level wins name collisions. When not inside a git repo, discovery falls back to the single nearest project root (no walk).
 
 Discovery rules:
 
 - **Flat only.** Only top-level `*.md` files in each root are loaded. Subdirectories (`skills/`, `chains/`, or any nesting) are never scanned for personas.
 - **`SKILL.md` is excluded** by name - a skill manifest carries `name` + `description` frontmatter but is not an agent.
 - **`.chain.md` / `.chain.json` files do not define agents.**
-- **Collisions resolve by priority:** a later root in the table above overrides an earlier one for the same parsed runtime agent name. Project beats user; `.pi/agents` beats `.agents`.
+- **Collisions resolve by priority:** project levels are walked cwd -> git root; nearest level wins. Within a level, `.pi/agents` beats `.agents`. Any project level beats the user roots (`~/.agents`, `<PI_CODING_AGENT_DIR>/agents`).
+- **Settings merge:** project `.pi/settings.json` `agentOverrides` and `disableBuiltins` merge across all walked levels, nearest wins. Override and create writes target the nearest project root.
 
 Use `agentScope: "user" | "project" | "both"` to control discovery; `both` is the default and project definitions win runtime-name collisions.
 
@@ -550,9 +555,11 @@ Chains are reusable workflows stored separately from agent files. Use `.chain.md
 | Scope | Path |
 |-------|------|
 | User | `<PI_CODING_AGENT_DIR>/chains/*.chain.md`, `<PI_CODING_AGENT_DIR>/chains/*.chain.json` |
-| Project | `<repo>/.pi/chains/*.chain.md`, `<repo>/.pi/chains/*.chain.json` |
+| Project * | `<level>/.pi/chains/*.chain.md`, `<level>/.pi/chains/*.chain.json` |
 
-Chain roots are read **flat** (top-level `*.chain.md` / `*.chain.json` only), matching agent discovery in this fork; nested subdirectories are not scanned. If both `.chain.md` and `.chain.json` define the same parsed runtime chain name in the same scope, `.chain.json` wins. If user and project scopes define the same parsed runtime chain name, the project chain wins. Chains support the same optional `package` frontmatter as agents; `name: review-flow` plus `package: code-analysis` runs as `code-analysis.review-flow` (the package comes from frontmatter, not the directory).
+\* Aggregated across every level from cwd to the git root; nearest wins.
+
+Chain roots are read **flat** (top-level `*.chain.md` / `*.chain.json` only), matching agent discovery in this fork; nested subdirectories are not scanned. Project chains aggregate `<level>/.pi/chains` across the same git-root walk as agents, nearest level wins. If both `.chain.md` and `.chain.json` define the same parsed runtime chain name in the same scope, `.chain.json` wins. If user and project scopes define the same parsed runtime chain name, the project chain wins. Chains support the same optional `package` frontmatter as agents; `name: review-flow` plus `package: code-analysis` runs as `code-analysis.review-flow` (the package comes from frontmatter, not the directory).
 
 Example:
 
