@@ -845,6 +845,8 @@ export interface ExtensionConfig {
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;
 	intercomBridge?: IntercomBridgeConfig;
+	/** Print a roster of discovered subagents/chains into chat at session start. Default: true. */
+	showRosterOnStart?: boolean;
 }
 
 // ============================================================================

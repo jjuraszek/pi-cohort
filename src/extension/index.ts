@@ -9,7 +9,7 @@
  * Toggle: async parameter (default: false, configurable via config.json)
  *
  * Config file: ~/.pi/agent/extensions/subagent/config.json
- *   { "asyncByDefault": true, "forceTopLevelAsync": true, "maxSubagentDepth": 1, "intercomBridge": { "mode": "always", "instructionFile": "./intercom-bridge.md" }, "worktreeSetupHook": "./scripts/setup-worktree.mjs" }
+ *   { "asyncByDefault": true, "forceTopLevelAsync": true, "maxSubagentDepth": 1, "showRosterOnStart": true, "intercomBridge": { "mode": "always", "instructionFile": "./intercom-bridge.md" }, "worktreeSetupHook": "./scripts/setup-worktree.mjs" }
  */
 
 import * as fs from "node:fs";
@@ -18,7 +18,7 @@ import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { type ExtensionAPI, type ExtensionContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Box, Container, Spacer, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
-import { discoverAgents } from "../agents/agents.ts";
+import { discoverAgents, discoverAgentsAll } from "../agents/agents.ts";
 import { cleanupAllArtifactDirs, cleanupOldArtifacts, getArtifactsDir } from "../shared/artifacts.ts";
 import { resolveCurrentSessionId } from "../shared/session-identity.ts";
 import { cleanupOldChainDirs } from "../shared/settings.ts";
@@ -207,6 +207,37 @@ class SubagentControlNoticeComponent implements Component {
 		lines.push(this.theme.fg("accent", `╰${borderChar.repeat(bodyWidth)}╯`));
 		return lines;
 	}
+}
+
+function formatSubagentRoster(cwd: string): string | undefined {
+	let discovered: ReturnType<typeof discoverAgentsAll>;
+	try {
+		discovered = discoverAgentsAll(cwd);
+	} catch {
+		return undefined;
+	}
+	const seen = new Set<string>();
+	// Highest precedence first so each name appears only in its effective scope.
+	const names = (agents: { name: string; disabled?: boolean }[]) => {
+		const out: string[] = [];
+		for (const a of agents) {
+			if (a.disabled || seen.has(a.name)) continue;
+			seen.add(a.name);
+			out.push(a.name);
+		}
+		return out.sort((a, b) => a.localeCompare(b));
+	};
+	const project = names(discovered.project);
+	const user = names(discovered.user);
+	const builtin = names(discovered.builtin);
+	const chains = discovered.chains.map((c) => c.name).sort((a, b) => a.localeCompare(b));
+	if (builtin.length + user.length + project.length + chains.length === 0) return undefined;
+	const lines = [`[Subagents] (builtin ${builtin.length}, user ${user.length}, project ${project.length})`];
+	if (builtin.length > 0) lines.push(`  builtin: ${builtin.join(", ")}`);
+	if (user.length > 0) lines.push(`  user: ${user.join(", ")}`);
+	if (project.length > 0) lines.push(`  project: ${project.join(", ")}`);
+	if (chains.length > 0) lines.push(`  chains: ${chains.join(", ")}`);
+	return lines.join("\n");
 }
 
 export default function registerSubagentExtension(pi: ExtensionAPI): void {
@@ -550,6 +581,10 @@ DIAGNOSTICS:
 
 	pi.on("session_start", (_event, ctx) => {
 		resetSessionState(ctx);
+		if (ctx.hasUI && config.showRosterOnStart !== false) {
+			const roster = formatSubagentRoster(ctx.cwd);
+			if (roster) ctx.ui.notify(roster, "info");
+		}
 	});
 
 	pi.on("session_shutdown", () => {

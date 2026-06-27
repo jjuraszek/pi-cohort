@@ -1012,6 +1012,14 @@ Session directory precedence is: `params.sessionDir`, then `config.defaultSessio
 
 Controls nested delegation when no inherited `PI_SUBAGENT_MAX_DEPTH` is already in effect. Per-agent `maxSubagentDepth` can tighten the limit for that agent's child runs, but cannot relax an inherited stricter limit. This applies even to children that explicitly declare `tools: subagent`; at the cap, execution fanout is blocked instead of silently hiding nested work.
 
+### `showRosterOnStart`
+
+```json
+{ "showRosterOnStart": false }
+```
+
+At each interactive session start, prints a `[Subagents]` roster into chat listing discovered persona names grouped by effective scope (`builtin` / `user` / `project`) plus any `chains`, mirroring pi's own `[Skills]` / `[Prompts]` / `[Themes]` startup banner. Names are deduped by precedence: a persona shadowed by a higher scope (project > user > builtin) is listed only once, in its effective scope. Defaults to enabled; set to `false` to suppress. No effect in non-interactive (headless/child) runs.
+
 ### `intercomBridge`
 
 ```json
