@@ -19,8 +19,8 @@ describe("status format helpers", () => {
 });
 
 describe("wrapStatus", () => {
-	it("wraps text in box-drawing dividers on both sides", () => {
-		assert.equal(wrapStatus("Σ$0.042"), "│ Σ$0.042 │");
+	it("prefixes text with a single leading box-drawing divider", () => {
+		assert.equal(wrapStatus("Σ$0.042"), "│ Σ$0.042");
 	});
 
 	it("STATUS_DIVIDER is the box-drawing vertical (U+2502)", () => {

@@ -54,7 +54,7 @@ test("zero/absent cost adds nothing, never NaN", () => {
 });
 
 test("formatGrandTotal renders three decimals with sigma", () => {
-    assert.equal(formatGrandTotal(3.75), "│ Σ$3.750 │");
+    assert.equal(formatGrandTotal(3.75), "│ Σ$3.750");
 });
 
 test("recordSyncCost never lowers an existing value", () => {
@@ -152,8 +152,8 @@ test("emptyGrandTotal has empty externalCostBySource", () => {
 	assert.ok(gt.externalCostBySource instanceof Map);
 	assert.equal(gt.externalCostBySource.size, 0);
 });
-test("formatGrandTotal wraps Σ$ in dividers on both sides", () => {
-	assert.equal(formatGrandTotal(0.042), "│ Σ$0.042 │");
+test("formatGrandTotal prefixes Σ$ with a single leading divider", () => {
+	assert.equal(formatGrandTotal(0.042), "│ Σ$0.042");
 });
 
 test("monotonic across a scripted sequence", () => {

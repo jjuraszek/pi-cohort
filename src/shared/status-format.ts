@@ -50,6 +50,10 @@ export function formatParallelOutcome(steps: StepStatusLike[], total: number, op
 
 export const STATUS_DIVIDER = "│";
 
+// Leading-only separator: the interactive footer joins extension status
+// segments with a single space, so a trailing divider here would collide with
+// the next segment's leading one and render as "│ │". One leading bar per
+// segment yields single dividers between sections, order-independent.
 export function wrapStatus(text: string): string {
-	return `${STATUS_DIVIDER} ${text} ${STATUS_DIVIDER}`;
+	return `${STATUS_DIVIDER} ${text}`;
 }

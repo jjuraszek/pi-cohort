@@ -240,6 +240,37 @@ function formatSubagentRoster(cwd: string): string | undefined {
 	return lines.join("\n");
 }
 
+const ROSTER_WIDGET_KEY = "subagents-boot";
+const ROSTER_VISIBLE_MS = 10000;
+// The interactive startup banner ([Context]/[Skills]/...) is painted on a render
+// frame scheduled after session_start settles. A widget set synchronously (or on
+// the immediate macrotask) anchors at the pre-banner editor row and bakes into
+// scrollback at the top. Deferring past that frame lets it anchor belowEditor.
+const ROSTER_BOOT_DELAY_MS = 250;
+
+type RosterUI = {
+	setWidget?: (key: string, content: string[] | undefined, options?: { placement?: "aboveEditor" | "belowEditor" }) => void;
+};
+
+function showBootRoster(ctx: { ui: RosterUI }, roster: string): void {
+	const setWidget = ctx.ui.setWidget?.bind(ctx.ui);
+	if (!setWidget) return;
+	setTimeout(() => {
+		try {
+			setWidget(ROSTER_WIDGET_KEY, roster.split("\n"), { placement: "belowEditor" });
+			setTimeout(() => {
+				try {
+					setWidget(ROSTER_WIDGET_KEY, undefined);
+				} catch {
+					// UI owner may be gone after session replacement.
+				}
+			}, ROSTER_VISIBLE_MS).unref?.();
+		} catch {
+			// UI owner may be gone after session replacement.
+		}
+	}, ROSTER_BOOT_DELAY_MS).unref?.();
+}
+
 export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	if (process.env[SUBAGENT_CHILD_ENV] === "1") {
 		if (process.env[SUBAGENT_FANOUT_CHILD_ENV] === "1") registerFanoutChildSubagentExtension(pi);
@@ -583,7 +614,7 @@ DIAGNOSTICS:
 		resetSessionState(ctx);
 		if (ctx.hasUI && config.showRosterOnStart !== false) {
 			const roster = formatSubagentRoster(ctx.cwd);
-			if (roster) ctx.ui.notify(roster, "info");
+			if (roster) showBootRoster(ctx, roster);
 		}
 	});
 
