@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { SubagentParams } from "../../src/extension/schemas.ts";
 import {
 	applyChildEventToLifecycle,
 	buildControlEvent,
@@ -10,6 +11,7 @@ import {
 	formatControlNoticeMessage,
 	resolveControlConfig,
 	shouldNotifyControlEvent,
+	shouldSilenceKill,
 } from "../../src/runs/shared/subagent-control.ts";
 import { nextLongRunningTrigger } from "../../src/runs/shared/long-running-guard.ts";
 
@@ -320,5 +322,69 @@ describe("in-flight turn activity state", () => {
 			config: ceilingConfig, startedAt: 0, lastActivityAt: 0, now: 400,
 			inFlightTurn: state.turnOpen, lastProductiveSignalAt: state.lastProductiveSignalAt,
 		}), "active_long_running");
+	});
+});
+
+describe("resolveControlConfig inFlightSilenceKillMs", () => {
+	it("defaults to 1_800_000", () => {
+		const cfg = resolveControlConfig();
+		assert.equal(cfg.inFlightSilenceKillMs, 1_800_000);
+	});
+
+	it("honors a per-call override above the floor", () => {
+		const cfg = resolveControlConfig(undefined, { inFlightSilenceKillMs: 2_400_000 });
+		assert.equal(cfg.inFlightSilenceKillMs, 2_400_000);
+	});
+
+	it("honors global config when no override", () => {
+		const cfg = resolveControlConfig({ inFlightSilenceKillMs: 2_000_000 });
+		assert.equal(cfg.inFlightSilenceKillMs, 2_000_000);
+	});
+
+	it("clamps a value at or below the needs_attention escalation up to the floor", () => {
+		// defaults: needsAttentionAfterMs 60_000 + inFlightSilenceCeilingMs 600_000 = 660_000 floor
+		const cfg = resolveControlConfig(undefined, { inFlightSilenceKillMs: 100_000 });
+		assert.equal(cfg.inFlightSilenceKillMs, 660_000);
+	});
+
+	it("computes the floor from the resolved sibling values, not defaults", () => {
+		const cfg = resolveControlConfig(undefined, {
+			needsAttentionAfterMs: 1_000,
+			inFlightSilenceCeilingMs: 2_000,
+			inFlightSilenceKillMs: 1_500,
+		});
+		assert.equal(cfg.inFlightSilenceKillMs, 3_000); // 1_000 + 2_000
+	});
+
+	it("rejects a non-positive override and falls back to default before clamping", () => {
+		const cfg = resolveControlConfig(undefined, { inFlightSilenceKillMs: 0 });
+		assert.equal(cfg.inFlightSilenceKillMs, 1_800_000);
+	});
+});
+
+describe("shouldSilenceKill", () => {
+	const base = { startedAt: 0, now: 10_000, killMs: 5_000 };
+
+	it("never trips when no turn is open", () => {
+		assert.equal(shouldSilenceKill({ ...base, turnOpen: false, lastProductiveSignalAt: 0 }), false);
+	});
+
+	it("does not trip when silence is at or under the cap", () => {
+		assert.equal(shouldSilenceKill({ ...base, turnOpen: true, lastProductiveSignalAt: 5_000 }), false);
+	});
+
+	it("trips when silence exceeds the cap", () => {
+		assert.equal(shouldSilenceKill({ ...base, turnOpen: true, lastProductiveSignalAt: 4_000 }), true);
+	});
+
+	it("falls back to startedAt when lastProductiveSignalAt is missing", () => {
+		assert.equal(shouldSilenceKill({ ...base, turnOpen: true }), true); // 10_000 - 0 > 5_000
+	});
+});
+
+describe("ControlOverrides schema", () => {
+	it("declares inFlightSilenceKillMs as an optional integer", () => {
+		const controlProps = (SubagentParams.properties.control as { properties: Record<string, unknown> }).properties;
+		assert.ok("inFlightSilenceKillMs" in controlProps);
 	});
 });

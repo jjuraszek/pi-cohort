@@ -223,6 +223,7 @@ const ControlOverrides = Type.Object({
 	needsAttentionAfterMs: Type.Optional(Type.Integer({ minimum: 1, description: "No-observed-activity window before a run needs attention" })),
 	activeNoticeAfterMs: Type.Optional(Type.Integer({ minimum: 1, description: "Active-long-running notice threshold by elapsed ms (default: 240000)" })),
 	inFlightSilenceCeilingMs: Type.Optional(Type.Integer({ minimum: 1, description: "How long a silent in-flight turn stays calm (active_long_running) before re-escalating to needs_attention (default: 600000)" })),
+	inFlightSilenceKillMs: Type.Optional(Type.Integer({ minimum: 1, description: "Hard cap: SIGTERM a child whose in-flight turn has been silent this long (default: 1800000; clamped to sit above the needs_attention escalation)" })),
 	activeNoticeAfterTurns: Type.Optional(Type.Integer({ minimum: 1, description: "Optional active-long-running notice threshold by assistant turns (disabled by default)" })),
 	activeNoticeAfterTokens: Type.Optional(Type.Integer({ minimum: 1, description: "Optional active-long-running notice threshold by total tokens (disabled by default)" })),
 	failedToolAttemptsBeforeAttention: Type.Optional(Type.Integer({ minimum: 1, description: "Consecutive mutating-tool failures before escalating to needs_attention (default: 3)" })),

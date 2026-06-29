@@ -33,6 +33,7 @@ import {
 	claimControlNotification,
 	deriveActivityState,
 	shouldNotifyControlEvent,
+	shouldSilenceKill,
 } from "../shared/subagent-control.ts";
 import {
 	getFinalOutput,
@@ -303,6 +304,23 @@ async function runSingleAttempt(
 			finalDrainTimer.unref?.();
 		};
 
+		let silenceKillRequested = false;
+		const requestSilenceKill = (silenceMs: number) => {
+			if (silenceKillRequested || childExited || settled || processClosed || detached) return;
+			silenceKillRequested = true;
+			const termSent = trySignalChild(proc, "SIGTERM");
+			if (!termSent) return;
+			forcedTerminationSignal = true;
+			result.error = result.error ??
+				`Subagent killed: in-flight turn produced no output for ${Math.round(silenceMs / 1000)}s ` +
+				`(exceeded inFlightSilenceKillMs=${controlConfig.inFlightSilenceKillMs}ms). Likely wedged in a tool call.`;
+			const hardKill = setTimeout(() => {
+				if (settled || processClosed || detached) return;
+				forcedTerminationSignal = trySignalChild(proc, "SIGKILL") || forcedTerminationSignal;
+			}, HARD_KILL_MS);
+			hardKill.unref?.();
+		};
+
 		const unsubscribeIntercomDetach = options.intercomEvents?.on?.(INTERCOM_DETACH_REQUEST_EVENT, (payload) => {
 			if (!options.allowIntercomDetach || detached || processClosed || !intercomStarted) return;
 			if (!payload || typeof payload !== "object") return;
@@ -401,7 +419,17 @@ async function runSingleAttempt(
 				lastProductiveSignalAt: progress.lastProductiveSignalAt,
 			});
 			if (idleState === "needs_attention") {
-				return progress.activityState === "needs_attention" ? false : emitNeedsAttention(now);
+				const notified = progress.activityState === "needs_attention" ? false : emitNeedsAttention(now);
+				if (shouldSilenceKill({
+					turnOpen: progress.turnOpen,
+					lastProductiveSignalAt: progress.lastProductiveSignalAt,
+					startedAt: startTime,
+					now,
+					killMs: controlConfig.inFlightSilenceKillMs,
+				})) {
+					requestSilenceKill(now - (progress.lastProductiveSignalAt ?? startTime));
+				}
+				return notified;
 			}
 			const activeReason = nextLongRunningTrigger(controlConfig, {
 				startedAt: startTime,

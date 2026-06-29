@@ -20,6 +20,7 @@ import {
 
 interface RunSyncResult {
 	exitCode: number;
+	error?: string;
 	controlEvents?: Array<{ type?: string; message: string; reason?: string }>;
 	progress: { activityState?: string; status: string };
 }
@@ -94,5 +95,59 @@ describe("foreground in-flight turn control", { skip: !available ? "pi packages 
 		});
 		assert.equal(result.exitCode, 0);
 		assert.ok(controlEvents.some((e) => e.type === "needs_attention"), "must escalate once silence exceeds the ceiling");
+	});
+
+	it("SIGTERMs an in-flight turn that stays silent past inFlightSilenceKillMs", async () => {
+		mockPi.onCall({
+			steps: [
+				{ jsonl: [events.messageStart()] },
+				{ delay: 5_000, jsonl: [events.assistantMessage("done")] },
+			],
+		});
+		const agents = makeAgentConfigs(["echo"]);
+		const controlEvents: NonNullable<RunSyncResult["controlEvents"]> = [];
+		const result = await runSync!(tempDir, agents, "echo", "Think hard", {
+			runId: "run-killcap",
+			controlConfig: {
+				enabled: true,
+				needsAttentionAfterMs: 200,
+				inFlightSilenceCeilingMs: 300,
+				inFlightSilenceKillMs: 600,
+				activeNoticeAfterMs: 100_000,
+				notifyOn: ["active_long_running", "needs_attention"],
+			},
+			onControlEvent: (event: NonNullable<RunSyncResult["controlEvents"]>[number]) => controlEvents.push(event),
+		});
+		assert.notEqual(result.exitCode, 0, "killed run must settle non-zero");
+		assert.ok(controlEvents.some((e) => e.type === "needs_attention"), "needs_attention must be emitted before the kill");
+		assert.notEqual(result.progress.status, "interrupted");
+		assert.ok(result.error?.includes("inFlightSilenceKillMs"), "error must name the cap");
+	});
+
+	it("does not kill a turn that keeps emitting events past the kill cap", async () => {
+		mockPi.onCall({
+			steps: [
+				{ jsonl: [events.messageStart()] },
+				{ delay: 600, jsonl: [events.toolStart("read"), events.toolEnd("read")] },
+				{ delay: 600, jsonl: [events.toolStart("read"), events.toolEnd("read")] },
+				{ delay: 600, jsonl: [events.toolStart("read"), events.toolEnd("read")] },
+				{ delay: 600, jsonl: [events.toolStart("read"), events.toolEnd("read")] },
+				{ delay: 600, jsonl: [events.toolStart("read"), events.toolEnd("read")] },
+				{ delay: 600, jsonl: [events.assistantMessage("done")] },
+			],
+		});
+		const agents = makeAgentConfigs(["echo"]);
+		const result = await runSync!(tempDir, agents, "echo", "Stream", {
+			runId: "run-streaming",
+			controlConfig: {
+				enabled: true,
+				needsAttentionAfterMs: 200,
+				inFlightSilenceCeilingMs: 400,
+				inFlightSilenceKillMs: 1_200,
+				activeNoticeAfterMs: 100_000,
+				notifyOn: ["active_long_running", "needs_attention"],
+			},
+		});
+		assert.equal(result.exitCode, 0, "a streaming child must run to completion");
 	});
 });

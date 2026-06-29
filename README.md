@@ -867,7 +867,7 @@ Agent definitions are not loaded into context by default. Management actions let
 | `share` | boolean | false | Upload session export to GitHub Gist. |
 | `sessionDir` | string | derived | Override session log directory. |
 | `acceptance` | string/object/false | inferred | Override the run's inferred acceptance gates. Use `"auto"`, `"attested"`, `"checked"`, `"verified"`, `"reviewed"`, or `{ level: "none", reason: "..." }`. |
-| `control` | object | config defaults | Override per-run control thresholds. Supports `needsAttentionAfterMs`, `activeNoticeAfterMs`, `inFlightSilenceCeilingMs`, and `notifyOn`. |
+| `control` | object | config defaults | Override per-run control thresholds. Supports `needsAttentionAfterMs`, `activeNoticeAfterMs`, `inFlightSilenceCeilingMs`, `inFlightSilenceKillMs`, and `notifyOn`. |
 
 `context: "fork"` fails fast when the parent session is not persisted, the current leaf is missing, or the branched child session cannot be created. It never silently downgrades to `fresh`. In multi-agent runs, if any requested agent has `defaultContext: fork` and the launch omits `context`, the whole invocation uses forked context; pass `context: "fresh"` when you intentionally want a fresh run.
 
@@ -884,6 +884,7 @@ Per-run `control` fields override global thresholds when a task legitimately run
 | `needsAttentionAfterMs` | `60000` | Emit `needs_attention` when a child shows no activity for this many milliseconds. |
 | `activeNoticeAfterMs` | `240000` | Emit `active_long_running` (calm notice) at this interval while a long-running task continues producing output or while an in-flight turn is running within the silence ceiling. |
 | `inFlightSilenceCeilingMs` | `600000` | While an assistant turn is in flight, a silent stretch under this bound is reported as the calm `active_long_running` state instead of `needs_attention`; silence past it re-escalates to `needs_attention`. Bounds zero-output turns without flagging healthy long thinking/streaming. |
+| `inFlightSilenceKillMs` | `1800000` | Hard cap (foreground only): once an in-flight turn has produced no output for this long, the child is SIGTERMed and the run settles as a failure (non-zero exit, `result.error` naming the cap), feeding the orchestrator's normal failure handling instead of blocking indefinitely on a child wedged inside a tool call. Clamped up to `inFlightSilenceCeilingMs + needsAttentionAfterMs` so the `needs_attention` warning always fires first. Gated on `enabled`. |
 | `notifyOn` | `["active_long_running", "needs_attention"]` | Which activity states trigger notifications: `"needs_attention"`, `"active_long_running"`, or both. |
 
 Example:

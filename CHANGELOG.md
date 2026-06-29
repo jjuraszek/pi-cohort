@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- Foreground wall-clock kill-cap (`inFlightSilenceKillMs`, default 30 min): a synchronous subagent whose in-flight turn produces no output past the cap is SIGTERMed and settles as an attributable failure (non-zero exit, `result.error` naming the cap), bounding the orchestrator's blocking wait on a child wedged inside a never-returning tool call. The kill is the enforcement arm of the existing `needs_attention` detector: clamped above the `inFlightSilenceCeilingMs + needsAttentionAfterMs` escalation so the warning always fires first, gated on `control.enabled`, foreground only.
 - `Σ$` footer status: grand-total session cost spanning the main loop plus every subagent subtree (foreground, async, nested fanout). Distinct from the built-in main-loop `$`; per-session, seeded from prior spend on resume. The main/sync/async slices are monotonic; the external slice may move down if a producer corrects its cumulative total downward.
 - `cost:external` cross-extension cost protocol: any extension can emit cumulative-per-source LLM spend on the `pi.events` `"cost:external"` channel; pi-subagents folds it into `Σ$` and surfaces a per-source breakdown in `subagent({ action: "doctor" })`.
 

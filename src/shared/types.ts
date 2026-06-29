@@ -103,6 +103,7 @@ export interface ControlConfig {
 	needsAttentionAfterMs?: number;
 	activeNoticeAfterMs?: number;
 	inFlightSilenceCeilingMs?: number;
+	inFlightSilenceKillMs?: number;
 	activeNoticeAfterTurns?: number;
 	activeNoticeAfterTokens?: number;
 	failedToolAttemptsBeforeAttention?: number;
@@ -115,6 +116,7 @@ export interface ResolvedControlConfig {
 	needsAttentionAfterMs: number;
 	activeNoticeAfterMs: number;
 	inFlightSilenceCeilingMs: number;
+	inFlightSilenceKillMs: number;
 	activeNoticeAfterTurns?: number;
 	activeNoticeAfterTokens?: number;
 	failedToolAttemptsBeforeAttention: number;

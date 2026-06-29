@@ -16,6 +16,7 @@ export const DEFAULT_CONTROL_CONFIG: ResolvedControlConfig = {
 	needsAttentionAfterMs: 60_000,
 	activeNoticeAfterMs: 240_000,
 	inFlightSilenceCeilingMs: 600_000,
+	inFlightSilenceKillMs: 1_800_000,
 	failedToolAttemptsBeforeAttention: 3,
 	notifyOn: DEFAULT_NOTIFY_ON,
 	notifyChannels: CONTROL_NOTIFICATION_CHANNELS,
@@ -49,6 +50,13 @@ export function resolveControlConfig(
 	const inFlightSilenceCeilingMs = parsePositiveInt(override?.inFlightSilenceCeilingMs)
 		?? parsePositiveInt(globalConfig?.inFlightSilenceCeilingMs)
 		?? DEFAULT_CONTROL_CONFIG.inFlightSilenceCeilingMs;
+	const resolvedInFlightSilenceKillMs = parsePositiveInt(override?.inFlightSilenceKillMs)
+		?? parsePositiveInt(globalConfig?.inFlightSilenceKillMs)
+		?? DEFAULT_CONTROL_CONFIG.inFlightSilenceKillMs;
+	const inFlightSilenceKillMs = Math.max(
+		resolvedInFlightSilenceKillMs,
+		inFlightSilenceCeilingMs + needsAttentionAfterMs,
+	);
 	const activeNoticeAfterTurns = parsePositiveInt(override?.activeNoticeAfterTurns)
 		?? parsePositiveInt(globalConfig?.activeNoticeAfterTurns);
 	const activeNoticeAfterTokens = parsePositiveInt(override?.activeNoticeAfterTokens)
@@ -67,6 +75,7 @@ export function resolveControlConfig(
 		needsAttentionAfterMs,
 		activeNoticeAfterMs,
 		inFlightSilenceCeilingMs,
+		inFlightSilenceKillMs,
 		activeNoticeAfterTurns,
 		activeNoticeAfterTokens,
 		failedToolAttemptsBeforeAttention,
@@ -121,6 +130,18 @@ export function deriveActivityState(input: {
 		return silenceMs > input.config.inFlightSilenceCeilingMs ? "needs_attention" : "active_long_running";
 	}
 	return "needs_attention";
+}
+
+export function shouldSilenceKill(input: {
+	turnOpen?: boolean;
+	lastProductiveSignalAt?: number;
+	startedAt: number;
+	now: number;
+	killMs: number;
+}): boolean {
+	if (!input.turnOpen) return false;
+	const silenceMs = input.now - (input.lastProductiveSignalAt ?? input.startedAt);
+	return silenceMs > input.killMs;
 }
 
 export function buildControlEvent(input: {
