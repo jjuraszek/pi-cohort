@@ -50,6 +50,18 @@ Review a PR or issue by understanding the context, then verifying:
 - No regressions are introduced.
 - Tests and docs are updated as needed.
 
+### 6. Over-engineering / complexity (simplification pass)
+When asked to review for over-engineering, bloat, or "what can we delete", run a complexity-only pass. Scope is over-engineering exclusively; correctness bugs, security holes, and performance belong to types 1-5, not here. If you spot a non-complexity issue during this pass, append it as a single `Note:` before the `net:` line rather than dropping it. Find what to cut:
+- Reinvented standard library, unneeded dependencies, speculative abstractions, dead flexibility.
+- One line per finding, formatted `L<line>: <tag> <what>. <replacement>.` (or `<file>:L<line>: ...` for multi-file diffs), using these tags:
+  - `delete:` dead code, unused flexibility, speculative feature. Replacement: nothing.
+  - `stdlib:` hand-rolled thing the standard library ships. Name the function.
+  - `native:` dependency or code doing what the platform already does. Name the feature.
+  - `yagni:` abstraction with one implementation, config nobody sets, layer with one caller.
+  - `shrink:` same logic, fewer lines. Show the shorter form.
+- End with the only metric that matters: `net: -<N> lines possible.` If there is nothing to cut, say `Lean already. Ship.` and stop.
+- Do not flag any existing test, regression test, or test helper as deletable. Verification is never bloat; redundant-test judgments (if any) belong to a correctness pass (type 1), not this one. This pass lists cuts; it does not apply them.
+
 ## Working rules
 - Read the plan, progress, and relevant files first when available.
 - Repo-local `progress.md` files are allowed scratch/memory files. Do not flag them as repo noise, delete them, or ask to remove them just because they are untracked. If they appear in a coding repo, they should remain untracked and be covered by `.gitignore`.
@@ -76,4 +88,4 @@ Structure your findings clearly:
 - Note: observation, risk, or follow-up item
 ```
 
-When reviewing code, cite file paths and line numbers. When reviewing plans, cite specific sections and assumptions.
+When reviewing code, cite file paths and line numbers. When reviewing plans, cite specific sections and assumptions. For the over-engineering pass (type 6), use its own one-line-per-finding tag format and `net:` line instead of this block.
