@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.0.1] - 2026-07-02
+
+### Fixed
+- Removed the stale `pi-subagents` banner image and demo video from the README; they carried the old branding and rendered wrong on the GitHub and npm package pages.
+
 ## [2.0.0] - 2026-07-02
 
 First public npm release under the new name. Breaking public-identity change: package renamed, distribution moved from git-tag pins to npm.
