@@ -5,7 +5,7 @@
 ### Added
 - Foreground wall-clock kill-cap (`inFlightSilenceKillMs`, default 30 min): a synchronous subagent whose in-flight turn produces no output past the cap is SIGTERMed and settles as an attributable failure (non-zero exit, `result.error` naming the cap), bounding the orchestrator's blocking wait on a child wedged inside a never-returning tool call. The kill is the enforcement arm of the existing `needs_attention` detector: clamped above the `inFlightSilenceCeilingMs + needsAttentionAfterMs` escalation so the warning always fires first, gated on `control.enabled`, foreground only.
 - `Σ$` footer status: grand-total session cost spanning the main loop plus every subagent subtree (foreground, async, nested fanout). Distinct from the built-in main-loop `$`; per-session, seeded from prior spend on resume. The main/sync/async slices are monotonic; the external slice may move down if a producer corrects its cumulative total downward.
-- `cost:external` cross-extension cost protocol: any extension can emit cumulative-per-source LLM spend on the `pi.events` `"cost:external"` channel; pi-subagents folds it into `Σ$` and surfaces a per-source breakdown in `subagent({ action: "doctor" })`.
+- `cost:external` cross-extension cost protocol: any extension can emit cumulative-per-source LLM spend on the `pi.events` `"cost:external"` channel; pi-cohort folds it into `Σ$` and surfaces a per-source breakdown in `subagent({ action: "doctor" })`.
 
 ### Changed
 - Project persona/chain discovery now walks from cwd to the git root and aggregates every `.agents` + `.pi/agents` (chains: `.pi/chains`), nearest level winning name collisions, with `realpath` dedup for symlinked `.pi` levels and a no-git fallback to the single nearest root. Project `.pi/settings.json` `agentOverrides` / `disableBuiltins` merge across the same levels (nearest wins); override/create writes still target the nearest root. Behavior-additive (nearest still wins), but review before bumping a pinned tag: agents/overrides defined at ancestor levels become visible where they previously were not.
@@ -37,7 +37,7 @@ Fork-only patch on top of upstream v0.26.0. See [AGENTS.md](AGENTS.md) for the f
 
 ## [0.26.0-jj.1] - 2026-05-30
 
-Fork release (`jjuraszek/pi-subagents`) on top of upstream v0.26.0. See [AGENTS.md](AGENTS.md) for the fork/release model.
+Fork release (`jjuraszek/pi-cohort`) on top of upstream v0.26.0. See [AGENTS.md](AGENTS.md) for the fork/release model.
 
 ### Added
 - Apply `subagents.agentOverrides[name]` to user-scope and project-scope custom agents in addition to builtins. Frontmatter wins per-field — overrides only fill fields the agent's frontmatter left unset, so existing custom agents that pin their own model/thinking/etc. are unaffected. Lets shared persona files (`.pi/agents/<name>.md`) stay version-controlled while per-harness `settings.json` supplies the local model. `disableBuiltins` continues to apply only to builtins. (upstream [PR #219](https://github.com/nicobailon/pi-subagents/pull/219))
@@ -188,8 +188,8 @@ Fork release (`jjuraszek/pi-subagents`) on top of upstream v0.26.0. See [AGENTS.
 
 ### Changed
 - Strengthened `context-builder` guidance so handoffs require reading all relevant files and doing needed tool-available research before summarizing.
-- Expanded the bundled `pi-subagents` skill with tool-level recipes for the packaged prompt workflows, including context-build and handoff-plan patterns that parent agents can apply without slash commands.
-- Updated `README.md` to explain the bundled `pi-subagents` skill, what it covers, and how it helps the orchestrating agent.
+- Expanded the bundled `pi-cohort` skill with tool-level recipes for the packaged prompt workflows, including context-build and handoff-plan patterns that parent agents can apply without slash commands.
+- Updated `README.md` to explain the bundled `pi-cohort` skill, what it covers, and how it helps the orchestrating agent.
 
 ### Fixed
 - Make active-long-running notices time-based by default, with turn and token thresholds available only as explicit opt-in budget guards.
@@ -245,7 +245,7 @@ Fork release (`jjuraszek/pi-subagents`) on top of upstream v0.26.0. See [AGENTS.
 ### Changed
 - Consolidated the `oracle-executor` role into `worker`: `worker` now uses `openai-codex/gpt-5.3-codex` with high thinking and stricter approved-direction guardrails, while `researcher` and `context-builder` now use medium thinking.
 - Updated the bundled `scout` agent model/thinking defaults.
-- Hard-cut over grouped intercom bridge result delivery: with the bridge active, parent-side `pi-subagents` emits one grouped `subagent:result-intercom` message per foreground parent run (single, top-level parallel, or chain) and one per completed async result file. Acknowledged foreground delivery returns a compact receipt instead of duplicating full output in the normal tool result; unacknowledged delivery preserves the normal full output. Grouped messages include child intercom targets and full child summaries.
+- Hard-cut over grouped intercom bridge result delivery: with the bridge active, parent-side `pi-cohort` emits one grouped `subagent:result-intercom` message per foreground parent run (single, top-level parallel, or chain) and one per completed async result file. Acknowledged foreground delivery returns a compact receipt instead of duplicating full output in the normal tool result; unacknowledged delivery preserves the normal full output. Grouped messages include child intercom targets and full child summaries.
 
 ### Fixed
 - Fixed status and manager row rendering so multiline or tabbed content cannot overflow table rows.
@@ -265,7 +265,7 @@ Fork release (`jjuraszek/pi-subagents`) on top of upstream v0.26.0. See [AGENTS.
 
 ### Changed
 - Tightened the packaged `/parallel-review` prompt so fresh-context reviewers get distinct angles and return evidence-backed findings.
-- Refreshed the packaged `pi-subagents` skill with doctor diagnostics, saved-chain launches, prompt shortcuts, builtin overrides, intercom bridge guidance, fresh-context review defaults, and parallel task behavior.
+- Refreshed the packaged `pi-cohort` skill with doctor diagnostics, saved-chain launches, prompt shortcuts, builtin overrides, intercom bridge guidance, fresh-context review defaults, and parallel task behavior.
 - Reworked the README around plain-language usage, good first prompts, packaged prompt shortcuts, builtin agent guidance, intercom setup, model overrides, and optional reference material.
 
 ## [0.19.1] - 2026-04-26
@@ -329,7 +329,7 @@ Fork release (`jjuraszek/pi-subagents`) on top of upstream v0.26.0. See [AGENTS.
 ## [0.17.4] - 2026-04-22
 
 ### Added
-- Bundled a `pi-subagents` skill that teaches agents how to use builtin subagents, slash-command vs tool workflows, management-mode agent creation/editing, fork/intercom coordination, clarify mode, worktrees, async status inspection, and chain templating.
+- Bundled a `pi-cohort` skill that teaches agents how to use builtin subagents, slash-command vs tool workflows, management-mode agent creation/editing, fork/intercom coordination, clarify mode, worktrees, async status inspection, and chain templating.
 
 ### Changed
 - Tightened the builtin `oracle` prompt so intercom-enabled forked reviews now prefer concise conversational handoffs during the review and send a short final recommendation via `pi-intercom` before returning the full structured result.
@@ -384,7 +384,7 @@ Fork release (`jjuraszek/pi-subagents`) on top of upstream v0.26.0. See [AGENTS.
 ## [0.16.1] - 2026-04-16
 
 ### Changed
-- Parallel subagent startup no longer applies any worker-start stagger in `mapConcurrent()`. `pi-subagents` now relies on Pi core's settings/auth lock retry behavior instead of carrying its own startup-delay workaround.
+- Parallel subagent startup no longer applies any worker-start stagger in `mapConcurrent()`. `pi-cohort` now relies on Pi core's settings/auth lock retry behavior instead of carrying its own startup-delay workaround.
 
 ## [0.16.0] - 2026-04-16
 
@@ -1021,8 +1021,8 @@ Fork release (`jjuraszek/pi-subagents`) on top of upstream v0.26.0. See [AGENTS.
 ## [0.2.0] - 2026-01-24
 
 ### Changed
-- **Rebranded to `pi-subagents`** (was `pi-async-subagents`)
-- Now installable via `npx pi-subagents`
+- **Rebranded to `pi-cohort`** (was `pi-async-subagents`)
+- Now installable via `npx pi-cohort`
 
 ### Added
 - Chain TUI now supports editing output paths, reads lists, and toggling progress per step

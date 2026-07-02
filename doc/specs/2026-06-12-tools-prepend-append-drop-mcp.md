@@ -6,11 +6,11 @@ Draft for review.
 
 ## Context
 
-`pi-subagents` builtin and custom agents can define explicit `tools` allowlists. Users can currently replace a builtin agent's tool list with `subagents.agentOverrides.<name>.tools`, or clear the explicit allowlist with `tools: false`. There is no supported way to add a few tools while preserving the agent's existing list.
+`pi-cohort` builtin and custom agents can define explicit `tools` allowlists. Users can currently replace a builtin agent's tool list with `subagents.agentOverrides.<name>.tools`, or clear the explicit allowlist with `tools: false`. There is no supported way to add a few tools while preserving the agent's existing list.
 
 That makes extension-oriented adoption brittle. For example, enabling navigator tools for orientation agents requires duplicating the full current tool list for each agent. When builtin definitions evolve, those copied override lists drift.
 
-The same tool path also carries MCP-specific compatibility code. `pi-subagents` parses `mcp:` pseudo-tool entries into `mcpDirectTools`, resolves adapter cache/config state, and passes `MCP_DIRECT_TOOLS` to child runs. Pi does not support MCP natively, and this repo should not carry private compatibility glue for a separate adapter. The MCP support should be removed hard rather than deprecated.
+The same tool path also carries MCP-specific compatibility code. `pi-cohort` parses `mcp:` pseudo-tool entries into `mcpDirectTools`, resolves adapter cache/config state, and passes `MCP_DIRECT_TOOLS` to child runs. Pi does not support MCP natively, and this repo should not carry private compatibility glue for a separate adapter. The MCP support should be removed hard rather than deprecated.
 
 `pi-web-access` is intentionally out of scope for this change. Existing web tool references remain unchanged.
 

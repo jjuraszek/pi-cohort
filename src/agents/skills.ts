@@ -51,7 +51,7 @@ let loadSkillsCache: { cwd: string; agentDir: string; skills: CachedSkillEntry[]
 const LOAD_SKILLS_CACHE_TTL_MS = 5000;
 
 const CONFIG_DIR = ".pi";
-const SUBAGENT_ORCHESTRATION_SKILL = "pi-subagents";
+const SUBAGENT_ORCHESTRATION_SKILL = "pi-cohort";
 
 const SOURCE_PRIORITY: Record<SkillSource, number> = {
 	project: 700,

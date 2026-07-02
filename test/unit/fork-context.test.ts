@@ -62,7 +62,7 @@ describe("createForkContextResolver", () => {
 	});
 
 	it("opens a throwaway manager from the persisted parent session file", () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-fork-open-"));
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cohort-fork-open-"));
 		try {
 			const parentSessionFile = path.join(tempDir, "parent.jsonl");
 			writeMinimalSessionFile(parentSessionFile, "parent");
@@ -97,7 +97,7 @@ describe("createForkContextResolver", () => {
 	});
 
 	it("creates forked sessions through the default package opener", () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-fork-default-"));
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cohort-fork-default-"));
 		try {
 			const sessionDir = path.join(tempDir, "sessions");
 			const parent = SessionManager.create(tempDir, sessionDir);
@@ -125,7 +125,7 @@ describe("createForkContextResolver", () => {
 	});
 
 	it("fails clearly for an unflushed user-only parent", () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-fork-user-only-"));
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cohort-fork-user-only-"));
 		try {
 			const sessionDir = path.join(tempDir, "sessions");
 			const parent = SessionManager.create(tempDir, sessionDir);
@@ -151,7 +151,7 @@ describe("createForkContextResolver", () => {
 	});
 
 	it("creates isolated branched sessions per index (parallel and chain compatible)", () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-fork-index-"));
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cohort-fork-index-"));
 		try {
 			const parentSessionFile = path.join(tempDir, "parent.jsonl");
 			writeMinimalSessionFile(parentSessionFile, "parent");
@@ -184,7 +184,7 @@ describe("createForkContextResolver", () => {
 	});
 
 	it("memoizes per index to keep behavior deterministic", () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-fork-memo-"));
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cohort-fork-memo-"));
 		try {
 			const parentSessionFile = path.join(tempDir, "parent.jsonl");
 			writeMinimalSessionFile(parentSessionFile, "parent");
@@ -213,7 +213,7 @@ describe("createForkContextResolver", () => {
 	});
 
 	it("fails clearly when branch extraction returns a missing child file", () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-fork-missing-child-"));
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cohort-fork-missing-child-"));
 		try {
 			const parentSessionFile = path.join(tempDir, "parent.jsonl");
 			const missingChildSessionFile = path.join(tempDir, "missing-child.jsonl");
@@ -237,7 +237,7 @@ describe("createForkContextResolver", () => {
 	});
 
 	it("does not silently fallback to fresh when branch extraction fails", () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-fork-no-path-"));
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cohort-fork-no-path-"));
 		try {
 			const parentSessionFile = path.join(tempDir, "parent.jsonl");
 			writeMinimalSessionFile(parentSessionFile, "parent");

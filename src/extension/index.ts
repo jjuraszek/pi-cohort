@@ -433,7 +433,7 @@ EXECUTION (use exactly ONE mode):
 CHAIN TEMPLATE VARIABLES (use in task strings):
 • {task} - The original task/request from the user
 • {previous} - Text response from the previous step (empty for first step)
-• {chain_dir} - Shared directory for chain files (e.g., <tmpdir>/pi-subagents-<scope>/chain-runs/abc123/)
+• {chain_dir} - Shared directory for chain files (e.g., <tmpdir>/pi-cohort-<scope>/chain-runs/abc123/)
 
 Example: { chain: [{agent:"agent-a", task:"Analyze {task}"}, {agent:"agent-b", task:"Plan based on {previous}"}] }
 

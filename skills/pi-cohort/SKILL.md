@@ -1,5 +1,5 @@
 ---
-name: pi-subagents
+name: pi-cohort
 description: |
   Delegate work to builtin or custom subagents with single-agent, chain,
   parallel, async, forked-context, and intercom-coordinated workflows. Use
@@ -8,7 +8,7 @@ description: |
   planning, or execution.
 ---
 
-# Pi Subagents
+# Pi Cohort
 
 This skill is for the main parent orchestrator only. Do not inject or follow it inside spawned child subagents. The parent session owns delegation, orchestration, review fanout, and final fix-worker launches; child subagents should receive concrete role-specific tasks. Ordinary children should not run their own subagent workflows; the explicit exception is a delegated fanout child whose resolved builtin `tools` includes `subagent`, and that child may use `subagent` only for the fanout work the parent assigned.
 
@@ -455,7 +455,7 @@ Use `oracle` as a smart-friend escalation when the parent needs help with trajec
 
 ## Subagent + Intercom Coordination
 
-`pi-subagents` works without `pi-intercom`. When `pi-intercom` is installed and enabled, the intercom bridge can automatically give child agents a private coordination channel back to the parent session.
+`pi-cohort` works without `pi-intercom`. When `pi-intercom` is installed and enabled, the intercom bridge can automatically give child agents a private coordination channel back to the parent session.
 
 Most agents should not call generic `intercom` directly unless bridge instructions provide a target and `contact_supervisor` is unavailable. Do not invent a target. Prefer the tool from the injected bridge instructions.
 
@@ -474,7 +474,7 @@ Use `contact_supervisor` with `reason: "progress_update"` when:
 Message conventions:
 - `reason: "need_decision"` waits for the parent reply and returns it to the child.
 - `reason: "progress_update"` is non-blocking and should stay concise.
-- Child-side routine completion handoffs are not expected. With the intercom bridge active, parent-side `pi-subagents` sends grouped completion results through `pi-intercom`: one grouped message per foreground parent run and one per completed async result file. Acknowledged foreground delivery returns a compact receipt with artifact/session paths; if unacknowledged, the normal full output is preserved. Grouped messages include child intercom targets, full child summaries, and compact nested summaries under the parent child that launched them.
+- Child-side routine completion handoffs are not expected. With the intercom bridge active, parent-side `pi-cohort` sends grouped completion results through `pi-intercom`: one grouped message per foreground parent run and one per completed async result file. Acknowledged foreground delivery returns a compact receipt with artifact/session paths; if unacknowledged, the normal full output is preserved. Grouped messages include child intercom targets, full child summaries, and compact nested summaries under the parent child that launched them.
 
 If bridge instructions provide the child-facing tool, a child can ask:
 
@@ -593,7 +593,7 @@ with `subagent(...)` when the user describes the workflow in natural language
 instead of invoking a slash command.
 
 If `pi-prompt-template-model` is installed, additional user prompt templates can delegate into
-`pi-subagents`. This is useful when a slash command should always run through a
+`pi-cohort`. This is useful when a slash command should always run through a
 particular agent or with forked context.
 
 ## Important Constraints
@@ -695,7 +695,7 @@ When review has already produced concrete findings across several independent ar
 
 For very large work, split into serial milestones instead of launching a swarm of writers. Each milestone gets one writer, a validation contract, fresh-context review/validation, a fix pass, and parent acceptance before the next milestone starts. Use parallel subagents inside a milestone for read-only context, research, review, and validation only.
 
-Keep orchestration authority in the parent session. Child subagents should not launch more subagents, read this skill, or run their own orchestration loops unless the parent intentionally selected a fanout agent whose builtin `tools` includes `subagent`. Spawned subagents do not receive the `pi-subagents` skill, parent-only status/control/slash messages, or prior parent `subagent` tool-call/tool-result artifacts. Ordinary children also do not receive the `subagent` extension tool. Child context filtering strips old hidden orchestration-instruction messages when they appear in inherited history. Every child receives a boundary instruction: ordinary children are told the parent owns orchestration and they must not propose or run subagents; explicit fanout children are told to use `subagent` only for the assigned fanout work, with `maxSubagentDepth` still enforced. Implementation children must call real edit/write tools instead of printing pseudo tool calls. Pass children concrete role-specific work instead.
+Keep orchestration authority in the parent session. Child subagents should not launch more subagents, read this skill, or run their own orchestration loops unless the parent intentionally selected a fanout agent whose builtin `tools` includes `subagent`. Spawned subagents do not receive the `pi-cohort` skill, parent-only status/control/slash messages, or prior parent `subagent` tool-call/tool-result artifacts. Ordinary children also do not receive the `subagent` extension tool. Child context filtering strips old hidden orchestration-instruction messages when they appear in inherited history. Every child receives a boundary instruction: ordinary children are told the parent owns orchestration and they must not propose or run subagents; explicit fanout children are told to use `subagent` only for the assigned fanout work, with `maxSubagentDepth` still enforced. Implementation children must call real edit/write tools instead of printing pseudo tool calls. Pass children concrete role-specific work instead.
 
 1. Clarify first. This is mandatory. Gather code context with `scout` or `context-builder`; when the request references a URL or external source, use `context-builder` with `fetch` to read it; then ask the user clarifying questions with `interview` until scope, acceptance criteria, constraints, and non-goals are clear.
 2. Define the validation contract. State acceptance before implementation: expected behavior, checks to run, user flows to exercise, and evidence required in the worker handoff. For UI, CLI, integration, or workflow changes, include at least one validator angle that uses the product the way a user would rather than only reading code.

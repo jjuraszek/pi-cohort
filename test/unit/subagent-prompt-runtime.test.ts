@@ -25,7 +25,7 @@ const envSnapshot = {
 	PI_SUBAGENT_STRUCTURED_OUTPUT_SCHEMA: process.env.PI_SUBAGENT_STRUCTURED_OUTPUT_SCHEMA,
 };
 
-const SKILLS_SECTION = "\n\nThe following skills provide specialized instructions for specific tasks.\nUse the read tool to load a skill's file when the task matches its description.\nWhen a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.\n\n<available_skills>\n  <skill>\n    <name>safe-bash</name>\n    <description>desc</description>\n    <location>/tmp/SKILL.md</location>\n  </skill>\n  <skill>\n    <name>pi-subagents</name>\n    <description>delegate to subagents</description>\n    <location>/tmp/pi-subagents/SKILL.md</location>\n  </skill>\n</available_skills>";
+const SKILLS_SECTION = "\n\nThe following skills provide specialized instructions for specific tasks.\nUse the read tool to load a skill's file when the task matches its description.\nWhen a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.\n\n<available_skills>\n  <skill>\n    <name>safe-bash</name>\n    <description>desc</description>\n    <location>/tmp/SKILL.md</location>\n  </skill>\n  <skill>\n    <name>pi-cohort</name>\n    <description>delegate to subagents</description>\n    <location>/tmp/pi-cohort/SKILL.md</location>\n  </skill>\n</available_skills>";
 
 const BASE_PROMPT = [
 	"You are a subagent.",
@@ -165,12 +165,12 @@ describe("subagent prompt runtime", () => {
 		});
 
 		assert.ok(rewritten.includes("<name>safe-bash</name>"));
-		assert.ok(!rewritten.includes("<name>pi-subagents</name>"));
+		assert.ok(!rewritten.includes("<name>pi-cohort</name>"));
 		assert.ok(!rewritten.includes("delegate to subagents"));
 	});
 
-	it("strips explicit pi-subagents skill injection from child prompts", () => {
-		const prompt = "Before\n\n<skill name=\"pi-subagents\">\nDo not keep this.\n</skill>\n\n<skill name=\"safe-bash\">\nKeep this.\n</skill>\nAfter";
+	it("strips explicit pi-cohort skill injection from child prompts", () => {
+		const prompt = "Before\n\n<skill name=\"pi-cohort\">\nDo not keep this.\n</skill>\n\n<skill name=\"safe-bash\">\nKeep this.\n</skill>\nAfter";
 		const rewritten = stripSubagentOrchestrationSkill(prompt);
 
 		assert.ok(!rewritten.includes("Do not keep this"));

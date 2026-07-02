@@ -861,14 +861,14 @@ export async function runSync(
 	const skillNames = options.skills ?? agent.skills ?? [];
 	const skillCwd = options.cwd ?? runtimeCwd;
 	const { resolved: resolvedSkills, missing: missingSkills } = resolveSkillsWithFallback(skillNames, skillCwd, runtimeCwd);
-	if (skillNames.some((skill) => skill.trim() === "pi-subagents") && missingSkills.includes("pi-subagents")) {
+	if (skillNames.some((skill) => skill.trim() === "pi-cohort") && missingSkills.includes("pi-cohort")) {
 		return {
 			agent: agentName,
 			task,
 			exitCode: 1,
 			messages: [],
 			usage: emptyUsage(),
-			error: "Skills not found: pi-subagents",
+			error: "Skills not found: pi-cohort",
 		};
 	}
 	let systemPrompt = agent.systemPrompt?.trim() || "";

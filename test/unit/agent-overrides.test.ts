@@ -29,8 +29,8 @@ function writeUserAgent(home: string, name: string, body: string): void {
 
 describe("builtin agent overrides", () => {
 	beforeEach(() => {
-		tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-home-"));
-		tempProject = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-project-"));
+		tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cohort-home-"));
+		tempProject = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cohort-project-"));
 		process.env.HOME = tempHome;
 		process.env.USERPROFILE = tempHome;
 	});

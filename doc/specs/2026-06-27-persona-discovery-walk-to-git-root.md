@@ -8,7 +8,7 @@ subdirectory.
 
 - **Skills (pi core):** scan `.agents/skills/` in cwd plus every ancestor up to
   the git root, aggregated.
-- **Personas/chains (pi-subagents):** `findNearestProjectRoot(cwd)` stops at the
+- **Personas/chains (pi-cohort):** `findNearestProjectRoot(cwd)` stops at the
   **first** ancestor containing `.pi` or `.agents`, reads that one level flat,
   with no walk-up.
 

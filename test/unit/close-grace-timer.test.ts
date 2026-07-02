@@ -7,7 +7,7 @@ import { describe, it } from "node:test";
 import { attachPostExitStdioGuard, trySignalChild } from "../../src/shared/post-exit-stdio-guard.ts";
 
 function writeScript(name: string, lines: string[]): string {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-close-grace-"));
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cohort-close-grace-"));
 	const script = path.join(dir, name);
 	fs.writeFileSync(script, lines.join("\n"), { mode: 0o755 });
 	return script;

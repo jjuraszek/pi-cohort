@@ -2,7 +2,7 @@
 
 ## Context
 
-pi-subagents ships a `researcher` builtin whose core function only works with the
+pi-cohort ships a `researcher` builtin whose core function only works with the
 third-party `pi-web-access` extension and the external search APIs behind it
 (`web_search`, `fetch_content`, `get_search_content`). A focused subagent engine
 should not ship a "batteries included" builtin that actually requires batteries
@@ -99,7 +99,7 @@ must leave no orphan blank line or dangling list marker.
 | File | Change |
 |---|---|
 | `README.md` | Remove the `researcher` builtin-table row; remove the "researcher before you trust external facts" clause from the rule-of-thumb; remove the `/parallel-research` slash-command row; **delete** the `pi-web-access` install/notes block. **Add** an `## Optional pi-essentials companion` section immediately after the existing `## Optional pi-intercom companion` section (mirror its structure): one line that `context-builder`'s `fetch` tool comes from `pi-essentials`, the install pin `pi install git:github.com/jjuraszek/pi-essentials@v0.2.0`, and the graceful-degradation note (absent -> local-only context). Reword "retrieval budgets for researchers" to drop the researcher noun. After edits, verify no triple-blank-line gaps remain where blocks were removed. |
-| `skills/pi-subagents/SKILL.md` | Repoint every `researcher` mention to `context-builder` (+`fetch`) or `scout`; remove the `researcher` agent-table row; remove all `/parallel-research` references **including the prompt-shortcuts paragraph row** (the one leftover the prior pass missed). Mechanical but sizable - grep `researcher` and `parallel-research` and resolve each hit; reword any "retrieval budgets for researchers"-style phrasing. |
+| `skills/pi-cohort/SKILL.md` | Repoint every `researcher` mention to `context-builder` (+`fetch`) or `scout`; remove the `researcher` agent-table row; remove all `/parallel-research` references **including the prompt-shortcuts paragraph row** (the one leftover the prior pass missed). Mechanical but sizable - grep `researcher` and `parallel-research` and resolve each hit; reword any "retrieval budgets for researchers"-style phrasing. |
 | `CHANGELOG.md` | Add one `[Unreleased]` entry: removed `researcher` builtin, `/parallel-research`, and all `pi-web-access` references; `context-builder` now uses `fetch` from `pi-essentials`. Do not rewrite historical entries. |
 
 ## Edge cases

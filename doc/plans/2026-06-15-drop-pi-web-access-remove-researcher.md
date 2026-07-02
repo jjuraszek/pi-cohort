@@ -28,7 +28,7 @@
 - `prompts/parallel-context-build.md`
 - `prompts/gather-context-and-clarify.md`
 - `README.md`
-- `skills/pi-subagents/SKILL.md`
+- `skills/pi-cohort/SKILL.md`
 - `CHANGELOG.md`
 
 All work happens on the `drop-web-access` worktree branch (the spec already lives there).
@@ -322,7 +322,7 @@ Parallel-safe: Tasks 1-6 own pairwise-disjoint files (see each Files block). No 
 **TDD scenario:** Trivial change — docs; verified by Wave 2 grep gate.
 
 **Files:**
-- Modify: `README.md`, `skills/pi-subagents/SKILL.md`, `CHANGELOG.md`
+- Modify: `README.md`, `skills/pi-cohort/SKILL.md`, `CHANGELOG.md`
 
 - [ ] **Step 1: README — builtin table row (line 108).** Delete the entire `| `researcher` | Web/docs research ... |` table row.
 
@@ -367,13 +367,13 @@ Parallel-safe: Tasks 1-6 own pairwise-disjoint files (see each Files block). No 
 
   Also in the line-656 recipe list, change `parallel research, parallel context-build` to `parallel context-build` (drop the now-removed `/parallel-research` recipe from the prose list).
 
-- [ ] **Step 6: SKILL.md — resolve every hit.** In `skills/pi-subagents/SKILL.md`, apply:
+- [ ] **Step 6: SKILL.md — resolve every hit.** In `skills/pi-cohort/SKILL.md`, apply:
   - Line 44: delete the `/parallel-research` bullet entirely.
   - Line 158: delete the `| `researcher` | Web research brief generator | ... |` agent-table row.
   - Lines 591, 682: remove `/parallel-research` from the prompt-shortcut lists (and its mapping bullet at 682).
   - Lines 64, 87, 95, 107, 274, 305, 684, 707, 770: repoint `researcher` to `context-builder` reading referenced sources via `fetch` (for the chain-example lines 95, 274, 770, change the agent to `context-builder` and reword the task to "read the referenced source with fetch" rather than open-web research). Line 305/625 list `researchers` among async roles — drop that noun from the enumeration.
   - Line 185: change "Tell a researcher the retrieval budget" to "Tell a context-builder the retrieval budget".
-  - After editing, `rg -n "researcher|parallel-research|web_search" skills/pi-subagents/SKILL.md` must return nothing.
+  - After editing, `rg -n "researcher|parallel-research|web_search" skills/pi-cohort/SKILL.md` must return nothing.
 
 - [ ] **Step 7: CHANGELOG.md — add one `[Unreleased]` entry.** Under the existing `## [Unreleased]` header (line 3), insert:
   ```
@@ -387,10 +387,10 @@ Parallel-safe: Tasks 1-6 own pairwise-disjoint files (see each Files block). No 
 
 - [ ] **Step 8: Verify + commit**
 
-  Run: `rg -n "researcher|pi-web-access|web_search|fetch_content|get_search_content|parallel-research" README.md skills/pi-subagents/SKILL.md`
+  Run: `rg -n "researcher|pi-web-access|web_search|fetch_content|get_search_content|parallel-research" README.md skills/pi-cohort/SKILL.md`
   Expected: no hits.
   ```bash
-  git add README.md skills/pi-subagents/SKILL.md CHANGELOG.md
+  git add README.md skills/pi-cohort/SKILL.md CHANGELOG.md
   git commit -m "Docs: remove researcher/pi-web-access, document pi-essentials fetch companion"
   ```
 

@@ -6,7 +6,7 @@ Worktree: `.worktrees/cost-external-protocol`
 
 ## Problem
 
-pi-subagents owns the unified spend line - the `Σ$` grand total rendered by
+pi-cohort owns the unified spend line - the `Σ$` grand total rendered by
 `src/extension/grand-total.ts`. Today it sums two cost signals:
 
 1. main-loop assistant-message cost (`recordMainCost`, fed by `message_end`);
@@ -47,7 +47,7 @@ specced in parallel against the same contract). It is a hard interface.
   ```
 
 - Producers emit their **cumulative session total** on **every** update.
-  pi-subagents keeps a `Map<source, entry>`, recomputes
+  pi-cohort keeps a `Map<source, entry>`, recomputes
   `external = Σ totalCost over the map`, and folds it into the grand total
   alongside `mainCost + sync + async`.
 - Cumulative-per-source makes it **idempotent and replay-safe**: a double-fire
@@ -55,7 +55,7 @@ specced in parallel against the same contract). It is a hard interface.
   existing `syncCostByRun` / `asyncCostByJob` map pattern.
 - **Producer obligation on resume (SHOULD).** A producer that wants its spend
   visible after a session resume SHOULD re-emit its current cumulative total
-  when its own `session_start` fires. pi-subagents does not persist or reseed
+  when its own `session_start` fires. pi-cohort does not persist or reseed
   the external slice (see [Hard constraints](#hard-constraints-decided---do-not-reopen)),
   so without this re-emit the source's spend is absent until its next update.
   This is a documented producer recommendation, not part of the payload shape;
@@ -64,11 +64,11 @@ specced in parallel against the same contract). It is a hard interface.
 ## Hard constraints (decided - do not reopen)
 
 - **Live-only / ephemeral.** No session reseed for the external slice. The map
-  starts empty on `session_start`; pi-subagents does **not** read other
+  starts empty on `session_start`; pi-cohort does **not** read other
   extensions' session entries. Rationale: external is a minor fraction of the
-  sum; durability is not worth coupling pi-subagents to another extension's
+  sum; durability is not worth coupling pi-cohort to another extension's
   entry schema.
-- **Fire-and-forget.** pi-subagents must tolerate zero producers (no-op),
+- **Fire-and-forget.** pi-cohort must tolerate zero producers (no-op),
   multiple producers, and unknown/new sources without error.
 
 ## Design
@@ -207,7 +207,7 @@ the contract's "emit cumulative on every update" always reflects in `Σ$`.
 - `resetSessionState` (called from `session_start`) already does
   `state.grandTotal = emptyGrandTotal()` then `seedMainCostFromSession(...)`.
   The new map is created empty by `emptyGrandTotal()` and is **never reseeded**.
-  `seedMainCostFromSession` is **not** extended to external - pi-subagents does
+  `seedMainCostFromSession` is **not** extended to external - pi-cohort does
   not read other extensions' session entries (hard constraint).
 - **Post-resume consequence:** after a resume, `Σ$` reflects external spend only
   from `cost:external` events fired in the resumed session. A producer's prior

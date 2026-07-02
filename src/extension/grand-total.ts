@@ -37,17 +37,17 @@ function sanitizeTokens(value: unknown): number | undefined {
 
 export function recordExternalCost(gt: GrandTotal, payload: unknown): boolean {
 	if (!payload || typeof payload !== "object") {
-		console.warn("[pi-subagents] cost:external rejected (source=<missing>): payload not an object");
+		console.warn("[pi-cohort] cost:external rejected (source=<missing>): payload not an object");
 		return false;
 	}
 	const p = payload as Record<string, unknown>;
 	const source = typeof p.source === "string" ? p.source.trim() : "";
 	if (!source) {
-		console.warn("[pi-subagents] cost:external rejected (source=<missing>): missing or empty source");
+		console.warn("[pi-cohort] cost:external rejected (source=<missing>): missing or empty source");
 		return false;
 	}
 	if (typeof p.totalCost !== "number" || !Number.isFinite(p.totalCost)) {
-		console.warn(`[pi-subagents] cost:external rejected (source=${source}): totalCost not finite`);
+		console.warn(`[pi-cohort] cost:external rejected (source=${source}): totalCost not finite`);
 		return false;
 	}
 	const entry: ExternalCostEntry = { totalCost: Math.max(0, p.totalCost) };

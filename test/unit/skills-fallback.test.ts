@@ -78,16 +78,16 @@ describe("skills filesystem fallback", () => {
 		assert.match(resolved[0]?.content ?? "", /Run local fallback checks\./);
 	});
 
-	it("does not expose pi-subagents as a child-injectable skill", () => {
-		makeProjectSkill(tempDir, "pi-subagents", "Parent orchestration only.");
+	it("does not expose pi-cohort as a child-injectable skill", () => {
+		makeProjectSkill(tempDir, "pi-cohort", "Parent orchestration only.");
 		makeProjectSkill(tempDir, "safe-bash", "Use safe bash.");
 
 		const available = discoverAvailableSkills(tempDir).map((skill) => skill.name);
-		assert.equal(available.includes("pi-subagents"), false);
+		assert.equal(available.includes("pi-cohort"), false);
 		assert.equal(available.includes("safe-bash"), true);
 
-		const { resolved, missing } = resolveSkills(["pi-subagents", "safe-bash"], tempDir);
-		assert.deepEqual(missing, ["pi-subagents"]);
+		const { resolved, missing } = resolveSkills(["pi-cohort", "safe-bash"], tempDir);
+		assert.deepEqual(missing, ["pi-cohort"]);
 		assert.deepEqual(resolved.map((skill) => skill.name), ["safe-bash"]);
 	});
 

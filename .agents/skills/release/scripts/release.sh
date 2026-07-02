@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Release helper for jjuraszek/pi-subagents.
+# Release helper for jjuraszek/pi-cohort.
 #
 # This repo is a standalone semver project (no longer tracking an upstream).
 # Tag scheme: v<major>.<minor>.<patch>  (see AGENTS.md "Release model").
@@ -33,7 +33,7 @@ Examples:
   release.sh --no-update-pins current   # skip ~/.pi/agent*/settings.json pin bump
 
 Default behavior: after pushing the new tag, every ~/.pi/agent*/settings.json
-that pins this repo (git:github.com/jjuraszek/pi-subagents@<ref>) is rewritten
+that pins this repo (git:github.com/jjuraszek/pi-cohort@<ref>) is rewritten
 in-place to @v<version> so subsequent pi launches pick up the release.
 EOF
 }
@@ -64,7 +64,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../../../" && pwd)"
 cd "$REPO_ROOT"
 
-PIN_REPO="github.com/jjuraszek/pi-subagents"
+PIN_REPO="github.com/jjuraszek/pi-cohort"
 PIN_PREFIX="git:${PIN_REPO}@"
 
 run() {

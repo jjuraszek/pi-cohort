@@ -1,6 +1,6 @@
 ---
 name: release
-description: Creates a release for jjuraszek/pi-subagents. Use when asked to release, bump the version, or cut a tag. This package is consumed via git tag pins (git:github.com/jjuraszek/pi-subagents@vX.Y.Z); there is no npm publish step.
+description: Creates a release for jjuraszek/pi-cohort. Use when asked to release, bump the version, or cut a tag. This package is consumed via git tag pins (git:github.com/jjuraszek/pi-cohort@vX.Y.Z); there is no npm publish step.
 ---
 
 # Release
@@ -10,7 +10,7 @@ Use this skill when asked to release this package.
 ## Repository-specific release model
 
 This package is consumed via **git tag pins** in pi `settings.json` (e.g.
-`"git:github.com/jjuraszek/pi-subagents@v0.27.0"`), not via npm. A release here means:
+`"git:github.com/jjuraszek/pi-cohort@v0.27.0"`), not via npm. A release here means:
 
 1. set the version in `package.json`
 2. create the release commit (non-`current` modes) and the matching `v<version>` git tag
@@ -77,7 +77,7 @@ bash .agents/skills/release/scripts/release.sh --no-update-pins current
 3. fails if the target tag already exists
 4. `--dry-run`: prints the plan (incl. which settings.json pins would change) and exits
 5. otherwise: verifies `main` + clean tree, (non-`current`) bumps + commits, runs `npm run build/check --if-present`, creates annotated tag, pushes `main` + tag
-6. rewrites `~/.pi/agent*/settings.json` pins of `git:github.com/jjuraszek/pi-subagents@<ref>` to the new tag (unless `--no-update-pins`)
+6. rewrites `~/.pi/agent*/settings.json` pins of `git:github.com/jjuraszek/pi-cohort@<ref>` to the new tag (unless `--no-update-pins`)
 
 Project repos that pin this package (e.g. a consuming repo's `.pi/settings.json`)
 are **not** touched by the script — bump those pins by hand.

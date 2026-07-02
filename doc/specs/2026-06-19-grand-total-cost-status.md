@@ -20,7 +20,7 @@ Established by reading the source, not assumed:
 - **Subagents are constrained child processes.** `execution.ts` and
   `subagent-runner.ts` spawn `pi --mode json -p` with `--no-extensions` plus a
   fixed runtime extension set (`pi-args.ts`). A child does **not** load the
-  pi-subagents extension, so it cannot run an accumulator or write to a shared
+  pi-cohort extension, so it cannot run an accumulator or write to a shared
   ledger. The only cross-process channels are the ones that already exist.
 - **A plain subagent is a leaf.** It has no subagent tool, so its full cost is
   its own main loop, which the parent already sums from the child's
@@ -44,7 +44,7 @@ Established by reading the source, not assumed:
 
 ## Decisions
 
-- **Owner: pi-subagents.** It already holds the subagent cost data, the async
+- **Owner: pi-cohort.** It already holds the subagent cost data, the async
   poller, and the token-propagation pipeline; it can also read main-loop cost
   in-process. pi-essentials is untouched.
 - **New figure, not an override.** The built-in `$` stays as-is. We add a

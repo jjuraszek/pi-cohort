@@ -26,8 +26,8 @@ function readText(result: { content: Array<{ type: string; text?: string }> }): 
 
 describe("builtin agent disabling", () => {
 	beforeEach(() => {
-		tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-disabled-home-"));
-		tempProject = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-disabled-project-"));
+		tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cohort-disabled-home-"));
+		tempProject = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cohort-disabled-project-"));
 		process.env.HOME = tempHome;
 		process.env.USERPROFILE = tempHome;
 	});

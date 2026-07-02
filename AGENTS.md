@@ -1,4 +1,4 @@
-# pi-subagents (jjuraszek fork)
+# pi-cohort (jjuraszek fork)
 
 Pi extension. Lets Pi delegate work to focused child agents: code review, scouting, implementation, parallel audits, saved chains, background/async jobs, intercom-coordinated multi-agent workflows.
 
@@ -28,7 +28,7 @@ LLM-readable artifacts (`AGENTS.md`, `README.md`, `CHANGELOG.md`, skill bodies, 
 ## Release model
 
 Consumed via **git tag pins** in pi `settings.json`, e.g.
-`"git:github.com/jjuraszek/pi-subagents@v0.27.0"`. There is **no npm publish**
+`"git:github.com/jjuraszek/pi-cohort@v0.27.0"`. There is **no npm publish**
 in the loop — do not run `npm publish`. There is **no upstream remote**: this is
 a standalone repo, released with plain semver.
 
@@ -51,7 +51,7 @@ bash .agents/skills/release/scripts/release.sh --dry-run minor
 
 The script bumps `package.json`, commits `Release <version>`, creates+pushes the
 `v<version>` tag to `origin`, then rewrites every `~/.pi/agent*/settings.json`
-pin of `git:github.com/jjuraszek/pi-subagents@<ref>` to the new tag. Consuming
+pin of `git:github.com/jjuraszek/pi-cohort@<ref>` to the new tag. Consuming
 project repos (e.g. a repo's own `.pi/settings.json`) are **not** touched — bump
 those pins by hand. See the skill for flags (`--dry-run`, `--no-update-pins`)
 and failure handling.
