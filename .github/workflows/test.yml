@@ -20,6 +20,8 @@ jobs:
           node-version: 24
       - name: Install devDependencies
         run: npm install
+      - name: Check shared AGENTS core
+        run: npm run check:agents-core
       - name: Unit tests
         run: npm test
       - name: Integration tests
