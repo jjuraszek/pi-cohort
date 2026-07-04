@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.0.1] - 2026-07-04
+
+Tagged releases now get GitHub Release notes automatically, sourced from the CHANGELOG rather than an LLM or external API.
+
+### Added
+- **`release.yml` posts release notes.** A new `release-notes` job (`needs: publish`, `contents: write`) extracts the CHANGELOG section matching the pushed tag with `awk` and publishes it as the GitHub Release body via `gh release create` (falling back to `gh release edit`). No LLM or API key; only `github.token`.
+
 ## [3.0.0] - 2026-07-02
 
 Completes the `pi-subagents` -> `pi-cohort` rename by rebranding the last user-facing identifiers that still carried the old name.
