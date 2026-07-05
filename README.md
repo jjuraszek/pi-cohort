@@ -1,4 +1,10 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/jjuraszek/pi-cohort/main/pi-cohort.png" alt="pi-cohort" width="180">
+</p>
+
 # pi-cohort
+
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-donate-yellow?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/jjurasszek)
 
 `pi-cohort` lets Pi delegate work to focused child agents. Use it for code review, scouting, implementation, parallel audits, saved workflows, background jobs, and anything else that benefits from a second or third set of model eyes.
 
@@ -553,7 +559,7 @@ Chains are reusable workflows stored separately from agent files. Use `.chain.md
 
 \* Aggregated across every level from cwd to the git root; nearest wins.
 
-Chain roots are read **flat** (top-level `*.chain.md` / `*.chain.json` only), matching agent discovery in this fork; nested subdirectories are not scanned. Project chains aggregate `<level>/.pi/chains` across the same git-root walk as agents, nearest level wins. If both `.chain.md` and `.chain.json` define the same parsed runtime chain name in the same scope, `.chain.json` wins. If user and project scopes define the same parsed runtime chain name, the project chain wins. Chains support the same optional `package` frontmatter as agents; `name: review-flow` plus `package: code-analysis` runs as `code-analysis.review-flow` (the package comes from frontmatter, not the directory).
+Chain roots are read **flat** (top-level `*.chain.md` / `*.chain.json` only), matching agent discovery in pi-cohort; nested subdirectories are not scanned. Project chains aggregate `<level>/.pi/chains` across the same git-root walk as agents, nearest level wins. If both `.chain.md` and `.chain.json` define the same parsed runtime chain name in the same scope, `.chain.json` wins. If user and project scopes define the same parsed runtime chain name, the project chain wins. Chains support the same optional `package` frontmatter as agents; `name: review-flow` plus `package: code-analysis` runs as `code-analysis.review-flow` (the package comes from frontmatter, not the directory).
 
 Example:
 
@@ -1212,3 +1218,7 @@ The main runtime files are:
 | `src/intercom/intercom-bridge.ts` | Runtime intercom bridge instructions and diagnostics. |
 | `src/extension/schemas.ts` / `src/shared/types.ts` | Tool schemas, shared types, and event constants. |
 | `test/unit/` / `test/integration/` | Unit and loader-based integration tests. |
+
+## Support
+
+If `pi-cohort` is useful, consider [buying me a coffee](https://buymeacoffee.com/jjurasszek).

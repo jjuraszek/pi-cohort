@@ -49,7 +49,12 @@
     ],
     "prompts": [
       "./prompts"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/jjuraszek/pi-cohort/main/pi-cohort.png"
+  },
+  "funding": {
+    "type": "buymeacoffee",
+    "url": "https://buymeacoffee.com/jjurasszek"
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",

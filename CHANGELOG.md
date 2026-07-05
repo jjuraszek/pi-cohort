@@ -1,5 +1,16 @@
 # Changelog
 
+## [3.0.2] - 2026-07-05
+
+Branding, funding, and gallery preview. No behavior change.
+
+### Added
+- **Logo + pi.dev gallery preview.** Repo-root `pi-cohort.png` (640x640), shown in the README and wired as `pi.image` for the pi.dev catalog.
+- **Buy Me a Coffee funding.** `funding` in `package.json`, `.github/FUNDING.yml`, and a README badge.
+
+### Changed
+- README polish; dropped a stale "in this fork" self-reference.
+
 ## [3.0.1] - 2026-07-04
 
 Tagged releases now get GitHub Release notes automatically, sourced from the CHANGELOG rather than an LLM or external API.
