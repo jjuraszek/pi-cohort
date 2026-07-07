@@ -40,6 +40,27 @@ Never guess Pi's API, message shapes, config, or values - read the source; the s
 
 <!-- agents-core:end v1 -->
 
+## Part of one platform (cross-repo synergy)
+
+This repo is one of four sibling pi extensions - **pi-quiver** (capabilities),
+**pi-cohort** (coordination), **pi-condense** (context economy), **pi-gauntlet**
+(process) - that compose into one governed agent workflow. They ship and version
+independently, but documentation is deliberately cross-referential: a concept is
+explained in its owning repo and *linked* from the others, never duplicated.
+
+- Only hard runtime dependency: pi-gauntlet -> pi-cohort (`subagent()`). Not an
+  npm/peer dependency - pinned in pi-gauntlet's README and its consumers'
+  `settings.json#packages`.
+- Real runtime coupling: pi-condense emits `cost:external`; pi-cohort aggregates
+  it into `Σ$` (see `doc/observability.md`). Naming is one-directional -
+  pi-condense names pi-cohort's channel; pi-cohort names no producer.
+- pi-quiver is an independent toolbox; no code coupling.
+
+When editing docs here, if a claim belongs to a sibling's concern, link the
+sibling's doc rather than restating it. When a change alters a cross-repo
+contract (dispatch shape, cost channel, settings keys), update the sibling's
+docs in the same logical change and note it in both CHANGELOGs.
+
 ## Release model
 
 Published to **npm** as `pi-cohort`; installed with `pi install npm:pi-cohort`.
