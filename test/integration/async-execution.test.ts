@@ -335,6 +335,56 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(fs.existsSync(path.join(tempDir, "progress.md")), true);
 	});
 
+	it("top-level async parallel defaults require explicit output and progress", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
+		fs.writeFileSync(path.join(tempDir, "input.md"), "input\n", "utf-8");
+		mockPi.onCall({ output: "Async parallel inline report" });
+		const executor = createSubagentExecutor!({
+			pi: { events: createEventBus(), getSessionName: () => undefined },
+			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
+			config: {}, asyncByDefault: false, tempArtifactsDir: tempDir,
+			getSubagentSessionRoot: () => tempDir, expandTilde: (p: string) => p,
+			discoverAgents: () => ({ agents: [makeAgent("worker", { output: "default-report.md", defaultProgress: true, defaultReads: ["input.md"] })] }),
+		});
+		const result = await executor.execute(
+			"async-parallel-defaults-omitted",
+			{ tasks: [{ agent: "worker", task: "Write report" }], async: true, clarify: false },
+			new AbortController().signal, undefined, makeMinimalCtx(tempDir),
+		);
+		const asyncId = result.details?.asyncId;
+		assert.ok(asyncId, "expected asyncId");
+		const resultPath = await waitForAsyncResultFile(asyncId);
+		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
+		assert.equal(payload.mode, "parallel");
+		assert.equal(payload.success, true);
+		assert.equal(payload.results[0]?.output, "Async parallel inline report");
+		const taskArg = readLastMockPiArgs(mockPi).at(-1) ?? "";
+		assert.ok(taskArg.includes(`[Read from: ${path.join(tempDir, "input.md")}]`));
+		assert.doesNotMatch(taskArg, /Write your findings to:|Update progress at:/);
+		assert.equal(fs.existsSync(path.join(tempDir, "default-report.md")), false);
+		assert.equal(fs.existsSync(path.join(tempDir, "progress.md")), false);
+	});
+
+	it("top-level async single output defaults require explicit opt-in", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
+		mockPi.onCall({ output: "Async inline report" });
+		const executor = createSubagentExecutor!({
+			pi: { events: createEventBus(), getSessionName: () => undefined },
+			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
+			config: {}, asyncByDefault: false, tempArtifactsDir: tempDir,
+			getSubagentSessionRoot: () => tempDir, expandTilde: (p: string) => p,
+			discoverAgents: () => ({ agents: [makeAgent("worker", { output: "default-report.md" })] }),
+		});
+		const result = await executor.execute(
+			"async-single-output-omitted",
+			{ agent: "worker", task: "Write report", async: true, clarify: false },
+			new AbortController().signal, undefined, makeMinimalCtx(tempDir),
+		);
+		const asyncId = result.details?.asyncId;
+		assert.ok(asyncId, "expected asyncId");
+		await waitForAsyncResultFile(asyncId);
+		assert.equal(fs.existsSync(path.join(tempDir, "default-report.md")), false);
+		assert.doesNotMatch(readLastMockPiArgs(mockPi).at(-1) ?? "", /Write your findings to:/);
+	});
+
 	it("async single rejects explicit reviewed acceptance without a reviewer result", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
 		mockPi.onCall({
 			output: [

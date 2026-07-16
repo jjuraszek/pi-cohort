@@ -171,6 +171,122 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 		assert.equal(ok, 2);
 	});
 
+	it("top-level parallel defaults require explicit output and progress", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+		mockPi.onCall({ output: "Omitted" });
+		mockPi.onCall({ output: "Explicit" });
+		const executor = makeExecutor([makeAgent("echo", { output: "default-report.md", defaultProgress: true, defaultReads: ["input.md"] })]);
+
+		await executor.execute(
+			"parallel-defaults-opt-in",
+			{
+				tasks: [
+					{ agent: "echo", task: "Omitted" },
+					{ agent: "echo", task: "Explicit", output: true, progress: true },
+				],
+			},
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+
+		assert.equal(fs.existsSync(path.join(tempDir, "default-report.md")), true);
+		assert.equal(fs.existsSync(path.join(tempDir, "progress.md")), true);
+		const calls = fs.readdirSync(mockPi.dir).filter((name) => name.startsWith("call-")).sort();
+		const taskArgs = calls.map((call) => JSON.parse(fs.readFileSync(path.join(mockPi.dir, call), "utf-8")).args.at(-1) as string);
+		const omittedTask = taskArgs.find((task) => task.includes("\n\nOmitted\n"));
+		assert.ok(omittedTask);
+		assert.ok(omittedTask.includes(`[Read from: ${path.join(tempDir, "input.md")}]`));
+		assert.doesNotMatch(omittedTask, /Write your findings to:|Update progress at:/);
+	});
+
+	it("top-level parallel omitted tasks leave configured artifacts absent", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+		mockPi.onCall({ output: "First omitted result" });
+		mockPi.onCall({ output: "Second omitted result" });
+		const executor = makeExecutor([makeAgent("echo", { output: "default-report.md", defaultProgress: true, defaultReads: ["input.md"] })]);
+
+		const result = await executor.execute(
+			"parallel-all-omitted-defaults",
+			{
+				tasks: [
+					{ agent: "echo", task: "First omitted task" },
+					{ agent: "echo", task: "Second omitted task" },
+				],
+			},
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+
+		assert.equal(result.isError, undefined);
+		assert.equal(mockPi.callCount(), 2);
+		assert.equal(fs.existsSync(path.join(tempDir, "default-report.md")), false);
+		assert.equal(fs.existsSync(path.join(tempDir, "progress.md")), false);
+		const taskArgs = fs.readdirSync(mockPi.dir)
+			.filter((name) => name.startsWith("call-"))
+			.map((call) => JSON.parse(fs.readFileSync(path.join(mockPi.dir, call), "utf-8")).args.at(-1) as string);
+		for (const task of taskArgs) {
+			assert.ok(task.includes(`[Read from: ${path.join(tempDir, "input.md")}]`));
+			assert.doesNotMatch(task, /Write your findings to:|Update progress at:/);
+		}
+	});
+
+	it("passes disabled parallel output and progress to clarify when omitted", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+		mockPi.onCall({ output: "clarified parallel report" });
+		const executor = makeExecutor([makeAgent("echo", { output: "default-report.md", defaultProgress: true })]);
+		const ctx = {
+			...makeMinimalCtx(tempDir),
+			hasUI: true,
+			ui: { custom: async () => ({ confirmed: true, templates: ["Review"], behaviorOverrides: [{}], runInBackground: false }) },
+		};
+
+		await executor.execute("parallel-clarify-defaults", { tasks: [{ agent: "echo", task: "Review" }], clarify: true }, new AbortController().signal, undefined, ctx as any);
+
+		assert.equal(fs.existsSync(path.join(tempDir, "default-report.md")), false);
+		assert.equal(fs.existsSync(path.join(tempDir, "progress.md")), false);
+		assert.doesNotMatch(readLastCallArgs().at(-1) ?? "", /Write your findings to:|Update progress at:/);
+	});
+
+	it("executes clarify-selected parallel output and progress overrides", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+		const outputPath = path.join(tempDir, "clarified-selected.md");
+		mockPi.onCall({ output: "parallel clarified result" });
+		mockPi.onCall({ output: "parallel clarified result" });
+		const executor = makeExecutor();
+		const ctx = {
+			...makeMinimalCtx(tempDir),
+			hasUI: true,
+			ui: {
+				custom: async () => ({
+					confirmed: true,
+					templates: ["Unselected task", "Selected task"],
+					behaviorOverrides: [undefined, { output: outputPath, progress: true }],
+					runInBackground: false,
+				}),
+			},
+		};
+
+		const result = await executor.execute(
+			"parallel-clarify-artifact-overrides",
+			{ tasks: [{ agent: "echo", task: "First" }, { agent: "echo", task: "Second" }], clarify: true },
+			new AbortController().signal,
+			undefined,
+			ctx as any,
+		);
+
+		assert.equal(result.isError, undefined);
+		assert.equal(fs.readFileSync(outputPath, "utf-8"), "parallel clarified result");
+		assert.equal(fs.existsSync(path.join(tempDir, "progress.md")), true);
+		const taskArgs = fs.readdirSync(mockPi.dir)
+			.filter((name) => name.startsWith("call-") && name.endsWith(".json"))
+			.map((name) => JSON.parse(fs.readFileSync(path.join(mockPi.dir, name), "utf-8")).args.at(-1) as string);
+		const unselected = taskArgs.find((task) => task.includes("Unselected task"));
+		const selected = taskArgs.find((task) => task.includes("Selected task"));
+		assert.ok(unselected);
+		assert.ok(selected);
+		assert.doesNotMatch(unselected, /Write your findings to:|Update progress at:/);
+		assert.ok(selected.includes(`Write your findings to: ${outputPath}`));
+		assert.ok(selected.includes(`Update progress at: ${path.join(tempDir, "progress.md")}`));
+	});
+
 	it("top-level parallel output saves use per-task output paths", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
 		mockPi.onCall({ output: "Saved report" });
 		const executor = makeExecutor();

@@ -228,6 +228,91 @@ describe("chain clarify model display", { skip: !available ? "pi packages not av
 		}
 	});
 
+	it("renders parallel writes and progress controls for every task", () => {
+		const component = new ChainClarifyComponent(
+			{ requestRender() {} },
+			{ fg(_key: string, text: string) { return text; } },
+			[
+				{ name: "first", description: "", systemPrompt: "", systemPromptMode: "replace", inheritProjectContext: false, inheritSkills: false, source: "user", filePath: "first.md" },
+				{ name: "second", description: "", systemPrompt: "", systemPromptMode: "replace", inheritProjectContext: false, inheritSkills: false, source: "user", filePath: "second.md" },
+			],
+			["First", "Second"],
+			"Task",
+			undefined,
+			[
+				{ output: false, outputMode: "inline", reads: false, progress: false, skills: [], model: undefined },
+				{ output: "report.md", outputMode: "inline", reads: false, progress: true, skills: [], model: undefined },
+			],
+			[], undefined, [], () => {}, "parallel",
+		);
+
+		const rendered = stripAnsi(component.render(84).join("\n"));
+		assert.match(rendered, /writes: \(disabled\)/);
+		assert.match(rendered, /writes: report\.md/);
+		assert.match(rendered, /progress: off/);
+		assert.match(rendered, /progress: on/);
+		assert.match(rendered, /e m t w p s/);
+	});
+
+	it("toggles progress only for the selected parallel task", () => {
+		let result: { behaviorOverrides: Array<{ progress?: boolean } | undefined> } | undefined;
+		const component = new ChainClarifyComponent(
+			{ requestRender() {} },
+			{ fg(_key: string, text: string) { return text; } },
+			[
+				{ name: "first", description: "", systemPrompt: "", systemPromptMode: "replace", inheritProjectContext: false, inheritSkills: false, source: "user", filePath: "first.md" },
+				{ name: "second", description: "", systemPrompt: "", systemPromptMode: "replace", inheritProjectContext: false, inheritSkills: false, source: "user", filePath: "second.md" },
+			],
+			["First", "Second"], "Task", undefined,
+			[
+				{ output: false, outputMode: "inline", reads: false, progress: false, skills: [], model: undefined },
+				{ output: false, outputMode: "inline", reads: false, progress: false, skills: [], model: undefined },
+			],
+			[], undefined, [], (value: unknown) => { result = value as typeof result; }, "parallel",
+		);
+
+		component.handleInput("\x1b[B");
+		component.handleInput("p");
+		component.handleInput("\r");
+		assert.deepEqual(result?.behaviorOverrides, [undefined, { progress: true }]);
+	});
+
+	for (const mode of ["single", "parallel"] as const) {
+		it(`seeds disabled ${mode} output editing from the selected agent default`, () => {
+			let result: { behaviorOverrides: Array<{ output?: string | false } | undefined> } | undefined;
+			const component = new ChainClarifyComponent(
+				{ requestRender() {} },
+				{ fg(_key: string, text: string) { return text; } },
+				[{ name: "writer", description: "", systemPrompt: "", systemPromptMode: "replace", inheritProjectContext: false, inheritSkills: false, source: "user", filePath: "writer.md", output: "default.md" }],
+				["Task"], "Task", undefined,
+				[{ output: false, outputMode: "inline", reads: false, progress: false, skills: [], model: undefined }],
+				[], undefined, [], (value: unknown) => { result = value as typeof result; }, mode,
+			);
+
+			component.handleInput("w");
+			component.handleInput("\x1b");
+			component.handleInput("\r");
+			assert.deepEqual(result?.behaviorOverrides, [{ output: "default.md" }]);
+		});
+	}
+
+	it("keeps explicit chain output disables empty when editing", () => {
+		let result: { behaviorOverrides: Array<{ output?: string | false } | undefined> } | undefined;
+		const component = new ChainClarifyComponent(
+			{ requestRender() {} },
+			{ fg(_key: string, text: string) { return text; } },
+			[{ name: "writer", description: "", systemPrompt: "", systemPromptMode: "replace", inheritProjectContext: false, inheritSkills: false, source: "user", filePath: "writer.md", output: "default.md" }],
+			["Task"], "Task", undefined,
+			[{ output: false, outputMode: "inline", reads: false, progress: false, skills: [], model: undefined }],
+			[], undefined, [], (value: unknown) => { result = value as typeof result; }, "chain",
+		);
+
+		component.handleInput("w");
+		component.handleInput("\x1b");
+		component.handleInput("\r");
+		assert.deepEqual(result?.behaviorOverrides, [{ output: false }]);
+	});
+
 	it("keeps the current model selected and preserves thinking when switching models", () => {
 		const component = new ChainClarifyComponent(
 			{ requestRender() {} },

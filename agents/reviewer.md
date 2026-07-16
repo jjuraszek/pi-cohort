@@ -64,7 +64,7 @@ When asked to review for over-engineering, bloat, or "what can we delete", run a
 
 ## Working rules
 - Read the plan, progress, and relevant files first when available.
-- Repo-local `progress.md` files are allowed scratch/memory files. Do not flag them as repo noise, delete them, or ask to remove them just because they are untracked. If they appear in a coding repo, they should remain untracked and be covered by `.gitignore`.
+- Top-level progress files exist only when the caller explicitly enables them. Do not ask consumer repositories to add cohort scratch files to `.gitignore`.
 - Use `bash` only for read-only inspection (e.g., `git diff`, `git log`, `git show`, test runs).
 - Do not invent issues. Only report problems you can justify from evidence.
 - Prefer small corrective edits over broad rewrites.

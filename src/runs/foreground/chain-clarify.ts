@@ -494,7 +494,7 @@ export class ChainClarifyComponent implements Component {
 			return;
 		}
 
-		if (data === "w" && this.mode !== 'parallel') {
+		if (data === "w") {
 			this.enterEditMode("output");
 			return;
 		}
@@ -504,11 +504,15 @@ export class ChainClarifyComponent implements Component {
 			return;
 		}
 
-		if (data === "p" && this.mode === 'chain') {
-			const anyEnabled = this.agentConfigs.some((_, i) => this.getEffectiveBehavior(i).progress);
-			const newState = !anyEnabled;
-			for (let i = 0; i < this.agentConfigs.length; i++) {
-				this.updateBehavior(i, "progress", newState);
+		if (data === "p" && this.mode !== 'single') {
+			if (this.mode === 'chain') {
+				const anyEnabled = this.agentConfigs.some((_, i) => this.getEffectiveBehavior(i).progress);
+				const newState = !anyEnabled;
+				for (let i = 0; i < this.agentConfigs.length; i++) {
+					this.updateBehavior(i, "progress", newState);
+				}
+			} else {
+				this.updateBehavior(this.selectedStep, "progress", !this.getEffectiveBehavior(this.selectedStep).progress);
 			}
 			this.tui.requestRender();
 			return;
@@ -532,7 +536,9 @@ export class ChainClarifyComponent implements Component {
 			buffer = template.split("\n")[0] ?? "";
 		} else if (mode === "output") {
 			const behavior = this.getEffectiveBehavior(this.selectedStep);
-			buffer = behavior.output === false ? "" : (behavior.output || "");
+			buffer = behavior.output === false
+				? (this.mode === "chain" ? "" : this.agentConfigs[this.selectedStep]?.output ?? "")
+				: (behavior.output || "");
 		} else if (mode === "reads") {
 			const behavior = this.getEffectiveBehavior(this.selectedStep);
 			buffer = behavior.reads === false ? "" : (behavior.reads?.join(", ") || "");
@@ -1108,7 +1114,7 @@ export class ChainClarifyComponent implements Component {
 			case 'single':
 				return ` [Enter] Run • [Esc] Cancel • e m t w s ${bgLabel} `;
 			case 'parallel':
-				return ` [Enter] Run • [Esc] Cancel • e m t s ${bgLabel} • ↑↓ Nav `;
+				return ` [Enter] Run • [Esc] Cancel • e m t w p s ${bgLabel} • ↑↓ Nav `;
 			case 'chain':
 				return ` [Enter] Run • [Esc] Cancel • e m t w r p s ${bgLabel} • ↑↓ Nav `;
 		}
@@ -1207,6 +1213,16 @@ export class ChainClarifyComponent implements Component {
 			lines.push(this.row(`     ${modelLabel}${truncateToWidth(modelValue, innerW - 13)}`));
 
 			const behavior = this.getEffectiveBehavior(i);
+			const writesValue = behavior.output === false
+				? th.fg("dim", "(disabled)")
+				: (behavior.output || th.fg("dim", "(none)"));
+			const writesLabel = th.fg("dim", "writes: ");
+			lines.push(this.row(`     ${writesLabel}${truncateToWidth(writesValue, innerW - 14)}`));
+
+			const progressValue = behavior.progress ? th.fg("success", "on") : th.fg("dim", "off");
+			const progressLabel = th.fg("dim", "progress: ");
+			lines.push(this.row(`     ${progressLabel}${progressValue}`));
+
 			const skillsValue = behavior.skills === false
 				? th.fg("dim", "(disabled)")
 				: (behavior.skills?.length ? behavior.skills.join(", ") : th.fg("dim", "(none)"));

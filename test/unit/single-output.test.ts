@@ -9,6 +9,7 @@ import {
 	formatSavedOutputReference,
 	injectSingleOutputInstruction,
 	normalizeSingleOutputOverride,
+	normalizeTopLevelOutput,
 	resolveSingleOutput,
 	resolveSingleOutputPath,
 	validateFileOnlyOutputMode,
@@ -40,6 +41,29 @@ describe("normalizeSingleOutputOverride", () => {
 		assert.equal(normalizeSingleOutputOverride("reports/out.md", "default.md"), "reports/out.md");
 		assert.equal(normalizeSingleOutputOverride("", "default.md"), undefined);
 		assert.equal(normalizeSingleOutputOverride(undefined, "default.md"), undefined);
+	});
+});
+
+describe("normalizeTopLevelOutput", () => {
+	it("normalizes top-level output truth table", () => {
+		const defaultOutput = "default.md";
+		const cases: Array<{ output: string | boolean | undefined; defaultOutput: string | undefined; expected: string | false }> = [
+			{ output: undefined, defaultOutput, expected: false },
+			{ output: "", defaultOutput, expected: false },
+			{ output: " \t\n", defaultOutput, expected: false },
+			{ output: false, defaultOutput, expected: false },
+			{ output: "false", defaultOutput, expected: false },
+			{ output: true, defaultOutput, expected: "default.md" },
+			{ output: "true", defaultOutput, expected: "default.md" },
+			{ output: true, defaultOutput: undefined, expected: false },
+			{ output: true, defaultOutput: "", expected: false },
+			{ output: "reports/out.md", defaultOutput, expected: "reports/out.md" },
+			{ output: " reports/out.md ", defaultOutput, expected: " reports/out.md " },
+		];
+
+		for (const { output, defaultOutput: configuredOutput, expected } of cases) {
+			assert.equal(normalizeTopLevelOutput(output, configuredOutput), expected);
+		}
 	});
 });
 

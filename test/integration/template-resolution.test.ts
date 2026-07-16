@@ -190,6 +190,18 @@ describe("resolveParallelBehaviors", { skip: !available ? "pi packages not avail
 
 		assert.equal(behaviors[0]?.output, false);
 	});
+
+	it("keeps namespaced output and agent read/progress defaults", () => {
+		const behaviors = resolveParallelBehaviors(
+			[{ agent: "reviewer", task: "Review" }],
+			[{ name: "reviewer", output: "report.md", defaultReads: ["input.md"], defaultProgress: true }],
+			2,
+		);
+
+		assert.equal(behaviors[0]?.output, path.join("parallel-2", "0-reviewer", "report.md"));
+		assert.deepEqual(behaviors[0]?.reads, ["input.md"]);
+		assert.equal(behaviors[0]?.progress, true);
+	});
 });
 
 describe("read-only progress suppression", { skip: !available ? "pi packages not available" : undefined }, () => {

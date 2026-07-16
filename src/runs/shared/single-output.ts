@@ -18,6 +18,15 @@ export function normalizeSingleOutputOverride(
 	return undefined;
 }
 
+export function normalizeTopLevelOutput(
+	output: string | boolean | undefined,
+	defaultOutput: string | undefined,
+): string | false {
+	if (output === undefined || (typeof output === "string" && output.trim().length === 0)) return false;
+	const normalizedOutput = normalizeSingleOutputOverride(output, defaultOutput);
+	return typeof normalizedOutput === "string" && normalizedOutput.trim().length === 0 ? false : normalizedOutput ?? false;
+}
+
 export function resolveSingleOutputPath(
 	output: string | boolean | undefined,
 	runtimeCwd: string,

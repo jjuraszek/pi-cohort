@@ -884,6 +884,96 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.equal(fs.readFileSync(outputPath, "utf-8"), "fresh assistant output");
 	});
 
+	it("keeps configured single output opt-in at the top-level", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+		const executor = makeExecutor([makeAgent("echo", { output: "default-report.md" })]);
+		mockPi.onCall({ output: "inline report" });
+
+		const omitted = await executor.execute(
+			"single-output-omitted",
+			{ agent: "echo", task: "Write report" },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+
+		assert.match(omitted.content[0]?.text ?? "", /inline report/);
+		assert.doesNotMatch(omitted.content[0]?.text ?? "", /Output saved to:/);
+		assert.equal(fs.existsSync(path.join(tempDir, "default-report.md")), false);
+		assert.doesNotMatch(readCallArgs().at(-1) ?? "", /Write your findings to:/);
+
+		mockPi.onCall({ output: "saved report" });
+		const explicit = await executor.execute(
+			"single-output-explicit",
+			{ agent: "echo", task: "Write report", output: true },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+
+		assert.match(explicit.content[0]?.text ?? "", /Output saved to:/);
+		assert.equal(fs.readFileSync(path.join(tempDir, "default-report.md"), "utf-8"), "saved report");
+
+		fs.unlinkSync(path.join(tempDir, "default-report.md"));
+		mockPi.onCall({ output: "whitespace inline report" });
+		const whitespace = await executor.execute(
+			"single-output-whitespace",
+			{ agent: "echo", task: "Write report", output: "   " },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+		assert.match(whitespace.content[0]?.text ?? "", /whitespace inline report/);
+		assert.equal(fs.existsSync(path.join(tempDir, "default-report.md")), false);
+		assert.doesNotMatch(readCallArgs().at(-1) ?? "", /Write your findings to:/);
+	});
+
+	it("passes disabled single output to clarify when top-level output is omitted", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+		mockPi.onCall({ output: "clarified inline report" });
+		const executor = makeExecutor([makeAgent("echo", { output: "default-report.md" })]);
+		let clarifyCalled = false;
+		const ctx = {
+			...makeMinimalCtx(tempDir),
+			hasUI: true,
+			ui: {
+				custom: async () => {
+					clarifyCalled = true;
+					return { confirmed: true, templates: ["Write report"], behaviorOverrides: [{}], runInBackground: false };
+				},
+			},
+		};
+
+		const result = await executor.execute("single-clarify-output-omitted", { agent: "echo", task: "Write report", clarify: true }, new AbortController().signal, undefined, ctx as any);
+
+		assert.equal(clarifyCalled, true);
+		assert.match(result.content[0]?.text ?? "", /clarified inline report/);
+		assert.equal(fs.existsSync(path.join(tempDir, "default-report.md")), false);
+		assert.doesNotMatch(readCallArgs().at(-1) ?? "", /Write your findings to:/);
+	});
+
+	it("executes clarify-selected single output overrides", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+		const outputPath = path.join(tempDir, "clarified-report.md");
+		mockPi.onCall({ output: "clarified saved report" });
+		const executor = makeExecutor();
+		const ctx = {
+			...makeMinimalCtx(tempDir),
+			hasUI: true,
+			ui: {
+				custom: async () => ({
+					confirmed: true,
+					templates: ["Write clarified report"],
+					behaviorOverrides: [{ output: outputPath }],
+					runInBackground: false,
+				}),
+			},
+		};
+
+		const result = await executor.execute("single-clarify-output-override", { agent: "echo", task: "Write report", clarify: true }, new AbortController().signal, undefined, ctx as any);
+
+		assert.equal(result.isError, undefined);
+		assert.equal(fs.readFileSync(outputPath, "utf-8"), "clarified saved report");
+		assert.ok((readCallArgs().at(-1) ?? "").includes(`Write your findings to: ${outputPath}`));
+	});
+
 	it("treats string false as disabled output in foreground single runs", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
 		mockPi.onCall({ output: "inline report" });
 		const executor = makeExecutor([makeAgent("echo", { output: "default-report.md" })]);

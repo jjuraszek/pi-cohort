@@ -17,6 +17,9 @@ interface SubagentParamsSchema {
 						minimum?: number;
 						description?: string;
 					};
+					output?: JsonSchemaNode;
+					reads?: JsonSchemaNode;
+					progress?: JsonSchemaNode;
 				};
 			};
 		};
@@ -132,11 +135,46 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		assert.equal(hasAnyOfArrayWithStringItems(readsSchema), true);
 		assert.equal(hasAnyOfType(readsSchema, "boolean"), true);
 		assert.equal(taskSchema?.progress?.type, "boolean");
+		assert.match(String(taskSchema?.progress?.description ?? ""), /omit.*false.*disable/i);
+		assert.match(String(taskSchema?.progress?.description ?? ""), /true.*enable/i);
 
 		const concurrencySchema = SubagentParams?.properties?.concurrency;
 		assert.ok(concurrencySchema, "concurrency schema should exist");
 		assert.equal(concurrencySchema.minimum, 1);
 		assert.match(String(concurrencySchema.description ?? ""), /parallel/i);
+	});
+
+	it("documents top-level output as opt-in", () => {
+		const outputSchema = SubagentParams?.properties?.output;
+		assert.ok(outputSchema, "top-level output schema should exist");
+		assert.equal(outputSchema.type, undefined);
+		assert.equal(hasAnyOfType(outputSchema, "string"), true);
+		assert.equal(hasAnyOfType(outputSchema, "boolean"), true);
+		const description = String(outputSchema.description ?? "");
+		assert.match(description, /omit.*false.*disable/i);
+		assert.match(description, /true.*agent-configured filename/i);
+		assert.match(description, /string.*path/i);
+	});
+
+	it("preserves chain output and progress contracts", () => {
+		const chainItem = SubagentParams?.properties?.chain?.items;
+		assert.ok(chainItem, "chain item schema should exist");
+		const assertChainArtifactFields = (properties: Record<string, JsonSchemaNode> | undefined) => {
+			const output = properties?.output;
+			assert.equal(output?.type, undefined);
+			assert.equal(hasAnyOfType(output, "string"), true);
+			assert.equal(hasAnyOfType(output, "boolean"), true);
+			assert.equal(output?.description, "Output filename/path (string), or false to disable file output");
+			assert.equal(properties?.progress?.type, "boolean");
+			assert.equal(properties?.progress?.description, "Enable progress.md tracking in {chain_dir}");
+		};
+
+		assertChainArtifactFields(chainItem.properties);
+		const parallelBranches = anyOfBranches(chainItem.properties?.parallel);
+		const staticParallel = parallelBranches.find((branch) => branch.type === "array");
+		assertChainArtifactFields((staticParallel?.items as { properties?: Record<string, JsonSchemaNode> } | undefined)?.properties);
+		const dynamicParallel = parallelBranches.find((branch) => branch.type === "object");
+		assertChainArtifactFields((dynamicParallel?.properties as Record<string, JsonSchemaNode> | undefined));
 	});
 
 	it("uses an enum for management and control actions", () => {

@@ -170,9 +170,9 @@ Important fields:
 | `inheritSkills` | Keeps or strips Pi's discovered skills catalog. |
 | `defaultContext` | Optional `fresh` or `fork` launch context default for this agent. |
 | `skills` | Injects specific skills directly, regardless of `inheritSkills`. |
-| `output` | Default single-agent output file. |
-| `defaultReads` | Files to read before running in chain/parallel behavior. |
-| `defaultProgress` | Maintain `progress.md`. |
+| `output` | Chain output default. Top-level single/parallel calls opt in with `output: true` or a path; Clarify edits also opt in for that invocation. |
+| `defaultReads` | Files to read before running in chain/parallel behavior. Omitted top-level parallel-task `reads` still inherit this default. |
+| `defaultProgress` | Chain progress default. Top-level parallel tasks opt in with `progress: true`; Clarify edits also opt in for that invocation. |
 | `completionGuard` | Set `false` only for non-implementation agents that may mention implementation words while using mutation-capable tools such as `bash`. |
 | `interactive` | Parsed for compatibility but not enforced in v1. |
 | `maxSubagentDepth` | Tightens nested delegation for this agent's children. |
@@ -242,7 +242,7 @@ Create an implementation plan based on {outputs.context}
 
 Each `.chain.md` `## agent-name` section is a step. Config lines such as `phase`, `label`, `as`, `outputSchema`, `output`, `outputMode`, `reads`, `model`, `skills`, and `progress` go immediately after the header. A blank line separates config from task text. In saved `.chain.md` files, `outputSchema` is a path to a JSON Schema file; direct tool calls and `.chain.json` files can pass the schema object inline.
 
-For `output`, `reads`, `skills`, and `progress`, chain behavior is three-state: omitted inherits from the agent, a value overrides, and `false` disables.
+For `output`, `reads`, `skills`, and `progress`, chain behavior is three-state: omitted inherits from the agent, a value overrides, and `false` disables. This chain inheritance is distinct from top-level execution: top-level single/parallel output is disabled until the call site or Clarify selects it, while top-level parallel progress is disabled until the call site or Clarify enables it; omitted top-level parallel-task `reads` still inherit `defaultReads`.
 
 Use `phase` to group related work in status output, `label` for a readable step name, and `as` to store a successful step or parallel task result for later `{outputs.name}` references. Duplicate `as` names, invalid identifiers, and unknown output references fail before child execution.
 
