@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [4.0.0] - 2026-07-16
 
 ### Changed
 - **BREAKING:** Foreground and async top-level single/parallel runs no longer inherit agent output defaults, and top-level parallel runs no longer inherit `defaultProgress`; output and parallel progress are opt-in per invocation. Chains retain their three-state inheritance semantics, and omitted top-level parallel-task `reads` still inherit `defaultReads`. Migrate callers with `output: true` (configured filename), `output: "path"` (explicit path), or `progress: true`.
