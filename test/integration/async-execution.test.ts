@@ -131,7 +131,7 @@ function writePackageSkill(packageRoot: string, skillName: string): void {
 	);
 }
 
-async function waitForAsyncResultFile(id: string, timeoutMs = 15_000): Promise<string> {
+async function waitForAsyncResultFile(id: string, timeoutMs = 30_000): Promise<string> {
 	const resultPath = path.join(RESULTS_DIR, `${id}.json`);
 	const deadline = Date.now() + timeoutMs;
 	while (!fs.existsSync(resultPath)) {
@@ -243,7 +243,8 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.match(singleResult.content[0]?.text ?? "", /Async: worker \[/);
 		assert.match(singleResult.content[0]?.text ?? "", /Do not run sleep timers or polling loops/);
 		assert.match(singleResult.content[0]?.text ?? "", /end your turn now/);
-		await waitForAsyncResultFile(singleId, 10_000);
+		// First detached spawn in the suite pays the cold jiti-transpile cost; give it a wide budget (slow Windows CI).
+		await waitForAsyncResultFile(singleId, 30_000);
 
 		mockPi.onCall({ output: "parallel one done" });
 		mockPi.onCall({ output: "parallel two done" });
@@ -257,7 +258,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.match(parallelResult.content[0]?.text ?? "", /Async parallel:/);
 		assert.match(parallelResult.content[0]?.text ?? "", /Do not run sleep timers or polling loops/);
 		assert.match(parallelResult.content[0]?.text ?? "", /Pi will deliver the completion/);
-		const parallelResultPath = await waitForAsyncResultFile(parallelId, 10_000);
+		const parallelResultPath = await waitForAsyncResultFile(parallelId, 30_000);
 		const parallelPayload = JSON.parse(fs.readFileSync(parallelResultPath, "utf-8")) as { agent?: string; mode?: string };
 		assert.equal(parallelPayload.mode, "parallel");
 		assert.equal(parallelPayload.agent, "parallel:worker+reviewer");
@@ -271,7 +272,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		});
 		assert.match(chainResult.content[0]?.text ?? "", /Async chain:/);
 		assert.match(chainResult.content[0]?.text ?? "", /Do not run sleep timers or polling loops/);
-		await waitForAsyncResultFile(chainId, 10_000);
+		await waitForAsyncResultFile(chainId, 30_000);
 	});
 
 	it("top-level async parallel conversion preserves output, reads, and progress", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
