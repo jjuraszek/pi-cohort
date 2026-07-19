@@ -65,6 +65,16 @@ function pidGone(): never {
 	throw error;
 }
 
+// The tracker drains/repairs jobs on an async poll loop; a fixed sleep races it and flakes on slow
+// CI (Windows). Poll the condition with a wide budget instead, then let the caller assert for a diagnostic.
+async function waitForCondition(predicate: () => boolean, timeoutMs = 5_000, intervalMs = 10): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (!predicate()) {
+		if (Date.now() >= deadline) return;
+		await new Promise((resolve) => setTimeout(resolve, intervalMs));
+	}
+}
+
 function createUiContext() {
 	const widgets: unknown[] = [];
 	let renderRequests = 0;
@@ -108,7 +118,7 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 			tracker.handleComplete({ id: "run-1", success: true });
 
 			assert.equal(state.asyncJobs.size, 1);
-			await new Promise((resolve) => setTimeout(resolve, 40));
+			await waitForCondition(() => state.asyncJobs.size === 0);
 
 			assert.equal(state.asyncJobs.size, 0);
 			assert.ok(ui.renderRequests > 0, "expected widget cleanup to request a rerender");
@@ -276,7 +286,7 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 			tracker.resetJobs(ui.ctx as never);
 			tracker.handleStarted({ id: "run-2", asyncDir: runDir, agent: "worker" });
 
-			await new Promise((resolve) => setTimeout(resolve, 80));
+			await waitForCondition(() => state.asyncJobs.size === 0);
 
 			assert.equal(state.asyncJobs.size, 0);
 			assert.ok(ui.renderRequests > 0, "expected polling cleanup to request a rerender");
@@ -315,7 +325,7 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 			tracker.resetJobs(ui.ctx as never);
 			tracker.handleStarted({ id: "run-stale", asyncDir: runDir, agent: "worker" });
 
-			await new Promise((resolve) => setTimeout(resolve, 80));
+			await waitForCondition(() => state.asyncJobs.size === 0);
 
 			assert.equal(state.asyncJobs.size, 0);
 			assert.equal(JSON.parse(fs.readFileSync(path.join(runDir, "status.json"), "utf-8")).state, "failed");
@@ -353,7 +363,7 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 				parallelGroups: [{ start: 0, count: 3, stepIndex: 0 }],
 			});
 
-			await new Promise((resolve) => setTimeout(resolve, 80));
+			await waitForCondition(() => state.asyncJobs.size === 0);
 
 			assert.equal(state.asyncJobs.size, 0);
 			const status = JSON.parse(fs.readFileSync(path.join(runDir, "status.json"), "utf-8"));
@@ -393,7 +403,7 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 			tracker.resetJobs(ui.ctx as never);
 			tracker.handleStarted({ id: "run-bad-status", asyncDir: runDir, agent: "worker" });
 
-			await new Promise((resolve) => setTimeout(resolve, 80));
+			await waitForCondition(() => state.asyncJobs.size === 0);
 
 			assert.equal(state.asyncJobs.size, 0);
 			assert.ok(ui.renderRequests > 0, "expected malformed status cleanup to request a rerender");
