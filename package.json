@@ -1,6 +1,6 @@
 {
   "name": "pi-cohort",
-  "version": "4.0.0",
+  "version": "4.1.0",
   "description": "Delegate Pi work to focused child agents: code review, scouting, implementation, parallel audits, saved chains, and background jobs.",
   "author": "Jacek Juraszek",
   "license": "MIT",
