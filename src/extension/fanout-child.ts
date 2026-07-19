@@ -11,7 +11,8 @@ import { deliverSubagentIntercomMessageEvent } from "../intercom/result-intercom
 import { resolveSubagentIntercomTarget } from "../intercom/intercom-bridge.ts";
 import { SubagentParams } from "./schemas.ts";
 import { loadConfig } from "./config.ts";
-import { type Details, type SubagentState } from "../shared/types.ts";
+import { deriveForwardedFlags } from "../runs/shared/forward-flags.ts";
+import type { Details, SubagentState } from "../shared/types.ts";
 
 function getSubagentSessionRoot(parentSessionFile: string | null): string {
 	if (parentSessionFile) {
@@ -148,6 +149,7 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 		getSubagentSessionRoot,
 		expandTilde,
 		discoverAgents,
+		forwardedFlags: deriveForwardedFlags(process.argv, config),
 		allowMutatingManagementActions: false,
 	});
 

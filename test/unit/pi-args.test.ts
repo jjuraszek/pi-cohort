@@ -405,3 +405,31 @@ describe("buildPiArgs system prompt mode wiring", () => {
 		assert.ok(args.includes("--system-prompt"));
 	});
 });
+
+describe("buildPiArgs forwarded flags", () => {
+	const base = { baseArgs: ["--mode", "json", "-p"], task: "hi", sessionEnabled: false, inheritProjectContext: false, inheritSkills: false };
+
+	it("appends forwarded flags after baseArgs when extensions inherit", () => {
+		const { args } = buildPiArgs({ ...base, forwardedFlags: ["--no-autofix"] });
+		assert.ok(args.includes("--no-autofix"));
+		assert.ok(args.indexOf("--no-autofix") < args.indexOf("--extension"));
+		assert.notEqual(args[args.length - 1], "--no-autofix");
+	});
+
+	it("drops forwarded flags when the agent restricts extensions", () => {
+		const { args } = buildPiArgs({ ...base, forwardedFlags: ["--no-autofix"], extensions: [] });
+		assert.ok(!args.includes("--no-autofix"));
+		assert.ok(args.includes("--no-extensions"));
+	});
+
+	it("preserves repeated --extension args (no whole-array dedup)", () => {
+		const { args } = buildPiArgs({ ...base, forwardedFlags: ["--no-autofix"], tools: ["subagent"] });
+		const extCount = args.filter((a) => a === "--extension").length;
+		assert.ok(extCount >= 2, "runtime + fanout extensions both present");
+	});
+
+	it("no-ops on empty/undefined forwardedFlags", () => {
+		const { args } = buildPiArgs({ ...base });
+		assert.ok(!args.includes("--no-autofix"));
+	});
+});

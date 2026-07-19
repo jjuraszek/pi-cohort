@@ -38,6 +38,7 @@ interface BuildPiArgsInput {
 	inheritSkills: boolean;
 	tools?: string[];
 	extensions?: string[];
+	forwardedFlags?: string[];
 	systemPrompt?: string | null;
 	cwd?: string;
 	promptFileStem?: string;
@@ -76,6 +77,11 @@ export function applyThinkingSuffix(model: string | undefined, thinking: string 
 
 export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 	const args = [...input.baseArgs];
+	// Forwarded flags are already name-deduped by deriveForwardedFlags; append only
+	// when the child inherits full extension discovery (extensions === undefined).
+	if (input.extensions === undefined && input.forwardedFlags?.length) {
+		args.push(...input.forwardedFlags);
+	}
 
 	if (input.sessionFile) {
 		fs.mkdirSync(path.dirname(input.sessionFile), { recursive: true });

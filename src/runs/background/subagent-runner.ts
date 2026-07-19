@@ -97,6 +97,7 @@ interface SubagentRunConfig {
 	sessionId?: string | null;
 	piPackageRoot?: string;
 	piArgv1?: string;
+	forwardedFlags?: string[];
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;
 	controlConfig?: ResolvedControlConfig;
@@ -574,6 +575,7 @@ interface SingleStepContext {
 	outputFile: string;
 	piPackageRoot?: string;
 	piArgv1?: string;
+	forwardedFlags?: string[];
 	registerInterrupt?: (interrupt: (() => void) | undefined) => void;
 	childIntercomTarget?: string;
 	orchestratorIntercomTarget?: string;
@@ -677,6 +679,7 @@ async function runSingleStep(
 			parentRootRunId: ctx.nestedRoute?.rootRunId,
 			parentCapabilityToken: ctx.nestedRoute?.capabilityToken,
 			structuredOutput: effectiveStructuredOutput,
+			forwardedFlags: ctx.forwardedFlags,
 		});
 		const run = await runPiStreaming(
 			args,
@@ -1610,6 +1613,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					outputFile: path.join(asyncDir, `output-${fi}.log`),
 					piPackageRoot: config.piPackageRoot,
 					piArgv1: config.piArgv1,
+					forwardedFlags: config.forwardedFlags,
 					childIntercomTarget: config.childIntercomTargets?.[fi],
 					orchestratorIntercomTarget: config.controlIntercomTarget,
 					nestedRoute: config.nestedRoute,
@@ -1857,6 +1861,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 							outputFile: path.join(asyncDir, `output-${fi}.log`),
 							piPackageRoot: config.piPackageRoot,
 							piArgv1: config.piArgv1,
+							forwardedFlags: config.forwardedFlags,
 							childIntercomTarget: config.childIntercomTargets?.[fi],
 							orchestratorIntercomTarget: config.controlIntercomTarget,
 							nestedRoute: config.nestedRoute,
@@ -2024,6 +2029,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				outputFile: path.join(asyncDir, `output-${flatIndex}.log`),
 				piPackageRoot: config.piPackageRoot,
 				piArgv1: config.piArgv1,
+				forwardedFlags: config.forwardedFlags,
 				childIntercomTarget: config.childIntercomTargets?.[flatIndex],
 				orchestratorIntercomTarget: config.controlIntercomTarget,
 				nestedRoute: config.nestedRoute,

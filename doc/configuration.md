@@ -68,6 +68,16 @@ Controls nested delegation when no inherited `PI_SUBAGENT_MAX_DEPTH` is already 
 
 At each interactive session start, prints a `[Subagents]` roster into chat listing discovered persona names grouped by effective scope (`builtin` / `user` / `project`) plus any `chains`, mirroring pi's own `[Skills]` / `[Prompts]` / `[Themes]` startup banner. Names are deduped by precedence: a persona shadowed by a higher scope (project > user > builtin) is listed only once, in its effective scope. Defaults to enabled; set to `false` to suppress. No effect in non-interactive (headless/child) runs.
 
+## `forwardParentFlags`
+
+```json
+{ "forwardParentFlags": false }
+```
+
+Parent extension CLI flags are forwarded into spawned children by default: whatever extension flags you launched `pi` with (for example `--no-autofix` from pi-lens) are re-applied to every subagent child, across foreground, sync-background, and detached-async dispatch, at any nesting depth. Flags are derived from the parent's own argv by mirroring pi's argument parser: pi *core* flags (`--model`, `--mode`, `--system-prompt`, `--session*`, `-p`, `--extension`, ...) are never forwarded - only extension flags are. Forwarding is skipped silently when the parent was launched with `--extension`/`-e`/`--no-extensions`, or when the dispatched agent restricts its own extensions, because the child would not load the flag's owning extension. Defaults to enabled; set to `false` to disable entirely.
+
+Caveat: if a child runs with a `cwd` in a different project whose *project-scoped* extension owns a forwarded flag, the child can fail to start on the unknown flag. User-scoped extensions (e.g. pi-lens) load regardless of `cwd` and are unaffected; set `forwardParentFlags: false` if the cross-project case bites.
+
 ## `intercomBridge`
 
 ```json
@@ -108,3 +118,14 @@ stdin is a JSON object with `repoRoot`, `worktreePath`, `agentCwd`, `branch`, `i
 ```
 
 `syntheticPaths` must be relative to the worktree root. They are removed before diff capture so helper files do not pollute patches. Tracked files are never excluded; marking a tracked path as synthetic fails setup. Default timeout is `30000` ms. See [orchestration-patterns.md](orchestration-patterns.md#worktree-isolation).
+
+## Manually verifying flag forwarding
+
+The automated tests prove a forwarded flag reaches the child's argv. This manual check proves the flag actually takes effect in a real child - it requires pi-lens installed and a live model.
+
+1. Launch pi in this repo with `pi --no-autofix`.
+2. Ask it to dispatch a subagent that edits a Markdown file containing a loosely-formatted table (one that pi-lens autofix would normally re-pad).
+3. Confirm the child leaves the table untouched, i.e. the child inherited `--no-autofix`.
+4. As a control, repeat without `--no-autofix` and confirm the child DOES re-pad.
+
+To disable forwarding entirely, set the `forwardParentFlags` setting above to `false`.

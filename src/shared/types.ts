@@ -796,6 +796,8 @@ export interface RunSyncOptions {
 	outputMode?: OutputMode;
 	maxSubagentDepth?: number;
 	nestedRoute?: NestedRouteInfo;
+	/** Parent extension flags to forward into the child (already derived; empty = none). */
+	forwardedFlags?: string[];
 	/** Override the agent's default model (format: "provider/id" or just "id") */
 	modelOverride?: string;
 	/** Registry models available for heuristic bare-model resolution */
@@ -849,6 +851,8 @@ export interface ExtensionConfig {
 	intercomBridge?: IntercomBridgeConfig;
 	/** Print a roster of discovered subagents/chains into chat at session start. Default: true. */
 	showRosterOnStart?: boolean;
+	/** Forward the parent pi's extension CLI flags (e.g. --no-autofix) into spawned children. Default: true. */
+	forwardParentFlags?: boolean;
 }
 
 // ============================================================================

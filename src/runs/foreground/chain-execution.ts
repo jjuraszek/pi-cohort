@@ -136,6 +136,7 @@ interface ParallelChainRunInput {
 	worktreeSetup?: WorktreeSetup;
 	maxSubagentDepth: number;
 	nestedRoute?: NestedRouteInfo;
+	forwardedFlags?: string[];
 }
 
 function buildChainExecutionDetails(input: ChainExecutionDetailsInput): Details {
@@ -290,6 +291,7 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 				structuredOutput: structuredRuntime,
 				acceptance: task.acceptance,
 				acceptanceContext: { mode: "chain" },
+				forwardedFlags: input.forwardedFlags,
 				onUpdate: input.onUpdate
 					? (progressUpdate) => {
 						const stepResults = progressUpdate.details?.results || [];
@@ -392,6 +394,7 @@ interface ChainExecutionParams {
 	nestedRoute?: NestedRouteInfo;
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;
+	forwardedFlags?: string[];
 }
 
 interface ChainExecutionResult {
@@ -644,6 +647,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					cwd,
 					runId,
 					globalTaskIndex,
+					forwardedFlags: params.forwardedFlags,
 					sessionDirForIndex,
 					sessionFileForIndex,
 					shareEnabled,
@@ -850,6 +854,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				cwd,
 				runId,
 				globalTaskIndex,
+				forwardedFlags: params.forwardedFlags,
 				sessionDirForIndex,
 				sessionFileForIndex,
 				shareEnabled,
@@ -1062,6 +1067,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				artifactConfig,
 				outputPath,
 				outputMode: behavior.outputMode,
+				forwardedFlags: params.forwardedFlags,
 				maxSubagentDepth,
 				controlConfig,
 				onControlEvent,

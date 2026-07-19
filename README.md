@@ -117,6 +117,8 @@ Full reference: agent/chain authoring in [doc/agents-and-chains.md](doc/agents-a
 
 Most installs need zero configuration. Full env/JSON reference: [doc/configuration.md](doc/configuration.md).
 
+Parent extension CLI flags (e.g. pi-lens's `--no-autofix`) are forwarded into spawned children by default, so subagents inherit the same tooling behavior you launched with; toggle with [`forwardParentFlags`](doc/configuration.md#forwardparentflags).
+
 Optional companions:
 
 - [pi-intercom](https://github.com/jjuraszek/pi-intercom) - lets a blocked child ask the parent a question instead of guessing. [doc/skills-and-companions.md](doc/skills-and-companions.md#optional-pi-intercom-companion)

@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **Forward parent pi CLI flags into children.** Extension flags the parent `pi` was launched with (e.g. pi-lens's `--no-autofix`) are now auto-forwarded into spawned children - foreground, sync-background, and detached-async, at any nesting depth - derived universally from the parent's argv. Pi core flags are never forwarded. Opt out with `forwardParentFlags: false`. ([#2](https://github.com/jjuraszek/pi-cohort/issues/2))
+
 ## [4.0.0] - 2026-07-16
 
 ### Changed

@@ -179,6 +179,7 @@ async function runSingleAttempt(
 			parentRootRunId: options.nestedRoute?.rootRunId,
 			parentCapabilityToken: options.nestedRoute?.capabilityToken,
 			structuredOutput: options.structuredOutput,
+			forwardedFlags: options.forwardedFlags,
 		});
 
 	const result: SingleResult = {

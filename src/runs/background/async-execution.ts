@@ -120,6 +120,7 @@ interface AsyncChainParams {
 	controlIntercomTarget?: string;
 	childIntercomTarget?: (agent: string, index: number) => string | undefined;
 	nestedRoute?: NestedRouteInfo;
+	forwardedFlags?: string[];
 	acceptance?: AcceptanceInput;
 }
 
@@ -147,6 +148,7 @@ interface AsyncSingleParams {
 	controlIntercomTarget?: string;
 	childIntercomTarget?: (agent: string, index: number) => string | undefined;
 	nestedRoute?: NestedRouteInfo;
+	forwardedFlags?: string[];
 	acceptance?: AcceptanceInput;
 }
 
@@ -249,6 +251,7 @@ export function executeAsyncChain(
 		controlIntercomTarget,
 		childIntercomTarget,
 		nestedRoute,
+		forwardedFlags,
 	} = params;
 	const resultMode = params.resultMode ?? "chain";
 	const chainSkills = params.chainSkills ?? [];
@@ -481,6 +484,7 @@ export function executeAsyncChain(
 				sessionId: ctx.currentSessionId,
 				piPackageRoot,
 				piArgv1: process.argv[1],
+				forwardedFlags,
 				worktreeSetupHook,
 				worktreeSetupHookTimeoutMs,
 				controlConfig,
@@ -629,6 +633,7 @@ export function executeAsyncSingle(
 		controlIntercomTarget,
 		childIntercomTarget,
 		nestedRoute,
+		forwardedFlags,
 	} = params;
 	const task = params.task ?? "";
 	const runnerCwd = resolveChildCwd(ctx.cwd, cwd);
@@ -716,6 +721,7 @@ export function executeAsyncSingle(
 				sessionId: ctx.currentSessionId,
 				piPackageRoot,
 				piArgv1: process.argv[1],
+				forwardedFlags,
 				worktreeSetupHook,
 				worktreeSetupHookTimeoutMs,
 				controlConfig,

@@ -145,6 +145,7 @@ interface ExecutorDeps {
 	pi: ExtensionAPI;
 	state: SubagentState;
 	config: ExtensionConfig;
+	forwardedFlags: string[];
 	asyncByDefault: boolean;
 	tempArtifactsDir: string;
 	getSubagentSessionRoot: (parentSessionFile: string | null) => string;
@@ -665,6 +666,7 @@ async function resumeAsyncRun(input: {
 		controlIntercomTarget: intercomBridge.active ? intercomBridge.orchestratorTarget : undefined,
 		childIntercomTarget: intercomBridge.active ? (agent, index) => resolveSubagentIntercomTarget(runId, agent, index) : undefined,
 		availableModels,
+		forwardedFlags: input.deps.forwardedFlags,
 	});
 	if (result.isError) return result;
 
@@ -1133,6 +1135,7 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): AgentTool
 			controlIntercomTarget,
 			childIntercomTarget,
 			nestedRoute,
+			forwardedFlags: deps.forwardedFlags,
 		});
 	}
 
@@ -1162,6 +1165,7 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): AgentTool
 			controlIntercomTarget,
 			childIntercomTarget,
 			nestedRoute,
+			forwardedFlags: deps.forwardedFlags,
 		});
 	}
 
@@ -1205,6 +1209,7 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): AgentTool
 			childIntercomTarget: childIntercomTarget ? (agent, index) => childIntercomTarget(agent, index) : undefined,
 			nestedRoute,
 			acceptance: params.acceptance,
+			forwardedFlags: deps.forwardedFlags,
 		});
 	}
 
@@ -1264,6 +1269,7 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 		maxSubagentDepth: currentMaxSubagentDepth,
 		worktreeSetupHook: deps.config.worktreeSetupHook,
 		worktreeSetupHookTimeoutMs: deps.config.worktreeSetupHookTimeoutMs,
+		forwardedFlags: deps.forwardedFlags,
 	});
 
 	if (chainResult.requestedAsync) {
@@ -1304,6 +1310,7 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 			controlIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
 			childIntercomTarget: data.intercomBridge.active ? (agent, index) => resolveSubagentIntercomTarget(id, agent, index) : undefined,
 			nestedRoute: data.nestedRoute,
+			forwardedFlags: deps.forwardedFlags,
 		});
 	}
 
@@ -1363,6 +1370,7 @@ interface ForegroundParallelRunInput {
 	liveProgress: (AgentProgress | undefined)[];
 	onUpdate?: (r: AgentToolResult<Details>) => void;
 	worktreeSetup?: WorktreeSetup;
+	forwardedFlags?: string[];
 }
 
 function buildParallelModeError(message: string): AgentToolResult<Details> {
@@ -1523,6 +1531,7 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 			skills: effectiveSkills === false ? [] : effectiveSkills,
 			acceptance: task.acceptance,
 			acceptanceContext: { mode: "parallel" },
+			forwardedFlags: input.forwardedFlags,
 				onUpdate: input.onUpdate
 					? (progressUpdate) => {
 						const stepResults = progressUpdate.details?.results || [];
@@ -1735,6 +1744,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 				controlConfig,
 				controlIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
 				childIntercomTarget: data.intercomBridge.active ? (agent, index) => resolveSubagentIntercomTarget(id, agent, index) : undefined,
+				forwardedFlags: deps.forwardedFlags,
 			});
 		}
 	}
@@ -1818,6 +1828,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 			liveProgress,
 			onUpdate: onUpdateWithCost,
 			worktreeSetup,
+			forwardedFlags: deps.forwardedFlags,
 		});
 		if (foregroundControl) updateForegroundNestedProjection(foregroundControl);
 		recordSyncCost(deps.state.grandTotal, runId, results.reduce((sum, r) => sum + r.usage.cost, 0) + sumNestedCost(foregroundControl?.nestedChildren));
@@ -2013,6 +2024,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 				controlConfig,
 				controlIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
 				childIntercomTarget: data.intercomBridge.active ? (agent, index) => resolveSubagentIntercomTarget(id, agent, index) : undefined,
+				forwardedFlags: deps.forwardedFlags,
 			});
 		}
 	}
@@ -2101,6 +2113,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		skills: effectiveSkills,
 		acceptance: params.acceptance,
 		acceptanceContext: { mode: "single" },
+		forwardedFlags: deps.forwardedFlags,
 	});
 	if (foregroundControl?.currentIndex === 0) {
 		foregroundControl.interrupt = undefined;
