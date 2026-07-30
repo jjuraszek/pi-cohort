@@ -172,24 +172,18 @@ describe("parent flag forwarding", { skip: !available ? "pi packages not availab
 	it("derivation composes with runSync end-to-end (real deriveForwardedFlags -> child argv)", async () => {
 		mockPi.onCall({ output: "ok" });
 		const agents = makeAgentConfigs(["echo"]);
-		const savedArgv = process.argv;
-		try {
-			process.argv = ["/node", "/pi", "--no-autofix", "--model", "x/y"];
-			const derived = deriveForwardedFlags(process.argv, {});
-			assert.deepEqual(derived, ["--no-autofix"]);
+		const derived = deriveForwardedFlags(["/node", "/pi", "--no-autofix", "--model", "x/y"], {});
+		assert.deepEqual(derived, ["--no-autofix"]);
 
-			const result = await runSync!(tempDir, agents, "echo", "do it", {
-				runId: "fwd-derive",
-				forwardedFlags: derived,
-			});
+		const result = await runSync!(tempDir, agents, "echo", "do it", {
+			runId: "fwd-derive",
+			forwardedFlags: derived,
+		});
 
-			assert.equal(result.exitCode, 0);
-			const args = readCallArgs();
-			assert.ok(args.includes("--no-autofix"));
-			assert.ok(!args.includes("--model"));
-		} finally {
-			process.argv = savedArgv;
-		}
+		assert.equal(result.exitCode, 0);
+		const args = readCallArgs();
+		assert.ok(args.includes("--no-autofix"));
+		assert.ok(!args.includes("--model"));
 	});
 
 	it("kill-switch: forwardParentFlags:false yields no forwarded flags end-to-end", async () => {
