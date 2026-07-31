@@ -1446,7 +1446,8 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		});
 
 		const statusPath = path.join(asyncDir, "status.json");
-		const doneDeadline = Date.now() + 10_000;
+		// Detached runner + two parallel child spawns can exceed 10s on slow Windows CI.
+		const doneDeadline = Date.now() + 30_000;
 		let sawRunningTool = false;
 		let invariantViolated = false;
 		while (!fs.existsSync(resultPath) && Date.now() < doneDeadline) {
