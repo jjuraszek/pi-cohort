@@ -534,6 +534,17 @@ Write
 		});
 	});
 
+	it("/chain dispatches with clarify: false", async () => {
+		await withTempProject("pi-chain-clarify-", async (root) => {
+			const { params } = await captureSlashCommandParams("chain", 'scout "Scan the diff" -> reviewer', root);
+			const chainParams = params as { chain?: Array<{ agent?: string }>; clarify?: boolean; agentScope?: string };
+
+			assert.deepEqual(chainParams.chain?.map(({ agent }) => agent), ["scout", "reviewer"]);
+			assert.equal(chainParams.clarify, false);
+			assert.equal(chainParams.agentScope, "both");
+		});
+	});
+
 	it("/run-chain launches a saved chain with a shared task", async () => {
 		await withTempProject("pi-run-chain-success-", async (root) => {
 			writeProjectChain(root, "review-flow.chain.md", `---

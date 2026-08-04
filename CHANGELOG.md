@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- **BREAKING:** Programmatic chains now launch directly when `clarify` is omitted. Pass `clarify: true` to keep the foreground preview/edit flow.
+
 ## [4.1.0] - 2026-07-19
 
 ### Added
