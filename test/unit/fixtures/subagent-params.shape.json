@@ -139,157 +139,13 @@
 								]
 							},
 							{
-								"const": false
-							},
-							{
 								"type": "object",
+								"additionalProperties": true,
 								"properties": {
 									"level": {
-										"type": "string",
-										"enum": [
-											"auto",
-											"none",
-											"attested",
-											"checked",
-											"verified",
-											"reviewed"
-										]
-									},
-									"criteria": {
-										"type": "array",
-										"items": {
-											"anyOf": [
-												{
-													"type": "string"
-												},
-												{
-													"type": "object",
-													"required": [
-														"id",
-														"must"
-													],
-													"properties": {
-														"id": {
-															"type": "string"
-														},
-														"must": {
-															"type": "string"
-														},
-														"evidence": {
-															"type": "array",
-															"items": {
-																"type": "string",
-																"enum": [
-																	"changed-files",
-																	"tests-added",
-																	"commands-run",
-																	"validation-output",
-																	"residual-risks",
-																	"no-staged-files",
-																	"diff-summary",
-																	"review-findings",
-																	"manual-notes"
-																]
-															}
-														},
-														"severity": {
-															"type": "string",
-															"enum": [
-																"required",
-																"recommended"
-															]
-														}
-													},
-													"additionalProperties": false
-												}
-											]
-										}
-									},
-									"evidence": {
-										"type": "array",
-										"items": {
-											"type": "string",
-											"enum": [
-												"changed-files",
-												"tests-added",
-												"commands-run",
-												"validation-output",
-												"residual-risks",
-												"no-staged-files",
-												"diff-summary",
-												"review-findings",
-												"manual-notes"
-											]
-										}
-									},
-									"verify": {
-										"type": "array",
-										"items": {
-											"type": "object",
-											"required": [
-												"id",
-												"command"
-											],
-											"properties": {
-												"id": {
-													"type": "string"
-												},
-												"command": {
-													"type": "string"
-												},
-												"timeoutMs": {
-													"type": "integer",
-													"minimum": 1
-												},
-												"cwd": {
-													"type": "string"
-												},
-												"env": {
-													"type": "object",
-													"additionalProperties": {
-														"type": "string"
-													}
-												},
-												"allowFailure": {
-													"type": "boolean"
-												}
-											},
-											"additionalProperties": false
-										}
-									},
-									"review": {
-										"anyOf": [
-											{
-												"const": false
-											},
-											{
-												"type": "object",
-												"properties": {
-													"agent": {
-														"type": "string"
-													},
-													"focus": {
-														"type": "string"
-													},
-													"required": {
-														"type": "boolean"
-													}
-												},
-												"additionalProperties": false
-											}
-										]
-									},
-									"stopRules": {
-										"type": "array",
-										"items": {
-											"type": "string"
-										}
-									},
-									"reason": {
 										"type": "string"
 									}
-								},
-								"additionalProperties": false
+								}
 							}
 						]
 					}
@@ -363,6 +219,9 @@
 					"progress": {
 						"type": "boolean"
 					},
+					"model": {
+						"type": "string"
+					},
 					"skill": {
 						"anyOf": [
 							{
@@ -379,9 +238,6 @@
 							}
 						]
 					},
-					"model": {
-						"type": "string"
-					},
 					"acceptance": {
 						"anyOf": [
 							{
@@ -396,157 +252,13 @@
 								]
 							},
 							{
-								"const": false
-							},
-							{
 								"type": "object",
+								"additionalProperties": true,
 								"properties": {
 									"level": {
-										"type": "string",
-										"enum": [
-											"auto",
-											"none",
-											"attested",
-											"checked",
-											"verified",
-											"reviewed"
-										]
-									},
-									"criteria": {
-										"type": "array",
-										"items": {
-											"anyOf": [
-												{
-													"type": "string"
-												},
-												{
-													"type": "object",
-													"required": [
-														"id",
-														"must"
-													],
-													"properties": {
-														"id": {
-															"type": "string"
-														},
-														"must": {
-															"type": "string"
-														},
-														"evidence": {
-															"type": "array",
-															"items": {
-																"type": "string",
-																"enum": [
-																	"changed-files",
-																	"tests-added",
-																	"commands-run",
-																	"validation-output",
-																	"residual-risks",
-																	"no-staged-files",
-																	"diff-summary",
-																	"review-findings",
-																	"manual-notes"
-																]
-															}
-														},
-														"severity": {
-															"type": "string",
-															"enum": [
-																"required",
-																"recommended"
-															]
-														}
-													},
-													"additionalProperties": false
-												}
-											]
-										}
-									},
-									"evidence": {
-										"type": "array",
-										"items": {
-											"type": "string",
-											"enum": [
-												"changed-files",
-												"tests-added",
-												"commands-run",
-												"validation-output",
-												"residual-risks",
-												"no-staged-files",
-												"diff-summary",
-												"review-findings",
-												"manual-notes"
-											]
-										}
-									},
-									"verify": {
-										"type": "array",
-										"items": {
-											"type": "object",
-											"required": [
-												"id",
-												"command"
-											],
-											"properties": {
-												"id": {
-													"type": "string"
-												},
-												"command": {
-													"type": "string"
-												},
-												"timeoutMs": {
-													"type": "integer",
-													"minimum": 1
-												},
-												"cwd": {
-													"type": "string"
-												},
-												"env": {
-													"type": "object",
-													"additionalProperties": {
-														"type": "string"
-													}
-												},
-												"allowFailure": {
-													"type": "boolean"
-												}
-											},
-											"additionalProperties": false
-										}
-									},
-									"review": {
-										"anyOf": [
-											{
-												"const": false
-											},
-											{
-												"type": "object",
-												"properties": {
-													"agent": {
-														"type": "string"
-													},
-													"focus": {
-														"type": "string"
-													},
-													"required": {
-														"type": "boolean"
-													}
-												},
-												"additionalProperties": false
-											}
-										]
-									},
-									"stopRules": {
-										"type": "array",
-										"items": {
-											"type": "string"
-										}
-									},
-									"reason": {
 										"type": "string"
 									}
-								},
-								"additionalProperties": false
+								}
 							}
 						]
 					},
@@ -619,6 +331,9 @@
 										"progress": {
 											"type": "boolean"
 										},
+										"model": {
+											"type": "string"
+										},
 										"skill": {
 											"anyOf": [
 												{
@@ -635,9 +350,6 @@
 												}
 											]
 										},
-										"model": {
-											"type": "string"
-										},
 										"acceptance": {
 											"anyOf": [
 												{
@@ -652,157 +364,13 @@
 													]
 												},
 												{
-													"const": false
-												},
-												{
 													"type": "object",
+													"additionalProperties": true,
 													"properties": {
 														"level": {
-															"type": "string",
-															"enum": [
-																"auto",
-																"none",
-																"attested",
-																"checked",
-																"verified",
-																"reviewed"
-															]
-														},
-														"criteria": {
-															"type": "array",
-															"items": {
-																"anyOf": [
-																	{
-																		"type": "string"
-																	},
-																	{
-																		"type": "object",
-																		"required": [
-																			"id",
-																			"must"
-																		],
-																		"properties": {
-																			"id": {
-																				"type": "string"
-																			},
-																			"must": {
-																				"type": "string"
-																			},
-																			"evidence": {
-																				"type": "array",
-																				"items": {
-																					"type": "string",
-																					"enum": [
-																						"changed-files",
-																						"tests-added",
-																						"commands-run",
-																						"validation-output",
-																						"residual-risks",
-																						"no-staged-files",
-																						"diff-summary",
-																						"review-findings",
-																						"manual-notes"
-																					]
-																				}
-																			},
-																			"severity": {
-																				"type": "string",
-																				"enum": [
-																					"required",
-																					"recommended"
-																				]
-																			}
-																		},
-																		"additionalProperties": false
-																	}
-																]
-															}
-														},
-														"evidence": {
-															"type": "array",
-															"items": {
-																"type": "string",
-																"enum": [
-																	"changed-files",
-																	"tests-added",
-																	"commands-run",
-																	"validation-output",
-																	"residual-risks",
-																	"no-staged-files",
-																	"diff-summary",
-																	"review-findings",
-																	"manual-notes"
-																]
-															}
-														},
-														"verify": {
-															"type": "array",
-															"items": {
-																"type": "object",
-																"required": [
-																	"id",
-																	"command"
-																],
-																"properties": {
-																	"id": {
-																		"type": "string"
-																	},
-																	"command": {
-																		"type": "string"
-																	},
-																	"timeoutMs": {
-																		"type": "integer",
-																		"minimum": 1
-																	},
-																	"cwd": {
-																		"type": "string"
-																	},
-																	"env": {
-																		"type": "object",
-																		"additionalProperties": {
-																			"type": "string"
-																		}
-																	},
-																	"allowFailure": {
-																		"type": "boolean"
-																	}
-																},
-																"additionalProperties": false
-															}
-														},
-														"review": {
-															"anyOf": [
-																{
-																	"const": false
-																},
-																{
-																	"type": "object",
-																	"properties": {
-																		"agent": {
-																			"type": "string"
-																		},
-																		"focus": {
-																			"type": "string"
-																		},
-																		"required": {
-																			"type": "boolean"
-																		}
-																	},
-																	"additionalProperties": false
-																}
-															]
-														},
-														"stopRules": {
-															"type": "array",
-															"items": {
-																"type": "string"
-															}
-														},
-														"reason": {
 															"type": "string"
 														}
-													},
-													"additionalProperties": false
+													}
 												}
 											]
 										}
@@ -868,6 +436,9 @@
 									"progress": {
 										"type": "boolean"
 									},
+									"model": {
+										"type": "string"
+									},
 									"skill": {
 										"anyOf": [
 											{
@@ -884,9 +455,6 @@
 											}
 										]
 									},
-									"model": {
-										"type": "string"
-									},
 									"acceptance": {
 										"anyOf": [
 											{
@@ -901,157 +469,13 @@
 												]
 											},
 											{
-												"const": false
-											},
-											{
 												"type": "object",
+												"additionalProperties": true,
 												"properties": {
 													"level": {
-														"type": "string",
-														"enum": [
-															"auto",
-															"none",
-															"attested",
-															"checked",
-															"verified",
-															"reviewed"
-														]
-													},
-													"criteria": {
-														"type": "array",
-														"items": {
-															"anyOf": [
-																{
-																	"type": "string"
-																},
-																{
-																	"type": "object",
-																	"required": [
-																		"id",
-																		"must"
-																	],
-																	"properties": {
-																		"id": {
-																			"type": "string"
-																		},
-																		"must": {
-																			"type": "string"
-																		},
-																		"evidence": {
-																			"type": "array",
-																			"items": {
-																				"type": "string",
-																				"enum": [
-																					"changed-files",
-																					"tests-added",
-																					"commands-run",
-																					"validation-output",
-																					"residual-risks",
-																					"no-staged-files",
-																					"diff-summary",
-																					"review-findings",
-																					"manual-notes"
-																				]
-																			}
-																		},
-																		"severity": {
-																			"type": "string",
-																			"enum": [
-																				"required",
-																				"recommended"
-																			]
-																		}
-																	},
-																	"additionalProperties": false
-																}
-															]
-														}
-													},
-													"evidence": {
-														"type": "array",
-														"items": {
-															"type": "string",
-															"enum": [
-																"changed-files",
-																"tests-added",
-																"commands-run",
-																"validation-output",
-																"residual-risks",
-																"no-staged-files",
-																"diff-summary",
-																"review-findings",
-																"manual-notes"
-															]
-														}
-													},
-													"verify": {
-														"type": "array",
-														"items": {
-															"type": "object",
-															"required": [
-																"id",
-																"command"
-															],
-															"properties": {
-																"id": {
-																	"type": "string"
-																},
-																"command": {
-																	"type": "string"
-																},
-																"timeoutMs": {
-																	"type": "integer",
-																	"minimum": 1
-																},
-																"cwd": {
-																	"type": "string"
-																},
-																"env": {
-																	"type": "object",
-																	"additionalProperties": {
-																		"type": "string"
-																	}
-																},
-																"allowFailure": {
-																	"type": "boolean"
-																}
-															},
-															"additionalProperties": false
-														}
-													},
-													"review": {
-														"anyOf": [
-															{
-																"const": false
-															},
-															{
-																"type": "object",
-																"properties": {
-																	"agent": {
-																		"type": "string"
-																	},
-																	"focus": {
-																		"type": "string"
-																	},
-																	"required": {
-																		"type": "boolean"
-																	}
-																},
-																"additionalProperties": false
-															}
-														]
-													},
-													"stopRules": {
-														"type": "array",
-														"items": {
-															"type": "string"
-														}
-													},
-													"reason": {
 														"type": "string"
 													}
-												},
-												"additionalProperties": false
+												}
 											}
 										]
 									}
@@ -1358,33 +782,9 @@
 											},
 											"must": {
 												"type": "string"
-											},
-											"evidence": {
-												"type": "array",
-												"items": {
-													"type": "string",
-													"enum": [
-														"changed-files",
-														"tests-added",
-														"commands-run",
-														"validation-output",
-														"residual-risks",
-														"no-staged-files",
-														"diff-summary",
-														"review-findings",
-														"manual-notes"
-													]
-												}
-											},
-											"severity": {
-												"type": "string",
-												"enum": [
-													"required",
-													"recommended"
-												]
 											}
 										},
-										"additionalProperties": false
+										"additionalProperties": true
 									}
 								]
 							}

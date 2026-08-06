@@ -276,4 +276,32 @@ describe("acceptance gates", () => {
 		assert.deepEqual(validateAcceptanceInput({ level: "none" }), ["acceptance.reason is required when level is none."]);
 		assert.deepEqual(validateAcceptanceInput({ verify: [{ id: "missing-command" }] }), ["acceptance.verify[0].command is required."]);
 	});
+
+	it("rejects unrecognized acceptance fields", () => {
+		assert.deepEqual(
+			validateAcceptanceInput({ verifyCommands: [{ id: "v", command: "npm test" }] }),
+			["acceptance.verifyCommands is not a recognized acceptance field (known: level, criteria, evidence, verify, review, stopRules, reason)."],
+		);
+	});
+
+	it("rejects typo levels and non-array verify with the caller's path label", () => {
+		assert.deepEqual(validateAcceptanceInput({ level: "verifed" }), ["acceptance.level must be one of auto, none, attested, checked, verified, reviewed."]);
+		assert.deepEqual(validateAcceptanceInput("verifed", "tasks[0].acceptance"), ["tasks[0].acceptance has invalid level 'verifed'."]);
+		assert.deepEqual(validateAcceptanceInput({ verify: "npm test" }, "chain[0].acceptance"), ["chain[0].acceptance.verify must be an array."]);
+	});
+
+	it("accepts an object using every recognized acceptance field", () => {
+		assert.deepEqual(
+			validateAcceptanceInput({
+				level: "checked",
+				criteria: ["works", { id: "g1", must: "tests pass", severity: "required" }],
+				evidence: ["commands-run"],
+				verify: [{ id: "v1", command: "npm test" }],
+				review: { agent: "reviewer" },
+				stopRules: ["stop on red"],
+				reason: "explicit gate",
+			}),
+			[],
+		);
+	});
 });

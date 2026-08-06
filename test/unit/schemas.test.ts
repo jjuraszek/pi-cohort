@@ -444,9 +444,10 @@ const stripDescriptions = (n: unknown): unknown =>
 describe("schema size budget", { skip: !schemasAvailable ? "typebox not available" : undefined }, () => {
 	it("serialized SubagentParams stays within the API payload budget", () => {
 		// Budget measures our canonical JSON, not provider re-serialization or tokenizer counts.
-		// Baseline before the diet: 23,151 bytes at eb7c74b. This ceiling also gates future field additions.
+		// Baselines: 23,151 bytes at eb7c74b (pre-diet, issue #4); 17,997 before the acceptance
+		// dedupe (issue #6). This ceiling also gates future field additions.
 		const bytes = Buffer.byteLength(JSON.stringify(SubagentParams), "utf8");
-		assert.ok(bytes <= 18_000, `SubagentParams schema is ${bytes} bytes; budget is 18,000 (pre-diet baseline: 23,151)`);
+		assert.ok(bytes <= 13_000, `SubagentParams schema is ${bytes} bytes; budget is 13,000 (baselines: 23,151 pre-#4, 17,997 pre-#6)`);
 	});
 });
 
@@ -465,9 +466,8 @@ describe("acceptance accepted at all positions", { skip: !schemasAvailable || !C
 		criteria: ["works", { id: "g1", must: "tests pass", severity: "required" }],
 		verify: [{ id: "v1", command: "npm test" }],
 	};
-	const shapes: Array<[string, unknown]> = [["object form", objectForm], ["string form", "checked"], ["false", false]];
-	const positions: Array<[string, (acc: unknown) => Record<string, unknown>]> = [
-		["top-level", (acc) => ({ agent: "worker", task: "t", acceptance: acc })],
+	const topLevel = (acc: unknown) => ({ agent: "worker", task: "t", acceptance: acc });
+	const nestedPositions: Array<[string, (acc: unknown) => Record<string, unknown>]> = [
 		["tasks[] item", (acc) => ({ tasks: [{ agent: "worker", task: "t", acceptance: acc }] })],
 		["chain step", (acc) => ({ chain: [{ agent: "worker", task: "t", acceptance: acc }] })],
 		["static parallel member", (acc) => ({ chain: [{ parallel: [{ agent: "worker", task: "t", acceptance: acc }] }] })],
@@ -482,21 +482,42 @@ describe("acceptance accepted at all positions", { skip: !schemasAvailable || !C
 			],
 		})],
 	];
-	const invalidAcceptanceValues: unknown[] = [true, { level: "checked", bogus: 1 }];
-	for (const [posName, build] of positions) {
-		for (const [shapeName, acc] of shapes) {
-			it(`${posName} accepts acceptance ${shapeName}`, () => {
-				const check = CompileSchema!(SubagentParams);
-				const value = build(acc);
-				assert.ok(check.Check(value), `expected valid: ${JSON.stringify([...check.Errors(value)].map((e) => e.message))}`);
-			});
+	const assertValid = (value: Record<string, unknown>) => {
+		const check = CompileSchema!(SubagentParams);
+		assert.ok(check.Check(value), `expected valid: ${JSON.stringify([...check.Errors(value)].map((e) => e.message))}`);
+	};
+	const assertInvalid = (value: Record<string, unknown>) => {
+		const check = CompileSchema!(SubagentParams);
+		assert.equal(check.Check(value), false, `expected invalid: ${JSON.stringify(value)}`);
+	};
+
+	// Top-level carries the one full AcceptanceOverride: deep provider-side validation.
+	const topLevelShapes: Array<[string, unknown]> = [["object form", objectForm], ["string form", "checked"], ["false", false]];
+	for (const [shapeName, acc] of topLevelShapes) {
+		it(`top-level accepts acceptance ${shapeName}`, () => assertValid(topLevel(acc)));
+	}
+	for (const invalid of [true, { level: "checked", bogus: 1 }]) {
+		it(`top-level rejects invalid acceptance ${JSON.stringify(invalid)}`, () => assertInvalid(topLevel(invalid)));
+	}
+
+	// Nested sites carry the compact stub: string levels validated, objects passed through
+	// (deep validation happens at the executor boundary), false shorthand not offered.
+	const nestedValidShapes: Array<[string, unknown]> = [
+		["object form", objectForm],
+		["string form", "checked"],
+		["unknown-key object (deferred to runtime validation)", { level: "checked", bogus: 1 }],
+	];
+	const nestedInvalidShapes: Array<[string, unknown]> = [
+		["true", true],
+		["false (deprecated shorthand dropped from stub)", false],
+		["invalid level string", "verifed"],
+	];
+	for (const [posName, build] of nestedPositions) {
+		for (const [shapeName, acc] of nestedValidShapes) {
+			it(`${posName} accepts acceptance ${shapeName}`, () => assertValid(build(acc)));
 		}
-		for (const invalid of invalidAcceptanceValues) {
-			it(`${posName} rejects invalid acceptance ${JSON.stringify(invalid)}`, () => {
-				const check = CompileSchema!(SubagentParams);
-				const value = build(invalid);
-				assert.equal(check.Check(value), false, `expected invalid: ${JSON.stringify(value)}`);
-			});
+		for (const [shapeName, acc] of nestedInvalidShapes) {
+			it(`${posName} rejects acceptance ${shapeName}`, () => assertInvalid(build(acc)));
 		}
 	}
 });
@@ -532,7 +553,6 @@ describe("brief() clone invariants", { skip: !schemasAvailable ? "typebox not av
 	// exactly "~unsafe"; the Type.String-based const (OutputModeOverride) carries exactly "~kind".
 	// Assert the exact expected marker per const, not a generic either-marker check.
 	const expectedMarker: Record<string, "~unsafe" | "~kind"> = {
-		acceptance: "~unsafe",
 		skill: "~unsafe",
 		outputMode: "~kind",
 		reads: "~unsafe",
@@ -548,19 +568,9 @@ describe("brief() clone invariants", { skip: !schemasAvailable ? "typebox not av
 		assert.ok(!Object.getOwnPropertyDescriptor(node, other), `${label}: unexpected ${other} marker present`);
 	};
 
-	// acceptance/skill/outputMode: canonical lives at top-level SubagentParams; all 4 nested
+	// skill/outputMode: canonical lives at top-level SubagentParams; all 4 nested
 	// positions (tasks[] item, chain step, static parallel member, dynamic fanout template) wrap it.
 	const canonicalPositions: Array<[string, unknown, Array<[string, unknown]>]> = [
-		[
-			"acceptance",
-			params.properties.acceptance,
-			[
-				["tasks-item", taskItem.acceptance],
-				["chain-step", chainStep.acceptance],
-				["static-parallel-member", staticParallel.acceptance],
-				["dynamic-template", dynamicTemplate.acceptance],
-			],
-		],
 		[
 			"skill",
 			params.properties.skill,
@@ -655,5 +665,50 @@ describe("brief() clone invariants", { skip: !schemasAvailable ? "typebox not av
 
 	it("no TypeBox internal '~' keys leak into serialized JSON", () => {
 		assert.ok(!JSON.stringify(SubagentParams).includes('"~'), "serialized schema must not contain ~-prefixed keys");
+	});
+});
+
+describe("nested acceptance stub", { skip: !schemasAvailable ? "typebox not available" : undefined }, () => {
+	const params = SubagentParams as unknown as Record<string, any>;
+	const chainStep = params.properties.chain.items.properties;
+	const taskItem = params.properties.tasks.items.properties;
+	const parallelAnyOf = chainStep.parallel.anyOf as any[];
+	const staticParallel = (parallelAnyOf.find((b) => b.type === "array") as any).items.properties;
+	const dynamicTemplate = (parallelAnyOf.find((b) => b.type === "object") as any).properties;
+	const stubSites: Array<[string, unknown]> = [
+		["tasks-item", taskItem.acceptance],
+		["chain-step", chainStep.acceptance],
+		["static-parallel-member", staticParallel.acceptance],
+		["dynamic-template", dynamicTemplate.acceptance],
+	];
+
+	it("full AcceptanceOverride appears exactly once (top-level)", () => {
+		// `stopRules` only exists inside the full override object branch.
+		assert.equal(JSON.stringify(SubagentParams).split('"stopRules"').length - 1, 1);
+		const topLevel = params.properties.acceptance;
+		const objectBranch = (topLevel.anyOf as any[]).find((b) => b.type === "object");
+		assert.ok(objectBranch?.properties?.stopRules, "top-level acceptance keeps the full object shape");
+	});
+
+	for (const [posName, stub] of stubSites) {
+		it(`${posName} acceptance is the compact stub`, () => {
+			const node = stub as Record<string, any>;
+			const branches = node.anyOf as any[];
+			assert.equal(branches.length, 2);
+			const stringBranch = branches.find((b) => b.type === "string");
+			assert.deepEqual(stringBranch?.enum, ["auto", "none", "attested", "checked", "verified", "reviewed"]);
+			const objectBranch = branches.find((b) => b.type === "object");
+			assert.equal(objectBranch?.additionalProperties, true);
+			// Non-empty properties: bare {type:"object"} is provider-rejected (Gemini function decls).
+			assert.ok(objectBranch?.properties && Object.keys(objectBranch.properties).length > 0);
+			assert.match(String(node.description ?? ""), /same shape as top-level/i);
+		});
+	}
+
+	it("all 4 stub sites serialize identically", () => {
+		const [, first] = stubSites[0]!;
+		for (const [posName, stub] of stubSites.slice(1)) {
+			assert.deepEqual(JSON.parse(JSON.stringify(stub)), JSON.parse(JSON.stringify(first)), `stub at ${posName} diverged`);
+		}
 	});
 });

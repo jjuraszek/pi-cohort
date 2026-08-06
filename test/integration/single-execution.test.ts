@@ -884,6 +884,40 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.equal(fs.readFileSync(outputPath, "utf-8"), "fresh assistant output");
 	});
 
+	it("rejects malformed acceptance at the executor boundary before any child runs", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+		const executor = makeExecutor([makeAgent("echo"), makeAgent("worker")]);
+		const run = (params: Record<string, unknown>) =>
+			executor.execute("acceptance-boundary", params, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
+
+		const typoLevel = await run({ agent: "echo", task: "t", acceptance: { level: "verifed" } });
+		assert.equal(typoLevel.isError, true);
+		assert.match(typoLevel.content[0]?.text ?? "", /acceptance\.level must be one of/);
+
+		const unknownKey = await run({ tasks: [{ agent: "worker", task: "t", acceptance: { verifyCommands: [{ id: "v", command: "npm test" }] } }] });
+		assert.equal(unknownKey.isError, true);
+		assert.match(unknownKey.content[0]?.text ?? "", /tasks\[0\]\.acceptance\.verifyCommands is not a recognized acceptance field/);
+
+		const stringVerify = await run({ chain: [{ agent: "worker", task: "t" }, { parallel: [{ agent: "worker", acceptance: { verify: "npm test" } }] }] });
+		assert.equal(stringVerify.isError, true);
+		assert.match(stringVerify.content[0]?.text ?? "", /chain\[1\]\.parallel\[0\]\.acceptance\.verify must be an array/);
+
+		const dynamicTemplate = await run({
+			chain: [
+				{ agent: "worker", task: "t", as: "seed", outputSchema: { type: "object" } },
+				{
+					expand: { from: { output: "seed", path: "/items" }, maxItems: 2 },
+					parallel: { agent: "worker", task: "{item}", acceptance: "verifed" },
+					collect: { as: "results" },
+				},
+			],
+		});
+		assert.equal(dynamicTemplate.isError, true);
+		assert.match(dynamicTemplate.content[0]?.text ?? "", /chain\[1\]\.parallel\.acceptance has invalid level 'verifed'/);
+
+		// No child was spawned for any rejected input.
+		assert.equal(fs.readdirSync(mockPi.dir).filter((name) => name.startsWith("call-")).length, 0);
+	});
+
 	it("keeps configured single output opt-in at the top-level", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
 		const executor = makeExecutor([makeAgent("echo", { output: "default-report.md" })]);
 		mockPi.onCall({ output: "inline report" });

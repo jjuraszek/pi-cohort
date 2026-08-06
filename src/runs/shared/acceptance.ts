@@ -131,6 +131,8 @@ function explicitAcceptanceCanDisable(explicit: AcceptanceConfig): boolean {
 	return explicit.level === "none" && typeof explicit.reason === "string" && explicit.reason.trim().length > 0;
 }
 
+const KNOWN_ACCEPTANCE_KEYS = new Set(["level", "criteria", "evidence", "verify", "review", "stopRules", "reason"]);
+
 export function validateAcceptanceInput(input: unknown, pathLabel = "acceptance"): string[] {
 	const errors: string[] = [];
 	if (input === undefined) return errors;
@@ -144,6 +146,11 @@ export function validateAcceptanceInput(input: unknown, pathLabel = "acceptance"
 		return errors;
 	}
 	const value = input as Record<string, unknown>;
+	for (const key of Object.keys(value)) {
+		if (!KNOWN_ACCEPTANCE_KEYS.has(key)) {
+			errors.push(`${pathLabel}.${key} is not a recognized acceptance field (known: level, criteria, evidence, verify, review, stopRules, reason).`);
+		}
+	}
 	if (value.level !== undefined && (typeof value.level !== "string" || !VALID_LEVELS.has(value.level as AcceptanceLevel))) {
 		errors.push(`${pathLabel}.level must be one of auto, none, attested, checked, verified, reviewed.`);
 	}

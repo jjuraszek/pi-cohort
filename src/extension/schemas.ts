@@ -65,12 +65,13 @@ const AcceptanceEvidenceKind = Type.String({
 	],
 });
 
+// Gate-level `evidence`/`severity` are accepted at runtime (normalizeCriteria) but omitted
+// from the schema: dead flexibility from a tool call, and the evidence enum is heavy.
+// additionalProperties stays open so inputs carrying them are not provider-rejected.
 const AcceptanceGateSchema = Type.Object({
 	id: Type.String(),
 	must: Type.String(),
-	evidence: Type.Optional(Type.Array(AcceptanceEvidenceKind)),
-	severity: Type.Optional(Type.String({ enum: ["required", "recommended"] })),
-}, { additionalProperties: false });
+}, { additionalProperties: true });
 
 const AcceptanceVerifyCommandSchema = Type.Object({
 	id: Type.String(),
@@ -121,6 +122,21 @@ const AcceptanceOverride = Type.Unsafe({
 	description: "Acceptance: auto if omitted; verified needs cmds.",
 });
 
+// Nested acceptance sites carry a compact stub instead of the full AcceptanceOverride:
+// inlined 5x it was 44% of the serialized schema. The full shape is documented once at
+// top-level `acceptance`; deep validation happens at the executor boundary
+// (validateAcceptanceInput), not provider-side. The object branch keeps a non-empty
+// `properties` because some providers reject bare {type:"object"} in function
+// declarations - the same wall that rules out $defs/$ref (see issue #6).
+// {const:false} is intentionally absent: deprecated shorthand, use level:"none".
+const AcceptanceOverrideStub = Type.Unsafe({
+	anyOf: [
+		{ type: "string", enum: ["auto", "none", "attested", "checked", "verified", "reviewed"] },
+		{ type: "object", additionalProperties: true, properties: { level: { type: "string" } } },
+	],
+	description: "Acceptance override; same shape as top-level acceptance.",
+});
+
 const TaskItem = Type.Object({
 	agent: Type.String(), 
 	task: Type.String(), 
@@ -132,7 +148,7 @@ const TaskItem = Type.Object({
 	progress: Type.Optional(Type.Boolean({ description: "true enables progress.md tracking; omit or false disables." })),
 	model: Type.Optional(Type.String()),
 	skill: Type.Optional(brief(SkillOverride, "Skill override.")),
-	acceptance: Type.Optional(brief(AcceptanceOverride, "Acceptance override.")),
+	acceptance: Type.Optional(AcceptanceOverrideStub),
 });
 
 // Parallel task item (within a parallel step)
@@ -151,7 +167,7 @@ const ParallelTaskSchema = Type.Object({
 	progress: Type.Optional(Type.Boolean({ description: "Enable progress.md tracking." })),
 	model: Type.Optional(Type.String()),
 	skill: Type.Optional(brief(SkillOverride, "Skill override.")),
-	acceptance: Type.Optional(brief(AcceptanceOverride, "Acceptance override.")),
+	acceptance: Type.Optional(AcceptanceOverrideStub),
 });
 
 const DynamicExpandSchema = Type.Object({
@@ -178,7 +194,7 @@ const DynamicParallelTemplateSchema = Type.Object({
 	progress: Type.Optional(Type.Boolean({ description: "Enable progress.md tracking." })),
 	model: Type.Optional(Type.String()),
 	skill: Type.Optional(brief(SkillOverride, "Skill override.")),
-	acceptance: Type.Optional(brief(AcceptanceOverride, "Acceptance override.")),
+	acceptance: Type.Optional(AcceptanceOverrideStub),
 }, { additionalProperties: false });
 
 const DynamicCollectSchema = Type.Object({
@@ -203,7 +219,7 @@ const ChainItem = Type.Object({
 	progress: Type.Optional(Type.Boolean({ description: "Enable progress.md tracking in {chain_dir}" })),
 	model: Type.Optional(Type.String()),
 	skill: Type.Optional(brief(SkillOverride, "Skill override.")),
-	acceptance: Type.Optional(brief(AcceptanceOverride, "Acceptance override.")),
+	acceptance: Type.Optional(AcceptanceOverrideStub),
 	parallel: Type.Optional(Type.Unsafe({
 		anyOf: [
 			Type.Array(ParallelTaskSchema, { minItems: 1 }),

@@ -17,6 +17,7 @@ import { recordSyncCost, renderGrandTotal, sumNestedCost } from "../../extension
 import { resolveModelCandidate } from "../shared/model-fallback.ts";
 import { aggregateParallelOutputs } from "../shared/parallel-utils.ts";
 import { recordRun } from "../shared/run-history.ts";
+import { validateAcceptanceInput } from "../shared/acceptance.ts";
 import {
 	buildChainInstructions,
 	writeInitialProgressFile,
@@ -856,6 +857,33 @@ function validateExecutionInput(
 				};
 			}
 		}
+	}
+
+	// Nested acceptance sites only carry a compact stub in the tool schema (see
+	// AcceptanceOverrideStub in extension/schemas.ts); this is the deep-validation boundary.
+	const acceptanceErrors: string[] = [
+		...validateAcceptanceInput(params.acceptance, "acceptance"),
+	];
+	for (const [i, task] of (params.tasks ?? []).entries()) {
+		acceptanceErrors.push(...validateAcceptanceInput(task.acceptance, `tasks[${i}].acceptance`));
+	}
+	for (const [i, rawStep] of (params.chain ?? []).entries()) {
+		const step = rawStep as ChainStep;
+		acceptanceErrors.push(...validateAcceptanceInput((rawStep as { acceptance?: unknown }).acceptance, `chain[${i}].acceptance`));
+		if (isParallelStep(step)) {
+			for (const [j, member] of step.parallel.entries()) {
+				acceptanceErrors.push(...validateAcceptanceInput(member.acceptance, `chain[${i}].parallel[${j}].acceptance`));
+			}
+		} else if (isDynamicParallelStep(step)) {
+			acceptanceErrors.push(...validateAcceptanceInput(step.parallel.acceptance, `chain[${i}].parallel.acceptance`));
+		}
+	}
+	if (acceptanceErrors.length > 0) {
+		return {
+			content: [{ type: "text", text: `Invalid acceptance input:\n${acceptanceErrors.map((error) => `- ${error}`).join("\n")}` }],
+			isError: true,
+			details: { mode: hasChain ? "chain" as const : hasTasks ? "parallel" as const : "single" as const, results: [] },
+		};
 	}
 
 	return null;

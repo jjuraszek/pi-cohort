@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- subagent tool schema shrunk from 18.0KB to 12.4KB serialized: the acceptance
+  override shape (previously inlined 5x, 44% of the schema) now appears in full
+  only at top-level `acceptance`; the 4 nested sites (tasks items, chain steps,
+  parallel members, dynamic fanout template) carry a compact stub. Gate-level
+  `evidence`/`severity` dropped from the schema (still accepted at runtime).
+  Deep acceptance validation moved to the executor boundary with per-site path
+  labels. Nested `acceptance: false` is no longer schema-accepted - use
+  `level: "none"`. Unknown acceptance keys are now rejected everywhere,
+  including saved `.chain.json` chains that previously loaded with the key
+  silently ignored. ([#6](https://github.com/jjuraszek/pi-cohort/issues/6))
+
 ## [5.0.1] - 2026-08-06
 
 ### Changed
