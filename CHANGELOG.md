@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- subagent tool schema dieted from 23.2KB to <=18KB serialized (description
+  trimming only; all accepted input shapes unchanged, guarded by a baseline
+  shape fixture). `config` field reference moved to the pi-cohort skill's
+  `reference/config-fields.md`. Schema size-budget test added.
+
 ## [5.0.0] - 2026-08-06
 
 ### Changed

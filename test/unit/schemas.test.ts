@@ -164,12 +164,13 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 			assert.equal(output?.type, undefined);
 			assert.equal(hasAnyOfType(output, "string"), true);
 			assert.equal(hasAnyOfType(output, "boolean"), true);
-			assert.equal(output?.description, "Output filename/path (string), or false to disable file output");
+			assert.equal(output?.description, "Output file path, or false.");
 			assert.equal(properties?.progress?.type, "boolean");
-			assert.equal(properties?.progress?.description, "Enable progress.md tracking in {chain_dir}");
+			assert.match(String(properties?.progress?.description ?? ""), /progress\.md tracking/i);
 		};
 
 		assertChainArtifactFields(chainItem.properties);
+		assert.equal(chainItem.properties?.progress?.description, "Enable progress.md tracking in {chain_dir}");
 		const parallelBranches = anyOfBranches(chainItem.properties?.parallel);
 		const staticParallel = parallelBranches.find((branch) => branch.type === "array");
 		assertChainArtifactFields((staticParallel?.items as { properties?: Record<string, JsonSchemaNode> } | undefined)?.properties);
@@ -426,5 +427,233 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		for (const value of invalidValues) {
 			assert.equal(validator.Check(value), false, `${JSON.stringify(value)} should not validate`);
 		}
+	});
+});
+
+const stripDescriptions = (n: unknown): unknown =>
+	Array.isArray(n)
+		? n.map(stripDescriptions)
+		: n && typeof n === "object"
+			? Object.fromEntries(
+					Object.entries(n as Record<string, unknown>)
+						.filter(([k]) => k !== "description")
+						.map(([k, v]) => [k, stripDescriptions(v)]),
+				)
+			: n;
+
+describe("schema size budget", { skip: !schemasAvailable ? "typebox not available" : undefined }, () => {
+	it("serialized SubagentParams stays within the API payload budget", () => {
+		// Budget measures our canonical JSON, not provider re-serialization or tokenizer counts.
+		// Baseline before the diet: 23,151 bytes at eb7c74b. This ceiling also gates future field additions.
+		const bytes = Buffer.byteLength(JSON.stringify(SubagentParams), "utf8");
+		assert.ok(bytes <= 18_000, `SubagentParams schema is ${bytes} bytes; budget is 18,000 (pre-diet baseline: 23,151)`);
+	});
+});
+
+describe("schema shape guard", { skip: !schemasAvailable ? "typebox not available" : undefined }, () => {
+	// Regenerate fixture: see doc/plans/2026-08-06-subagent-schema-diet.md Task 1 Step 1.
+	it("description-stripped schema matches the pre-diet baseline fixture", async () => {
+		const fs = await import("node:fs");
+		const fixture = JSON.parse(fs.readFileSync(new URL("./fixtures/subagent-params.shape.json", import.meta.url), "utf8"));
+		assert.deepEqual(stripDescriptions(SubagentParams), fixture);
+	});
+});
+
+describe("acceptance accepted at all positions", { skip: !schemasAvailable || !CompileSchema ? "typebox not available" : undefined }, () => {
+	const objectForm = {
+		level: "checked",
+		criteria: ["works", { id: "g1", must: "tests pass", severity: "required" }],
+		verify: [{ id: "v1", command: "npm test" }],
+	};
+	const shapes: Array<[string, unknown]> = [["object form", objectForm], ["string form", "checked"], ["false", false]];
+	const positions: Array<[string, (acc: unknown) => Record<string, unknown>]> = [
+		["top-level", (acc) => ({ agent: "worker", task: "t", acceptance: acc })],
+		["tasks[] item", (acc) => ({ tasks: [{ agent: "worker", task: "t", acceptance: acc }] })],
+		["chain step", (acc) => ({ chain: [{ agent: "worker", task: "t", acceptance: acc }] })],
+		["static parallel member", (acc) => ({ chain: [{ parallel: [{ agent: "worker", task: "t", acceptance: acc }] }] })],
+		["dynamic fanout template", (acc) => ({
+			chain: [
+				{ agent: "worker", task: "t", as: "seed", outputSchema: { type: "object" } },
+				{
+					expand: { from: { output: "seed", path: "/items" }, maxItems: 3 },
+					parallel: { agent: "worker", task: "{item}", acceptance: acc },
+					collect: { as: "results" },
+				},
+			],
+		})],
+	];
+	const invalidAcceptanceValues: unknown[] = [true, { level: "checked", bogus: 1 }];
+	for (const [posName, build] of positions) {
+		for (const [shapeName, acc] of shapes) {
+			it(`${posName} accepts acceptance ${shapeName}`, () => {
+				const check = CompileSchema!(SubagentParams);
+				const value = build(acc);
+				assert.ok(check.Check(value), `expected valid: ${JSON.stringify([...check.Errors(value)].map((e) => e.message))}`);
+			});
+		}
+		for (const invalid of invalidAcceptanceValues) {
+			it(`${posName} rejects invalid acceptance ${JSON.stringify(invalid)}`, () => {
+				const check = CompileSchema!(SubagentParams);
+				const value = build(invalid);
+				assert.equal(check.Check(value), false, `expected invalid: ${JSON.stringify(value)}`);
+			});
+		}
+	}
+});
+
+describe("chain step accepts override field shapes", { skip: !schemasAvailable || !CompileSchema ? "typebox not available" : undefined }, () => {
+	const cases: Array<[string, Record<string, unknown>]> = [
+		["skill array", { skill: ["tdd", "debug"] }],
+		["output string", { output: "out.md" }],
+		["output boolean", { output: false }],
+		["outputMode inline", { outputMode: "inline" }],
+		["outputMode file-only", { outputMode: "file-only" }],
+		["reads array", { reads: ["a.md"] }],
+	];
+	for (const [name, extra] of cases) {
+		it(`chain step accepts ${name}`, () => {
+			const check = CompileSchema!(SubagentParams);
+			const value = { chain: [{ agent: "worker", task: "t", ...extra }] };
+			assert.ok(check.Check(value), `expected valid: ${JSON.stringify([...check.Errors(value)].map((e) => e.message))}`);
+		});
+	}
+});
+
+describe("brief() clone invariants", { skip: !schemasAvailable ? "typebox not available" : undefined }, () => {
+	const params = SubagentParams as unknown as Record<string, any>;
+	const chainStep = params.properties.chain.items.properties;
+	const taskItem = params.properties.tasks.items.properties;
+	const parallelAnyOf = chainStep.parallel.anyOf as any[];
+	const staticParallel = (parallelAnyOf.find((b) => b.type === "array") as any).items.properties;
+	const dynamicTemplate = (parallelAnyOf.find((b) => b.type === "object") as any).properties;
+
+	// Non-enumerable TypeBox metadata marker survives the descriptor clone: Type.Unsafe-based
+	// consts (AcceptanceOverride/SkillOverride/OutputOverride/ReadsOverride/JsonSchemaObject) carry
+	// exactly "~unsafe"; the Type.String-based const (OutputModeOverride) carries exactly "~kind".
+	// Assert the exact expected marker per const, not a generic either-marker check.
+	const expectedMarker: Record<string, "~unsafe" | "~kind"> = {
+		acceptance: "~unsafe",
+		skill: "~unsafe",
+		outputMode: "~kind",
+		reads: "~unsafe",
+		output: "~unsafe",
+		outputSchema: "~unsafe",
+	};
+	const assertMetadataPreserved = (node: object, label: string, name: string) => {
+		const expected = expectedMarker[name];
+		const other = expected === "~unsafe" ? "~kind" : "~unsafe";
+		const descriptor = Object.getOwnPropertyDescriptor(node, expected);
+		assert.ok(descriptor, `${label}: expected a ${expected} marker to survive the clone`);
+		assert.equal(descriptor!.enumerable, false, `${label}: ${expected} must stay non-enumerable`);
+		assert.ok(!Object.getOwnPropertyDescriptor(node, other), `${label}: unexpected ${other} marker present`);
+	};
+
+	// acceptance/skill/outputMode: canonical lives at top-level SubagentParams; all 4 nested
+	// positions (tasks[] item, chain step, static parallel member, dynamic fanout template) wrap it.
+	const canonicalPositions: Array<[string, unknown, Array<[string, unknown]>]> = [
+		[
+			"acceptance",
+			params.properties.acceptance,
+			[
+				["tasks-item", taskItem.acceptance],
+				["chain-step", chainStep.acceptance],
+				["static-parallel-member", staticParallel.acceptance],
+				["dynamic-template", dynamicTemplate.acceptance],
+			],
+		],
+		[
+			"skill",
+			params.properties.skill,
+			[
+				["tasks-item", taskItem.skill],
+				["chain-step", chainStep.skill],
+				["static-parallel-member", staticParallel.skill],
+				["dynamic-template", dynamicTemplate.skill],
+			],
+		],
+		[
+			"outputMode",
+			params.properties.outputMode,
+			[
+				["tasks-item", taskItem.outputMode],
+				["chain-step", chainStep.outputMode],
+				["static-parallel-member", staticParallel.outputMode],
+				["dynamic-template", dynamicTemplate.outputMode],
+			],
+		],
+		// reads: canonical moved to tasks[] item (TaskItem.reads is the unwrapped ReadsOverride
+		// const itself); the other 3 nested positions wrap it.
+		[
+			"reads",
+			taskItem.reads,
+			[
+				["chain-step", chainStep.reads],
+				["static-parallel-member", staticParallel.reads],
+				["dynamic-template", dynamicTemplate.reads],
+			],
+		],
+	];
+	for (const [name, canonical, wrappedSites] of canonicalPositions) {
+		for (const [posName, wrapped] of wrappedSites) {
+			it(`${name} at ${posName}: nested clone differs from canonical only in description`, () => {
+				const a = JSON.parse(JSON.stringify(canonical));
+				const b = JSON.parse(JSON.stringify(wrapped));
+				assert.notEqual(a.description, b.description, "one-liner should differ from canonical text");
+				delete a.description;
+				delete b.description;
+				assert.deepEqual(b, a);
+			});
+			it(`${name} at ${posName}: descriptor clone preserves non-enumerable TypeBox metadata`, () => {
+				assertMetadataPreserved(wrapped as object, `${name} at ${posName}`, name);
+			});
+		}
+	}
+
+	// output/outputSchema are the exceptions: their canonical full descriptions live at
+	// differently-shaped sites (top-level `output` is a separate inline Type.Unsafe, not the
+	// OutputOverride const; JsonSchemaObject's canonical is ChainItem.outputSchema, which is
+	// unwrapped but structurally identical rather than description-bearing in the same way).
+	// So every wrapped nested copy is compared pairwise against the others AND against one
+	// designated reference copy, instead of against a differently-shaped "canonical".
+	const outputSites: Array<[string, unknown]> = [
+		["tasks-item", taskItem.output],
+		["chain-step", chainStep.output],
+		["static-parallel-member", staticParallel.output],
+		["dynamic-template", dynamicTemplate.output],
+	];
+	const outputSchemaSites: Array<[string, unknown]> = [
+		["static-parallel-member", staticParallel.outputSchema],
+		["dynamic-template", dynamicTemplate.outputSchema],
+		["dynamic-collect", chainStep.collect.properties.outputSchema],
+	];
+	const wrappedSiteGroups: Array<[string, Array<[string, unknown]>]> = [
+		["output", outputSites],
+		["outputSchema", outputSchemaSites],
+	];
+	for (const [name, sites] of wrappedSiteGroups) {
+		const [referenceName, reference] = sites[0];
+		for (const [posName, wrapped] of sites) {
+			it(`${name} at ${posName}: descriptor clone preserves non-enumerable TypeBox metadata`, () => {
+				assertMetadataPreserved(wrapped as object, `${name} at ${posName}`, name);
+			});
+		}
+		for (let i = 0; i < sites.length; i++) {
+			for (let j = i + 1; j < sites.length; j++) {
+				const [posA, wrappedA] = sites[i];
+				const [posB, wrappedB] = sites[j];
+				it(`${name}: ${posA} and ${posB} wrapped copies serialize identically`, () => {
+					assert.deepEqual(JSON.parse(JSON.stringify(wrappedA)), JSON.parse(JSON.stringify(wrappedB)));
+				});
+			}
+		}
+		for (const [posName, wrapped] of sites) {
+			it(`${name} at ${posName}: matches the designated reference copy (${referenceName})`, () => {
+				assert.deepEqual(JSON.parse(JSON.stringify(wrapped)), JSON.parse(JSON.stringify(reference)));
+			});
+		}
+	}
+
+	it("no TypeBox internal '~' keys leak into serialized JSON", () => {
+		assert.ok(!JSON.stringify(SubagentParams).includes('"~'), "serialized schema must not contain ~-prefixed keys");
 	});
 });

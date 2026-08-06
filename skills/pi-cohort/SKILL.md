@@ -503,6 +503,8 @@ If intercom messages do not show up, run `subagent({ action: "doctor" })` or `/c
 
 The `subagent(...)` tool also supports management actions.
 
+Full config field reference: `reference/config-fields.md` (sibling of this file).
+
 ### List available agents and chains
 
 ```typescript
