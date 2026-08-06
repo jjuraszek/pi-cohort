@@ -97,7 +97,7 @@ The `oracle` and `worker` builtins are designed for an explicit decision loop. A
 
 ## Clarify and launch UI
 
-Chains open a clarify UI by default so you can preview and edit the workflow before it runs. Single and parallel tool calls can opt into the same flow with `clarify: true`; slash commands launch directly.
+Programmatic single, parallel, and sequential chain calls launch directly by default. Set `clarify: true` to preview and edit before execution; chains containing parallel steps skip the UI. Slash commands launch directly.
 
 Common clarify keys:
 

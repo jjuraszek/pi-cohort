@@ -400,8 +400,8 @@ subagent({
 })
 ```
 
-Chains default to clarify mode; set `clarify: false` to skip it. Clarify edits affect only the next run; use management actions, settings, or markdown files for persistent changes.
-For programmatic background launches, use `async: true`. Set `clarify: false` when you want to bypass chain clarification explicitly; `clarify: true` keeps the run foreground for the clarify UI.
+Programmatic chains launch directly by default. Set `clarify: true` to preview or edit a sequential chain before launch; chains containing parallel steps skip the UI. Clarify edits affect only the next run; use management actions, settings, or markdown files for persistent changes.
+For programmatic background launches, use `async: true`. Explicit `clarify: true` keeps the run foreground for the clarify UI.
 
 
 ## Worktree Isolation

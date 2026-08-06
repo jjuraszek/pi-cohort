@@ -152,7 +152,7 @@ Agent definitions are not loaded into context by default. Management actions let
 | `chain` | array | - | Sequential, static parallel, and dynamic fanout chain steps. Steps and chain parallel tasks support `phase`, `label`, `as`, `outputSchema`, and `acceptance` in addition to the usual execution fields. Dynamic fanout uses `expand`, one child `parallel` template, and `collect`. |
 | `context` | `fresh \| fork` | agent default or `fresh` | `fork` creates real branched sessions from the parent leaf. Packaged `planner`, `worker`, and `oracle` default to `fork`. |
 | `chainDir` | string | temp chain dir | Persistent directory for chain artifacts. |
-| `clarify` | boolean | true for chains | Show TUI preview/edit flow. |
+| `clarify` | boolean | false | Set `true` to show the TUI preview/edit flow when supported. Omitted or `false` launches directly; chains containing parallel steps skip the UI. |
 | `agentScope` | `user \| project \| both` | `both` | Agent discovery scope. Project wins on collisions. |
 | `async` | boolean | false | Background execution. For chains, `clarify: true` explicitly keeps the run foreground for the clarify UI. |
 | `cwd` | string | runtime cwd | Override working directory. |

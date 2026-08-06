@@ -1281,3 +1281,153 @@ describe("chain execution — parallel steps", { skip: !available ? "pi packages
 		assert.equal(result.details.totalSteps, 3);
 	});
 });
+
+describe("chain execution - clarify boundary", { skip: !available ? "pi packages not available" : undefined }, () => {
+	let tempDir: string;
+	let artifactsDir: string;
+	let mockPi: MockPi;
+
+	before(() => {
+		mockPi = createMockPi();
+		mockPi.install();
+	});
+
+	after(() => {
+		mockPi.uninstall();
+	});
+
+	beforeEach(() => {
+		tempDir = createTempDir();
+		artifactsDir = path.join(tempDir, "artifacts");
+		mockPi.reset();
+	});
+
+	afterEach(() => {
+		removeTempDir(tempDir);
+	});
+
+	function makeClarifySpy() {
+		const calls: unknown[][] = [];
+		const custom = async (...args: unknown[]) => {
+			calls.push(args);
+			return { confirmed: false, templates: [], behaviorOverrides: [] };
+		};
+		return { custom, calls };
+	}
+
+	function makeChainParams(
+		chain: TestChainStep[],
+		agents: ReturnType<typeof makeAgent>[],
+		overrides: Record<string, unknown> = {},
+		ctxOverrides: Record<string, unknown> = {},
+	) {
+		return {
+			chain,
+			agents,
+			ctx: { ...makeMinimalCtx(tempDir), ...ctxOverrides },
+			runId: `test-${Date.now().toString(36)}`,
+			shareEnabled: false,
+			sessionDirForIndex: () => undefined,
+			artifactsDir,
+			artifactConfig: { enabled: false },
+			...overrides,
+		};
+	}
+
+	it("launches directly when clarify is omitted, without opening the clarify TUI", async () => {
+		mockPi.onCall({ output: "done" });
+		const agents = [makeAgent("worker")];
+		const spy = makeClarifySpy();
+
+		const result = await executeChain(
+			makeChainParams(
+				[{ agent: "worker", task: "Do the thing" }],
+				agents,
+				{},
+				{ hasUI: true, ui: { custom: spy.custom } },
+			),
+		);
+
+		assert.ok(!result.isError, `chain should succeed: ${JSON.stringify(result.content)}`);
+		assert.equal(spy.calls.length, 0, "clarify TUI should not be opened when clarify is omitted");
+	});
+
+	it("launches directly when clarify is false", async () => {
+		mockPi.onCall({ output: "done" });
+		const agents = [makeAgent("worker")];
+		const spy = makeClarifySpy();
+
+		const result = await executeChain(
+			makeChainParams(
+				[{ agent: "worker", task: "Do the thing" }],
+				agents,
+				{ clarify: false },
+				{ hasUI: true, ui: { custom: spy.custom } },
+			),
+		);
+
+		assert.ok(!result.isError, `chain should succeed: ${JSON.stringify(result.content)}`);
+		assert.equal(spy.calls.length, 0, "clarify TUI should not be opened when clarify is false");
+	});
+
+	it("opens the clarify TUI for a sequential chain when clarify is true", async () => {
+		mockPi.onCall({ output: "done" });
+		const agents = [makeAgent("worker")];
+		const spy = makeClarifySpy();
+
+		const result = await executeChain(
+			makeChainParams(
+				[{ agent: "worker", task: "Do the thing" }],
+				agents,
+				{ clarify: true },
+				{ hasUI: true, ui: { custom: spy.custom } },
+			),
+		);
+
+		assert.equal(spy.calls.length, 1, "clarify TUI should be opened when clarify is true");
+		assert.match(result.content[0]?.text ?? "", /Chain cancelled/);
+	});
+
+	it("skips the clarify TUI for a parallel-step chain even when clarify is true", async () => {
+		mockPi.onCall({ output: "done" });
+		const agents = [makeAgent("rev-a"), makeAgent("rev-b")];
+		const spy = makeClarifySpy();
+
+		const result = await executeChain(
+			makeChainParams(
+				[
+					{
+						parallel: [
+							{ agent: "rev-a", task: "Review A" },
+							{ agent: "rev-b", task: "Review B" },
+						],
+					},
+				],
+				agents,
+				{ clarify: true },
+				{ hasUI: true, ui: { custom: spy.custom } },
+			),
+		);
+
+		assert.ok(!result.isError, `chain should succeed: ${JSON.stringify(result.content)}`);
+		assert.equal(spy.calls.length, 0, "clarify TUI should not be opened for a parallel-step chain");
+	});
+
+	it("skips the clarify TUI when clarify is true but hasUI is false", async () => {
+		mockPi.onCall({ output: "done" });
+		const agents = [makeAgent("worker")];
+		const spy = makeClarifySpy();
+
+		const result = await executeChain(
+			makeChainParams(
+				[{ agent: "worker", task: "Do the thing" }],
+				agents,
+				{ clarify: true },
+				{ hasUI: false, ui: { custom: spy.custom } },
+			),
+		);
+
+		assert.ok(!result.isError, `chain should succeed: ${JSON.stringify(result.content)}`);
+		assert.equal(spy.calls.length, 0, "clarify TUI should not be opened when hasUI is false");
+	});
+});
