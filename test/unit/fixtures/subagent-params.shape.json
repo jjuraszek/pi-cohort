@@ -24,9 +24,6 @@
 		"id": {
 			"type": "string"
 		},
-		"runId": {
-			"type": "string"
-		},
 		"dir": {
 			"type": "string"
 		},
@@ -55,6 +52,7 @@
 			"type": "array",
 			"items": {
 				"type": "object",
+				"additionalProperties": true,
 				"required": [
 					"agent",
 					"task"
@@ -66,88 +64,9 @@
 					"task": {
 						"type": "string"
 					},
-					"cwd": {
-						"type": "string"
-					},
 					"count": {
 						"type": "integer",
 						"minimum": 1
-					},
-					"output": {
-						"anyOf": [
-							{
-								"type": "string"
-							},
-							{
-								"type": "boolean"
-							}
-						]
-					},
-					"outputMode": {
-						"type": "string",
-						"enum": [
-							"inline",
-							"file-only"
-						]
-					},
-					"reads": {
-						"anyOf": [
-							{
-								"type": "array",
-								"items": {
-									"type": "string"
-								}
-							},
-							{
-								"type": "boolean"
-							}
-						]
-					},
-					"progress": {
-						"type": "boolean"
-					},
-					"model": {
-						"type": "string"
-					},
-					"skill": {
-						"anyOf": [
-							{
-								"type": "array",
-								"items": {
-									"type": "string"
-								}
-							},
-							{
-								"type": "boolean"
-							},
-							{
-								"type": "string"
-							}
-						]
-					},
-					"acceptance": {
-						"anyOf": [
-							{
-								"type": "string",
-								"enum": [
-									"auto",
-									"none",
-									"attested",
-									"checked",
-									"verified",
-									"reviewed"
-								]
-							},
-							{
-								"type": "object",
-								"additionalProperties": true,
-								"properties": {
-									"level": {
-										"type": "string"
-									}
-								}
-							}
-						]
 					}
 				}
 			}
@@ -375,58 +294,7 @@
 						"type": "boolean"
 					}
 				},
-				"additionalProperties": false,
-				"allOf": [
-					{
-						"if": {
-							"required": [
-								"expand"
-							]
-						},
-						"then": {
-							"required": [
-								"parallel",
-								"collect"
-							],
-							"properties": {
-								"parallel": {
-									"type": "object"
-								}
-							}
-						}
-					},
-					{
-						"if": {
-							"required": [
-								"collect"
-							]
-						},
-						"then": {
-							"required": [
-								"expand",
-								"parallel"
-							],
-							"properties": {
-								"parallel": {
-									"type": "object"
-								}
-							}
-						}
-					},
-					{
-						"not": {
-							"required": [
-								"expand"
-							],
-							"properties": {
-								"parallel": {
-									"type": "array",
-									"items": {}
-								}
-							}
-						}
-					}
-				]
+				"additionalProperties": false
 			}
 		},
 		"context": {

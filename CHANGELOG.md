@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- Schema diet round three (subagent tool schema 9,483 -> 8,246 bytes serialized):
+  `tasks[]` items collapsed to the round-two stub form (overrides pass through,
+  documented in the pi-cohort skill), `ChainItem` allOf conditionals removed
+  (runtime-enforced at chain parse), and `runId` no longer advertised by the
+  tool schema - still accepted at runtime, `id` preferred.
+
 ## [5.1.1] - 2026-08-07
 
 ### Changed

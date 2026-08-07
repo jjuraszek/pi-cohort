@@ -137,18 +137,22 @@ const AcceptanceOverrideStub = Type.Unsafe({
 	description: "Acceptance override; same shape as top-level acceptance.",
 });
 
-const TaskItem = Type.Object({
-	agent: Type.String(), 
-	task: Type.String(), 
-	cwd: Type.Optional(Type.String()),
-	count: Type.Optional(Type.Integer({ minimum: 1, description: "Repeat N times (same settings)." })),
-	output: Type.Optional(brief(OutputOverride, "Output file path, or false.")),
-	outputMode: Type.Optional(brief(OutputModeOverride, "Default: inline.")),
-	reads: Type.Optional(ReadsOverride),
-	progress: Type.Optional(Type.Boolean({ description: "true enables progress.md tracking; omit or false disables." })),
-	model: Type.Optional(Type.String()),
-	skill: Type.Optional(brief(SkillOverride, "Skill override.")),
-	acceptance: Type.Optional(AcceptanceOverrideStub),
+// tasks[] stub (round three): same treatment as ParallelTaskSchema below; structural keys
+// stay explicit (agent/task required, count = arity); every per-task override (model, output,
+// outputMode, reads, progress, skill, cwd, acceptance) passes through additionalProperties
+// and is documented in the pi-cohort skill. No `as` (no {outputs.name} wiring here) and no
+// `label` (TaskParam has no such field at this position). Widening-only: unknown keys were
+// already ignored at runtime.
+const TaskItem = Type.Unsafe({
+	type: "object",
+	additionalProperties: true,
+	required: ["agent", "task"],
+	properties: {
+		agent: { type: "string" },
+		task: { type: "string" },
+		count: { type: "integer", minimum: 1, description: "Repeat N times (same settings)." },
+	},
+	description: "Per-task overrides (model, output, reads, skill, ...): pi-cohort skill.",
 });
 
 // Parallel-item stubs (round two): structural/wiring keys stay explicit (agent/task,
@@ -232,11 +236,6 @@ const ChainItem = Type.Object({
 }, {
 	description: "{agent,task?} seq; {parallel:[..]} concurrent; {expand,parallel,collect} fanout.",
 	additionalProperties: false,
-	allOf: [
-		{ if: { required: ["expand"] }, then: { required: ["parallel", "collect"], properties: { parallel: { type: "object" } } } },
-		{ if: { required: ["collect"] }, then: { required: ["expand", "parallel"], properties: { parallel: { type: "object" } } } },
-		{ not: { required: ["expand"], properties: { parallel: { type: "array", items: {} } } } },
-	],
 });
 
 // Control stub (round two): 10 fields collapsed; the full table lives in the pi-cohort
@@ -259,9 +258,6 @@ export const SubagentParams = Type.Object({
 	})),
 	id: Type.Optional(Type.String({
 		description: "Run id/prefix for status/interrupt/resume."
-	})),
-	runId: Type.Optional(Type.String({
-		description: "Run ID (interrupt/resume); defaults to latest. Prefer id."
 	})),
 	dir: Type.Optional(Type.String({
 		description: "Async run dir for status/resume."

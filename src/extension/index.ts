@@ -441,7 +441,7 @@ Example: { chain: [{agent:"agent-a", task:"Analyze {task}"}, {agent:"agent-b", t
 
 MANAGEMENT: action=list/get/create/update/delete (chainName for chains; packaged agents use dotted names); config fields: pi-cohort skill reference/config-fields.md.
 
-CONTROL: action=status/interrupt/resume (id/runId, message, index); details: pi-cohort skill.
+CONTROL: action=status/interrupt/resume (id, message, index); details: pi-cohort skill.
 
 DIAGNOSTICS:
 • { action: "doctor" } - read-only report for runtime paths, discovery, sessions, and intercom`,
