@@ -151,23 +151,23 @@ const TaskItem = Type.Object({
 	acceptance: Type.Optional(AcceptanceOverrideStub),
 });
 
-// Parallel task item (within a parallel step)
-const ParallelTaskSchema = Type.Object({
-	agent: Type.String(),
-	task: Type.Optional(Type.String({ description: "{task},{previous},{chain_dir} template; defaults to {previous}." })),
-	phase: Type.Optional(Type.String()),
-	label: Type.Optional(Type.String()),
-	as: Type.Optional(Type.String({ description: "Identifier for {outputs.name}." })),
-	outputSchema: Type.Optional(brief(JsonSchemaObject, "Output JSON Schema.")),
-	cwd: Type.Optional(Type.String()),
-	count: Type.Optional(Type.Integer({ minimum: 1, description: "Repeat N times." })),
-	output: Type.Optional(brief(OutputOverride, "Output file path, or false.")),
-	outputMode: Type.Optional(brief(OutputModeOverride, "Default: inline.")),
-	reads: Type.Optional(brief(ReadsOverride, "Reads first, or false.")),
-	progress: Type.Optional(Type.Boolean({ description: "Enable progress.md tracking." })),
-	model: Type.Optional(Type.String()),
-	skill: Type.Optional(brief(SkillOverride, "Skill override.")),
-	acceptance: Type.Optional(AcceptanceOverrideStub),
+// Parallel-item stubs (round two): structural/wiring keys stay explicit (agent/task,
+// count/as = arity + {outputs.name} routing); every per-task override (model, label,
+// phase, output, outputMode, reads, skill, cwd, progress, outputSchema, acceptance)
+// passes through additionalProperties and is documented in the pi-cohort skill.
+// Widening-only: dynamic-arm unknown keys are still rejected at runtime by
+// assertOnlyKeys (dynamic-fanout.ts); static-arm unknown keys were always ignored.
+const ParallelTaskSchema = Type.Unsafe({
+	type: "object",
+	additionalProperties: true,
+	required: ["agent"],
+	properties: {
+		agent: { type: "string" },
+		task: { type: "string", description: "{task},{previous},{chain_dir} template; defaults to {previous}." },
+		count: { type: "integer", minimum: 1, description: "Repeat N times." },
+		as: { type: "string", description: "Identifier for {outputs.name}." },
+	},
+	description: "Per-task overrides (model, label, output, skill, ...): pi-cohort skill.",
 });
 
 const DynamicExpandSchema = Type.Object({
@@ -181,21 +181,16 @@ const DynamicExpandSchema = Type.Object({
 	onEmpty: Type.Optional(Type.String({ enum: ["skip", "fail"], description: "Defaults to skip." })),
 }, { additionalProperties: false });
 
-const DynamicParallelTemplateSchema = Type.Object({
-	agent: Type.String(),
-	task: Type.Optional(Type.String({ description: "{item},{item.path},{task},{previous},{chain_dir},{outputs.name} template." })),
-	phase: Type.Optional(Type.String()),
-	label: Type.Optional(Type.String({ description: "Label; item templates supported." })),
-	outputSchema: Type.Optional(brief(JsonSchemaObject, "Output JSON Schema.")),
-	cwd: Type.Optional(Type.String()),
-	output: Type.Optional(brief(OutputOverride, "Output file path, or false.")),
-	outputMode: Type.Optional(brief(OutputModeOverride, "Default: inline.")),
-	reads: Type.Optional(brief(ReadsOverride, "Reads first, or false.")),
-	progress: Type.Optional(Type.Boolean({ description: "Enable progress.md tracking." })),
-	model: Type.Optional(Type.String()),
-	skill: Type.Optional(brief(SkillOverride, "Skill override.")),
-	acceptance: Type.Optional(AcceptanceOverrideStub),
-}, { additionalProperties: false });
+const DynamicParallelTemplateSchema = Type.Unsafe({
+	type: "object",
+	additionalProperties: true,
+	required: ["agent"],
+	properties: {
+		agent: { type: "string" },
+		task: { type: "string", description: "{item},{item.path},{task},{previous},{chain_dir},{outputs.name} template." },
+	},
+	description: "Per-task overrides (model, label, output, skill, ...): pi-cohort skill.",
+});
 
 const DynamicCollectSchema = Type.Object({
 	as: Type.String({ description: "Collected result array name." }),
@@ -244,21 +239,14 @@ const ChainItem = Type.Object({
 	],
 });
 
-const ControlOverrides = Type.Object({
-	enabled: Type.Optional(Type.Boolean({ description: "Toggle attention tracking." })),
-	needsAttentionAfterMs: Type.Optional(Type.Integer({ minimum: 1, description: "No-activity window before needs_attention." })),
-	activeNoticeAfterMs: Type.Optional(Type.Integer({ minimum: 1, description: "Elapsed-ms notice threshold (default: 240000)." })),
-	inFlightSilenceCeilingMs: Type.Optional(Type.Integer({ minimum: 1, description: "Silent ms before escalation (default: 600000)." })),
-	inFlightSilenceKillMs: Type.Optional(Type.Integer({ minimum: 1, description: "SIGTERM child (default: 1800000, clamped above needs_attention)." })),
-	activeNoticeAfterTurns: Type.Optional(Type.Integer({ minimum: 1, description: "Notice by assistant turns (off by default)." })),
-	activeNoticeAfterTokens: Type.Optional(Type.Integer({ minimum: 1, description: "Notice by total tokens (off by default)." })),
-	failedToolAttemptsBeforeAttention: Type.Optional(Type.Integer({ minimum: 1, description: "Mutating-tool failures before needs_attention (default: 3)." })),
-	notifyOn: Type.Optional(Type.Array(Type.String({ enum: ["active_long_running", "needs_attention"] }), {
-		description: "To parent (default: active_long_running, needs_attention).",
-	})),
-	notifyChannels: Type.Optional(Type.Array(Type.String({ enum: ["event", "async", "intercom"] }), {
-		description: "Default: event, async, intercom.",
-	})),
+// Control stub (round two): 10 fields collapsed; the full table lives in the pi-cohort
+// skill reference/config-fields.md. resolveControlConfig (subagent-control.ts) re-parses
+// every field defensively at runtime, so mistyped values degrade to defaults.
+const ControlOverrides = Type.Unsafe({
+	type: "object",
+	additionalProperties: true,
+	properties: { enabled: { type: "boolean" } },
+	description: "Attention-tracking overrides (needsAttentionAfterMs, notifyOn, ...); fields: pi-cohort skill reference/config-fields.md.",
 });
 
 export const SubagentParams = Type.Object({

@@ -1,5 +1,7 @@
 # Subagent tool schema diet: 23,151 B -> <=18,000 B (description trimming only)
 
+> **Superseded by:** [doc/specs/2026-08-08-subagent-schema-diet-round-two.md](./2026-08-08-subagent-schema-diet-round-two.md) - "description trimming only" / no-shape-change framing and the size budget only; the brief() convention, config pointer, and named trims remain current
+
 Issue: [jjuraszek/pi-cohort#4](https://github.com/jjuraszek/pi-cohort/issues/4)
 Baseline: `eb7c74b`, schema measured at exactly 23,151 bytes via
 `Buffer.byteLength(JSON.stringify(SubagentParams), "utf8")`.

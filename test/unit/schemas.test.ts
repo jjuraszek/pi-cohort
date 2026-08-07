@@ -171,11 +171,9 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 
 		assertChainArtifactFields(chainItem.properties);
 		assert.equal(chainItem.properties?.progress?.description, "Enable progress.md tracking in {chain_dir}");
-		const parallelBranches = anyOfBranches(chainItem.properties?.parallel);
-		const staticParallel = parallelBranches.find((branch) => branch.type === "array");
-		assertChainArtifactFields((staticParallel?.items as { properties?: Record<string, JsonSchemaNode> } | undefined)?.properties);
-		const dynamicParallel = parallelBranches.find((branch) => branch.type === "object");
-		assertChainArtifactFields((dynamicParallel?.properties as Record<string, JsonSchemaNode> | undefined));
+		// Parallel arms are permissive stubs (round two): output/progress no longer appear as
+		// explicit schema fields there. Stub structure covered by
+		// "parallel-item and control stubs (round two)".
 	});
 
 	it("uses an enum for management and control actions", () => {
@@ -208,13 +206,9 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 
 		const controlSchema = SubagentParams?.properties?.control;
 		assert.ok(controlSchema, "control schema should exist");
-		assert.equal(controlSchema.properties?.needsAttentionAfterMs?.minimum, 1);
-		assert.equal(controlSchema.properties?.activeNoticeAfterMs?.minimum, 1);
-		assert.equal(controlSchema.properties?.activeNoticeAfterTurns?.minimum, 1);
-		assert.equal(controlSchema.properties?.activeNoticeAfterTokens?.minimum, 1);
-		assert.equal(controlSchema.properties?.failedToolAttemptsBeforeAttention?.minimum, 1);
-		assert.deepEqual(controlSchema.properties?.notifyOn?.items?.enum, ["active_long_running", "needs_attention"]);
-		assert.deepEqual(controlSchema.properties?.notifyChannels?.items?.enum, ["event", "async", "intercom"]);
+		// control is a permissive stub (round two): needsAttentionAfterMs/notifyOn/etc. no longer
+		// appear as explicit schema fields. Stub structure covered by
+		// "parallel-item and control stubs (round two)".
 	});
 
 	it("does not emit description-only schema nodes", () => {
@@ -340,27 +334,13 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 			const dynamicParallelBranch = parallelBranches.find((branch) => branch.type === "object");
 			assert.ok(staticParallelBranch, "parallel should support static task arrays");
 			assert.ok(dynamicParallelBranch, "parallel should support a dynamic task template object");
+			// Per-task override fields (phase/label/outputSchema/output/reads/skill) are no longer
+			// explicit schema members on the parallel arms - they are permissive stubs (round two).
+			// Stub structure covered by "parallel-item and control stubs (round two)".
 			const chainParallelTask = (staticParallelBranch.items as { properties?: Record<string, JsonSchemaNode> } | undefined)?.properties;
 			assert.equal(chainParallelTask?.agent?.type, "string");
-		assert.equal(chainParallelTask?.phase?.type, "string");
-		assert.equal(chainParallelTask?.label?.type, "string");
-		assert.equal(chainParallelTask?.as?.type, "string");
-		assert.equal(chainParallelTask?.outputSchema?.type, "object");
-		const chainParallelOutputSchema = chainParallelTask?.output;
-		assert.equal(chainParallelOutputSchema?.type, undefined);
-		assert.equal(hasAnyOfType(chainParallelOutputSchema, "string"), true);
-		assert.equal(hasAnyOfType(chainParallelOutputSchema, "boolean"), true);
-		const chainParallelReadsSchema = chainParallelTask?.reads;
-		assert.equal(chainParallelReadsSchema?.type, undefined);
-		assert.equal(hasAnyOfArrayWithStringItems(chainParallelReadsSchema), true);
-			assert.equal(hasAnyOfType(chainParallelReadsSchema, "boolean"), true);
 			assert.equal(chainItem.properties?.expand?.type, "object");
 			assert.equal(chainItem.properties?.collect?.type, "object");
-		const chainParallelSkillSchema = chainParallelTask?.skill;
-		assert.equal(chainParallelSkillSchema?.type, undefined);
-		assert.equal(hasAnyOfArrayWithStringItems(chainParallelSkillSchema), true);
-		assert.equal(hasAnyOfType(chainParallelSkillSchema, "boolean"), true);
-		assert.equal(hasAnyOfType(chainParallelSkillSchema, "string"), true);
 		const chainOutputSchema = chainItem.properties?.output as JsonSchemaNode | undefined;
 		assert.equal(chainOutputSchema?.type, undefined);
 		assert.equal(hasAnyOfType(chainOutputSchema, "string"), true);
@@ -394,21 +374,23 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 			{ agent: "worker", task: "Fix", acceptance: { level: "checked", review: false } },
 			{ config: { name: "reviewer", description: "Review things" } },
 			{ config: JSON.stringify({ name: "reviewer", description: "Review things" }) },
+			// Parallel-item stubs (round two): unknown/mistyped keys pass the schema; dynamic-arm keys
+			// are still rejected at runtime by assertOnlyKeys (dynamic-fanout.ts).
+			{ chain: [{ parallel: [{ agent: "reviewer", output: 123 }] }] },
+			{ chain: [{ parallel: [{ agent: "reviewer", reads: "input.md" }] }] },
+			{ chain: [{ parallel: [{ agent: "reviewer", skill: 123 }] }] },
+			{ chain: [{ parallel: [{ agent: "reviewer", outputSchema: "schema.json" }] }] },
+			{ chain: [{ expand: { from: { output: "targets", path: "/items" }, maxItems: 4 }, parallel: { agent: "reviewer", as: "child" }, collect: { as: "reviews" } }] },
 		];
 		const invalidValues = [
 			{ skill: 123 },
 			{ skill: [123] },
 			{ output: 123 },
 			{ tasks: [{ agent: "reviewer", task: "check this", reads: "input.md" }] },
-			{ chain: [{ parallel: [{ agent: "reviewer", output: 123 }] }] },
-			{ chain: [{ parallel: [{ agent: "reviewer", reads: "input.md" }] }] },
-			{ chain: [{ parallel: [{ agent: "reviewer", skill: 123 }] }] },
 			{ chain: [{ agent: "reviewer", outputSchema: "schema.json" }] },
-			{ chain: [{ parallel: [{ agent: "reviewer", outputSchema: "schema.json" }] }] },
 			{ chain: [{ expand: { from: { output: "targets", path: "/items" }, maxItems: 4 }, parallel: [{ agent: "reviewer" }], collect: { as: "reviews" } }] },
 			{ chain: [{ expand: { from: { output: "targets", path: "/items" }, maxItems: 4 }, parallel: { agent: "reviewer" } }] },
 			{ chain: [{ expand: { from: { output: "targets", path: "/items" }, maxItems: 4, expression: "items" }, parallel: { agent: "reviewer" }, collect: { as: "reviews" } }] },
-			{ chain: [{ expand: { from: { output: "targets", path: "/items" }, maxItems: 4 }, parallel: { agent: "reviewer", as: "child" }, collect: { as: "reviews" } }] },
 			{ chain: [{ expand: { from: { output: "targets", path: "/items" }, maxItems: 4 }, parallel: { agent: "reviewer" }, collect: { as: "reviews" }, when: "later" }] },
 			{ agent: "worker", task: "Fix", acceptance: true },
 			{ agent: "worker", task: "Fix", acceptance: { level: "checked", review: true } },
@@ -445,9 +427,10 @@ describe("schema size budget", { skip: !schemasAvailable ? "typebox not availabl
 	it("serialized SubagentParams stays within the API payload budget", () => {
 		// Budget measures our canonical JSON, not provider re-serialization or tokenizer counts.
 		// Baselines: 23,151 bytes at eb7c74b (pre-diet, issue #4); 17,997 before the acceptance
-		// dedupe (issue #6). This ceiling also gates future field additions.
+		// dedupe (issue #6); 12,374 before the parallel-item/control stubs (round two).
+		// This ceiling also gates future field additions.
 		const bytes = Buffer.byteLength(JSON.stringify(SubagentParams), "utf8");
-		assert.ok(bytes <= 13_000, `SubagentParams schema is ${bytes} bytes; budget is 13,000 (baselines: 23,151 pre-#4, 17,997 pre-#6)`);
+		assert.ok(bytes <= 9_500, `SubagentParams schema is ${bytes} bytes; budget is 9,500 (baselines: 23,151 pre-#4, 17,997 pre-#6, 12,374 pre-round-two)`);
 	});
 });
 
@@ -512,10 +495,16 @@ describe("acceptance accepted at all positions", { skip: !schemasAvailable || !C
 		["false (deprecated shorthand dropped from stub)", false],
 		["invalid level string", "verifed"],
 	];
+	// tasks[] item and chain step carry the acceptance stub: string levels validated,
+	// objects passed through. The two parallel positions are permissive stubs (round two):
+	// any acceptance value passes the schema; validateAcceptanceInput rejects at runtime.
+	const stubPositions = nestedPositions.filter(([n]) => n === "tasks[] item" || n === "chain step");
 	for (const [posName, build] of nestedPositions) {
 		for (const [shapeName, acc] of nestedValidShapes) {
 			it(`${posName} accepts acceptance ${shapeName}`, () => assertValid(build(acc)));
 		}
+	}
+	for (const [posName, build] of stubPositions) {
 		for (const [shapeName, acc] of nestedInvalidShapes) {
 			it(`${posName} rejects acceptance ${shapeName}`, () => assertInvalid(build(acc)));
 		}
@@ -544,9 +533,6 @@ describe("brief() clone invariants", { skip: !schemasAvailable ? "typebox not av
 	const params = SubagentParams as unknown as Record<string, any>;
 	const chainStep = params.properties.chain.items.properties;
 	const taskItem = params.properties.tasks.items.properties;
-	const parallelAnyOf = chainStep.parallel.anyOf as any[];
-	const staticParallel = (parallelAnyOf.find((b) => b.type === "array") as any).items.properties;
-	const dynamicTemplate = (parallelAnyOf.find((b) => b.type === "object") as any).properties;
 
 	// Non-enumerable TypeBox metadata marker survives the descriptor clone: Type.Unsafe-based
 	// consts (AcceptanceOverride/SkillOverride/OutputOverride/ReadsOverride/JsonSchemaObject) carry
@@ -568,8 +554,8 @@ describe("brief() clone invariants", { skip: !schemasAvailable ? "typebox not av
 		assert.ok(!Object.getOwnPropertyDescriptor(node, other), `${label}: unexpected ${other} marker present`);
 	};
 
-	// skill/outputMode: canonical lives at top-level SubagentParams; all 4 nested
-	// positions (tasks[] item, chain step, static parallel member, dynamic fanout template) wrap it.
+	// skill/outputMode: canonical lives at top-level SubagentParams; the 2 nested positions
+	// (tasks[] item, chain step) wrap it; the parallel arms are permissive stubs (round two).
 	const canonicalPositions: Array<[string, unknown, Array<[string, unknown]>]> = [
 		[
 			"skill",
@@ -577,8 +563,6 @@ describe("brief() clone invariants", { skip: !schemasAvailable ? "typebox not av
 			[
 				["tasks-item", taskItem.skill],
 				["chain-step", chainStep.skill],
-				["static-parallel-member", staticParallel.skill],
-				["dynamic-template", dynamicTemplate.skill],
 			],
 		],
 		[
@@ -587,19 +571,15 @@ describe("brief() clone invariants", { skip: !schemasAvailable ? "typebox not av
 			[
 				["tasks-item", taskItem.outputMode],
 				["chain-step", chainStep.outputMode],
-				["static-parallel-member", staticParallel.outputMode],
-				["dynamic-template", dynamicTemplate.outputMode],
 			],
 		],
 		// reads: canonical moved to tasks[] item (TaskItem.reads is the unwrapped ReadsOverride
-		// const itself); the other 3 nested positions wrap it.
+		// const itself); chain-step wraps it.
 		[
 			"reads",
 			taskItem.reads,
 			[
 				["chain-step", chainStep.reads],
-				["static-parallel-member", staticParallel.reads],
-				["dynamic-template", dynamicTemplate.reads],
 			],
 		],
 	];
@@ -628,12 +608,8 @@ describe("brief() clone invariants", { skip: !schemasAvailable ? "typebox not av
 	const outputSites: Array<[string, unknown]> = [
 		["tasks-item", taskItem.output],
 		["chain-step", chainStep.output],
-		["static-parallel-member", staticParallel.output],
-		["dynamic-template", dynamicTemplate.output],
 	];
 	const outputSchemaSites: Array<[string, unknown]> = [
-		["static-parallel-member", staticParallel.outputSchema],
-		["dynamic-template", dynamicTemplate.outputSchema],
 		["dynamic-collect", chainStep.collect.properties.outputSchema],
 	];
 	const wrappedSiteGroups: Array<[string, Array<[string, unknown]>]> = [
@@ -672,14 +648,9 @@ describe("nested acceptance stub", { skip: !schemasAvailable ? "typebox not avai
 	const params = SubagentParams as unknown as Record<string, any>;
 	const chainStep = params.properties.chain.items.properties;
 	const taskItem = params.properties.tasks.items.properties;
-	const parallelAnyOf = chainStep.parallel.anyOf as any[];
-	const staticParallel = (parallelAnyOf.find((b) => b.type === "array") as any).items.properties;
-	const dynamicTemplate = (parallelAnyOf.find((b) => b.type === "object") as any).properties;
 	const stubSites: Array<[string, unknown]> = [
 		["tasks-item", taskItem.acceptance],
 		["chain-step", chainStep.acceptance],
-		["static-parallel-member", staticParallel.acceptance],
-		["dynamic-template", dynamicTemplate.acceptance],
 	];
 
 	it("full AcceptanceOverride appears exactly once (top-level)", () => {
@@ -705,10 +676,40 @@ describe("nested acceptance stub", { skip: !schemasAvailable ? "typebox not avai
 		});
 	}
 
-	it("all 4 stub sites serialize identically", () => {
+	it("both stub sites serialize identically", () => {
 		const [, first] = stubSites[0]!;
 		for (const [posName, stub] of stubSites.slice(1)) {
 			assert.deepEqual(JSON.parse(JSON.stringify(stub)), JSON.parse(JSON.stringify(first)), `stub at ${posName} diverged`);
 		}
+	});
+});
+
+describe("parallel-item and control stubs (round two)", { skip: !schemasAvailable ? "typebox not available" : undefined }, () => {
+	const params = SubagentParams as unknown as Record<string, any>;
+	const chainStep = params.properties.chain.items.properties;
+	const parallelAnyOf = chainStep.parallel.anyOf as any[];
+	const staticItem = (parallelAnyOf.find((b) => b.type === "array") as any).items as Record<string, any>;
+	const dynamicTemplate = parallelAnyOf.find((b) => b.type === "object") as Record<string, any>;
+	const control = params.properties.control as Record<string, any>;
+
+	it("static parallel item is a permissive stub", () => {
+		assert.equal(staticItem.additionalProperties, true);
+		assert.deepEqual(Object.keys(staticItem.properties).sort(), ["agent", "as", "count", "task"]);
+		assert.deepEqual(staticItem.required, ["agent"]);
+		assert.match(String(staticItem.description ?? ""), /pi-cohort skill/);
+	});
+
+	it("dynamic template is a permissive stub keeping the item-templating note", () => {
+		assert.equal(dynamicTemplate.additionalProperties, true);
+		assert.deepEqual(Object.keys(dynamicTemplate.properties).sort(), ["agent", "task"]);
+		assert.deepEqual(dynamicTemplate.required, ["agent"]);
+		assert.match(String(dynamicTemplate.properties.task.description ?? ""), /\{item\},\{item\.path\}/);
+		assert.match(String(dynamicTemplate.description ?? ""), /pi-cohort skill/);
+	});
+
+	it("control is a permissive stub pointing at config-fields.md", () => {
+		assert.equal(control.additionalProperties, true);
+		assert.deepEqual(Object.keys(control.properties), ["enabled"]);
+		assert.match(String(control.description ?? ""), /config-fields\.md/);
 	});
 });

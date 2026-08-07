@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- subagent tool schema shrunk from 12,374 to 9,483 bytes serialized, plus ~600
+  chars off the tool description: the chain parallel-item schemas (both the
+  static array items and the dynamic fanout template) and `control` are now
+  permissive stubs (`additionalProperties: true`) keeping only structural keys
+  explicit (parallel: agent/task/count/as; control: enabled); the
+  MANAGEMENT/CONTROL description blocks compressed to one line each. Widening
+  only - every previously valid call stays valid; dynamic-template unknown
+  keys are still rejected at runtime (assertOnlyKeys), and the control field
+  table moved to the pi-cohort skill reference/config-fields.md.
+
 ## [5.1.0] - 2026-08-06
 
 ### Changed

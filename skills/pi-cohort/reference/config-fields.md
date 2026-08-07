@@ -1,8 +1,8 @@
-# subagent `config` field reference
+# subagent field reference: `config` and call-time `control`
 
-Fields accepted by `subagent({ action: "create" | "update", config: {...} })`.
+Fields accepted by `subagent({ action: "create" | "update", config: {...} })`, plus the call-time `control` overrides (last section).
 `config` may be an object or a JSON string. Presence of `steps` makes it a chain.
-Scope: this is the management create/update path (`parseStepList`), which accepts exactly the step fields below and requires `outputSchema` to be a file path; file-authored `.chain.md` chains support additional step fields (parallel, expand, collect, concurrency, failFast, worktree, acceptance, inline outputSchema) - see SKILL.md chain authoring.
+Scope (for `config`): this is the management create/update path (`parseStepList`), which accepts exactly the step fields below and requires `outputSchema` to be a file path; file-authored `.chain.md` chains support additional step fields (parallel, expand, collect, concurrency, failFast, worktree, acceptance, inline outputSchema) - see SKILL.md chain authoring.
 
 ## Agent config
 
@@ -49,3 +49,20 @@ Per step:
 | `model` | string | Model override. |
 | `skills` | string[] \| false | Skills to inject (NOTE: plural `skills` here, unlike the execution-time `skill` param). |
 | `progress` | boolean | progress.md tracking. |
+
+## Call-time `control` overrides
+
+Per-call attention-tracking overrides: `subagent({ ..., control: {...} })`. Run-level field - sits beside `tasks`/`chain`, not inside task items. The tool schema declares only `enabled`; all fields below are accepted (`additionalProperties: true`) and re-parsed defensively at runtime (`resolveControlConfig`, `src/runs/shared/subagent-control.ts`) - invalid values fall back to the defaults.
+
+| Field | Type | Meaning | Default |
+|---|---|---|---|
+| `enabled` | boolean | Toggle attention tracking. | `true` |
+| `needsAttentionAfterMs` | integer >= 1 | No-activity window before `needs_attention`. | `60000` |
+| `activeNoticeAfterMs` | integer >= 1 | Elapsed-ms threshold for the long-running notice. | `240000` |
+| `inFlightSilenceCeilingMs` | integer >= 1 | Silent ms in-flight before escalation. | `600000` |
+| `inFlightSilenceKillMs` | integer >= 1 | SIGTERM the child after this silent span (clamped above the needs-attention window). | `1800000` |
+| `activeNoticeAfterTurns` | integer >= 1 | Notice by assistant turns. | off |
+| `activeNoticeAfterTokens` | integer >= 1 | Notice by total tokens. | off |
+| `failedToolAttemptsBeforeAttention` | integer >= 1 | Mutating-tool failures before `needs_attention`. | `3` |
+| `notifyOn` | array of `"active_long_running"` \| `"needs_attention"` | Which events notify the parent. | both |
+| `notifyChannels` | array of `"event"` \| `"async"` \| `"intercom"` | Delivery channels. | all three |

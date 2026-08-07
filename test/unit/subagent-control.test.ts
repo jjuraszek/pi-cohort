@@ -383,8 +383,9 @@ describe("shouldSilenceKill", () => {
 });
 
 describe("ControlOverrides schema", () => {
-	it("declares inFlightSilenceKillMs as an optional integer", () => {
-		const controlProps = (SubagentParams.properties.control as { properties: Record<string, unknown> }).properties;
-		assert.ok("inFlightSilenceKillMs" in controlProps);
+	it("is a permissive stub: undeclared fields like inFlightSilenceKillMs pass through", () => {
+		const control = SubagentParams.properties.control as { additionalProperties?: boolean; properties: Record<string, unknown> };
+		assert.equal(control.additionalProperties, true);
+		assert.ok(!("inFlightSilenceKillMs" in control.properties));
 	});
 });

@@ -268,6 +268,7 @@
 								"type": "array",
 								"items": {
 									"type": "object",
+									"additionalProperties": true,
 									"required": [
 										"agent"
 									],
@@ -278,101 +279,12 @@
 										"task": {
 											"type": "string"
 										},
-										"phase": {
-											"type": "string"
-										},
-										"label": {
-											"type": "string"
-										},
-										"as": {
-											"type": "string"
-										},
-										"outputSchema": {
-											"type": "object",
-											"additionalProperties": true
-										},
-										"cwd": {
-											"type": "string"
-										},
 										"count": {
 											"type": "integer",
 											"minimum": 1
 										},
-										"output": {
-											"anyOf": [
-												{
-													"type": "string"
-												},
-												{
-													"type": "boolean"
-												}
-											]
-										},
-										"outputMode": {
-											"type": "string",
-											"enum": [
-												"inline",
-												"file-only"
-											]
-										},
-										"reads": {
-											"anyOf": [
-												{
-													"type": "array",
-													"items": {
-														"type": "string"
-													}
-												},
-												{
-													"type": "boolean"
-												}
-											]
-										},
-										"progress": {
-											"type": "boolean"
-										},
-										"model": {
+										"as": {
 											"type": "string"
-										},
-										"skill": {
-											"anyOf": [
-												{
-													"type": "array",
-													"items": {
-														"type": "string"
-													}
-												},
-												{
-													"type": "boolean"
-												},
-												{
-													"type": "string"
-												}
-											]
-										},
-										"acceptance": {
-											"anyOf": [
-												{
-													"type": "string",
-													"enum": [
-														"auto",
-														"none",
-														"attested",
-														"checked",
-														"verified",
-														"reviewed"
-													]
-												},
-												{
-													"type": "object",
-													"additionalProperties": true,
-													"properties": {
-														"level": {
-															"type": "string"
-														}
-													}
-												}
-											]
 										}
 									}
 								},
@@ -380,6 +292,7 @@
 							},
 							{
 								"type": "object",
+								"additionalProperties": true,
 								"required": [
 									"agent"
 								],
@@ -389,98 +302,8 @@
 									},
 									"task": {
 										"type": "string"
-									},
-									"phase": {
-										"type": "string"
-									},
-									"label": {
-										"type": "string"
-									},
-									"outputSchema": {
-										"type": "object",
-										"additionalProperties": true
-									},
-									"cwd": {
-										"type": "string"
-									},
-									"output": {
-										"anyOf": [
-											{
-												"type": "string"
-											},
-											{
-												"type": "boolean"
-											}
-										]
-									},
-									"outputMode": {
-										"type": "string",
-										"enum": [
-											"inline",
-											"file-only"
-										]
-									},
-									"reads": {
-										"anyOf": [
-											{
-												"type": "array",
-												"items": {
-													"type": "string"
-												}
-											},
-											{
-												"type": "boolean"
-											}
-										]
-									},
-									"progress": {
-										"type": "boolean"
-									},
-									"model": {
-										"type": "string"
-									},
-									"skill": {
-										"anyOf": [
-											{
-												"type": "array",
-												"items": {
-													"type": "string"
-												}
-											},
-											{
-												"type": "boolean"
-											},
-											{
-												"type": "string"
-											}
-										]
-									},
-									"acceptance": {
-										"anyOf": [
-											{
-												"type": "string",
-												"enum": [
-													"auto",
-													"none",
-													"attested",
-													"checked",
-													"verified",
-													"reviewed"
-												]
-											},
-											{
-												"type": "object",
-												"additionalProperties": true,
-												"properties": {
-													"level": {
-														"type": "string"
-													}
-												}
-											}
-										]
 									}
-								},
-								"additionalProperties": false
+								}
 							}
 						]
 					},
@@ -642,58 +465,10 @@
 		},
 		"control": {
 			"type": "object",
+			"additionalProperties": true,
 			"properties": {
 				"enabled": {
 					"type": "boolean"
-				},
-				"needsAttentionAfterMs": {
-					"type": "integer",
-					"minimum": 1
-				},
-				"activeNoticeAfterMs": {
-					"type": "integer",
-					"minimum": 1
-				},
-				"inFlightSilenceCeilingMs": {
-					"type": "integer",
-					"minimum": 1
-				},
-				"inFlightSilenceKillMs": {
-					"type": "integer",
-					"minimum": 1
-				},
-				"activeNoticeAfterTurns": {
-					"type": "integer",
-					"minimum": 1
-				},
-				"activeNoticeAfterTokens": {
-					"type": "integer",
-					"minimum": 1
-				},
-				"failedToolAttemptsBeforeAttention": {
-					"type": "integer",
-					"minimum": 1
-				},
-				"notifyOn": {
-					"type": "array",
-					"items": {
-						"type": "string",
-						"enum": [
-							"active_long_running",
-							"needs_attention"
-						]
-					}
-				},
-				"notifyChannels": {
-					"type": "array",
-					"items": {
-						"type": "string",
-						"enum": [
-							"event",
-							"async",
-							"intercom"
-						]
-					}
 				}
 			}
 		},
