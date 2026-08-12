@@ -259,9 +259,6 @@ export const SubagentParams = Type.Object({
 	id: Type.Optional(Type.String({
 		description: "Run id/prefix for status/interrupt/resume."
 	})),
-	dir: Type.Optional(Type.String({
-		description: "Async run dir for status/resume."
-	})),
 	index: Type.Optional(Type.Integer({ minimum: 0, description: "Zero-based index for per-child actions." })),
 	message: Type.Optional(Type.String({ description: "Follow-up message for resume." })),
 	// Chain identifier for management (can't reuse 'chain' — that's the execution array)

@@ -185,11 +185,6 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		assert.match(String(idSchema.description ?? ""), /status/i);
 		assert.match(String(idSchema.description ?? ""), /interrupt/i);
 
-		const dirSchema = SubagentParams?.properties?.dir;
-		assert.ok(dirSchema, "dir schema should exist");
-		assert.equal(dirSchema.type, "string");
-		assert.match(String(dirSchema.description ?? ""), /status/i);
-
 		const controlSchema = SubagentParams?.properties?.control;
 		assert.ok(controlSchema, "control schema should exist");
 		// control is a permissive stub (round two): needsAttentionAfterMs/notifyOn/etc. no longer
@@ -197,13 +192,16 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		// "parallel-item and control stubs (round two)".
 	});
 
-	it("runId is not advertised but still passes schema validation", { skip: !CompileSchema ? "typebox compiler not available" : undefined }, () => {
-		// Round three: the deprecated runId alias left the advertisement. Runtime keeps
-		// accepting it (subagent-executor.ts `params.id ?? params.runId`, async-resume.ts),
-		// and the schema does not forbid unknown top-level keys, so old calls stay valid.
+	it("runId and dir are not advertised but still pass schema validation", { skip: !CompileSchema ? "typebox compiler not available" : undefined }, () => {
+		// Round three: the deprecated runId alias left the advertisement; dir followed (#5).
+		// Runtime keeps accepting both (subagent-executor.ts `params.id ?? params.runId`,
+		// async-resume.ts / run-status.ts `params.dir`), and the schema does not forbid
+		// unknown top-level keys, so old calls stay valid.
 		assert.equal(SubagentParams?.properties?.runId, undefined);
+		assert.equal(SubagentParams?.properties?.dir, undefined);
 		const validator = CompileSchema!(SubagentParams);
 		assert.equal(validator.Check({ action: "status", runId: "abc123" }), true);
+		assert.equal(validator.Check({ action: "resume", id: "abc123", dir: "/tmp/x" }), true);
 	});
 
 	it("does not emit description-only schema nodes", () => {

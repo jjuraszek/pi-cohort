@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- `dir` no longer advertised by the subagent tool schema (follows `runId`,
+  #5) - still accepted at runtime for async status/resume, `id` preferred.
+
 ## [5.1.2] - 2026-08-07
 
 ### Changed

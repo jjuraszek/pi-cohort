@@ -24,9 +24,6 @@
 		"id": {
 			"type": "string"
 		},
-		"dir": {
-			"type": "string"
-		},
 		"index": {
 			"type": "integer",
 			"minimum": 0
