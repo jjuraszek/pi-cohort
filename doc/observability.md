@@ -124,3 +124,5 @@ Intercom delivery events:
 - `subagent:result-intercom`
 
 The result watcher emits `subagent:async-complete`; `src/extension/index.ts` registers the notification handler that consumes it. Control/attention events are surfaced as visible parent notices and persisted for async runs. With `pi-intercom`, needs-attention notices and grouped parent-side subagent result deliveries can reach the orchestrator over intercom.
+
+While the session is streaming, foreground control notices are steered to a turn boundary - never between an assistant `toolCall` and its `toolResult`; while idle, they append without starting a turn.

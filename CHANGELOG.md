@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Foreground control notices are steered to a turn boundary while the session
+  is streaming instead of splicing into an open tool cycle (which corrupted
+  the session with a duplicated `tool_use_id`); idle delivery still appends
+  without triggering a turn. (#7)
+
 ### Changed
 
 - `dir` no longer advertised by the subagent tool schema (follows `runId`,

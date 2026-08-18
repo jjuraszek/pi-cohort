@@ -6,7 +6,7 @@ import {
 } from "../../src/extension/control-notices.ts";
 import type { ControlEvent, SubagentState } from "../../src/shared/types.ts";
 
-function makeState(): SubagentState {
+function makeState(overrides: Partial<SubagentState> = {}): SubagentState {
 	return {
 		baseCwd: "/tmp/project",
 		currentSessionId: null,
@@ -22,7 +22,12 @@ function makeState(): SubagentState {
 		watcher: null,
 		watcherRestartTimer: null,
 		resultFileCoalescer: { schedule: () => false, clear: () => {} },
+		...overrides,
 	};
+}
+
+function fakeUiContext(isIdle: () => boolean): SubagentState["lastUiContext"] {
+	return { isIdle } as unknown as SubagentState["lastUiContext"];
 }
 
 function needsAttentionEvent(overrides: Partial<ControlEvent> = {}): ControlEvent {
@@ -57,7 +62,7 @@ function wait(ms: number): Promise<void> {
 
 describe("subagent control notice delivery", () => {
 	it("delivers async needs-attention notices immediately", () => {
-		const state = makeState();
+		const state = makeState({ lastUiContext: fakeUiContext(() => true) });
 		const recorder = makeRecorder();
 
 		handleSubagentControlNotice({
@@ -73,7 +78,7 @@ describe("subagent control notice delivery", () => {
 	});
 
 	it("queues foreground needs-attention notices until the same step is still actionable", async () => {
-		const state = makeState();
+		const state = makeState({ lastUiContext: fakeUiContext(() => true) });
 		state.foregroundControls.set("run-1", {
 			runId: "run-1",
 			mode: "chain",
@@ -158,5 +163,136 @@ describe("subagent control notice delivery", () => {
 
 		await wait(25);
 		assert.equal(recorder.sent.length, 0);
+	});
+
+	it("steers foreground notices while the session is streaming", async () => {
+		const state = makeState({ lastUiContext: fakeUiContext(() => false) });
+		state.foregroundControls.set("run-1", {
+			runId: "run-1",
+			mode: "chain",
+			startedAt: 0,
+			updatedAt: 0,
+			currentAgent: "worker",
+			currentIndex: 0,
+			currentActivityState: "needs_attention",
+		});
+		const recorder = makeRecorder();
+
+		handleSubagentControlNotice({
+			pi: recorder.pi,
+			state,
+			visibleControlNotices: new Set(),
+			details: { source: "foreground", event: needsAttentionEvent() },
+			foregroundDelayMs: 10,
+		});
+
+		await wait(25);
+		assert.equal(recorder.sent.length, 1);
+		assert.deepEqual(recorder.sent[0]?.options, { triggerTurn: true });
+	});
+
+	it("treats a missing ui context as busy and steers", async () => {
+		const state = makeState(); // lastUiContext: null
+		state.foregroundControls.set("run-1", {
+			runId: "run-1",
+			mode: "chain",
+			startedAt: 0,
+			updatedAt: 0,
+			currentAgent: "worker",
+			currentIndex: 0,
+			currentActivityState: "needs_attention",
+		});
+		const recorder = makeRecorder();
+
+		handleSubagentControlNotice({
+			pi: recorder.pi,
+			state,
+			visibleControlNotices: new Set(),
+			details: { source: "foreground", event: needsAttentionEvent() },
+			foregroundDelayMs: 10,
+		});
+
+		await wait(25);
+		assert.equal(recorder.sent.length, 1);
+		assert.deepEqual(recorder.sent[0]?.options, { triggerTurn: true });
+	});
+
+	it("evaluates idle state at fire time, not at event receipt", async () => {
+		let idle = true;
+		const state = makeState({ lastUiContext: fakeUiContext(() => idle) });
+		state.foregroundControls.set("run-1", {
+			runId: "run-1",
+			mode: "chain",
+			startedAt: 0,
+			updatedAt: 0,
+			currentAgent: "worker",
+			currentIndex: 0,
+			currentActivityState: "needs_attention",
+		});
+		const recorder = makeRecorder();
+
+		handleSubagentControlNotice({
+			pi: recorder.pi,
+			state,
+			visibleControlNotices: new Set(),
+			details: { source: "foreground", event: needsAttentionEvent() },
+			foregroundDelayMs: 10,
+		});
+		idle = false; // session starts streaming during the debounce window
+
+		await wait(25);
+		assert.equal(recorder.sent.length, 1);
+		assert.deepEqual(recorder.sent[0]?.options, { triggerTurn: true });
+	});
+
+	it("appends without a turn when the session goes idle before fire time", async () => {
+		let idle = false;
+		const state = makeState({ lastUiContext: fakeUiContext(() => idle) });
+		state.foregroundControls.set("run-1", {
+			runId: "run-1",
+			mode: "chain",
+			startedAt: 0,
+			updatedAt: 0,
+			currentAgent: "worker",
+			currentIndex: 0,
+			currentActivityState: "needs_attention",
+		});
+		const recorder = makeRecorder();
+
+		handleSubagentControlNotice({
+			pi: recorder.pi,
+			state,
+			visibleControlNotices: new Set(),
+			details: { source: "foreground", event: needsAttentionEvent() },
+			foregroundDelayMs: 10,
+		});
+		idle = true; // session finishes streaming during the debounce window
+
+		await wait(25);
+		assert.equal(recorder.sent.length, 1);
+		assert.deepEqual(recorder.sent[0]?.options, { triggerTurn: false });
+	});
+
+	it("dedups repeat notices across deliveries with a shared visible set", () => {
+		const state = makeState({ lastUiContext: fakeUiContext(() => true) });
+		const recorder = makeRecorder();
+		const visibleControlNotices = new Set<string>();
+
+		handleSubagentControlNotice({
+			pi: recorder.pi,
+			state,
+			visibleControlNotices,
+			details: { source: "async", event: needsAttentionEvent() },
+			foregroundDelayMs: 10,
+		});
+		handleSubagentControlNotice({
+			pi: recorder.pi,
+			state,
+			visibleControlNotices,
+			details: { source: "async", event: needsAttentionEvent() },
+			foregroundDelayMs: 10,
+		});
+
+		assert.equal(recorder.sent.length, 1);
 	});
 });

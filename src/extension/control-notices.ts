@@ -39,6 +39,7 @@ function deliverControlNotice(input: {
 	pi: Pick<ExtensionAPI, "sendMessage">;
 	visibleControlNotices: Set<string>;
 	details: SubagentControlMessageDetails;
+	isIdle: () => boolean;
 }): void {
 	const childIntercomTarget = controlNoticeTarget(input.details);
 	const key = controlNotificationKey(input.details.event, childIntercomTarget);
@@ -52,7 +53,7 @@ function deliverControlNotice(input: {
 			display: true,
 			details: { ...input.details, childIntercomTarget, noticeText },
 		},
-		{ triggerTurn: input.details.source !== "foreground" },
+		{ triggerTurn: input.details.source !== "foreground" || !input.isIdle() },
 	);
 }
 
@@ -72,8 +73,9 @@ export function handleSubagentControlNotice(input: {
 	foregroundDelayMs?: number;
 }): void {
 	if (!input.details?.event || input.details.event.type === "active_long_running") return;
+	const isIdle = () => input.state.lastUiContext?.isIdle() ?? false;
 	if (input.details.source !== "foreground") {
-		deliverControlNotice(input);
+		deliverControlNotice({ ...input, isIdle });
 		return;
 	}
 
@@ -85,7 +87,7 @@ export function handleSubagentControlNotice(input: {
 	const timer = setTimeout(() => {
 		pending.delete(timerKey);
 		if (!isForegroundNoticeStillActionable(input.state, input.details)) return;
-		deliverControlNotice(input);
+		deliverControlNotice({ ...input, isIdle });
 	}, input.foregroundDelayMs ?? 1000);
 	timer.unref?.();
 	pending.set(timerKey, timer);
