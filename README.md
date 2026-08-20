@@ -142,6 +142,10 @@ Optional companions:
 
 See [CHANGELOG.md](CHANGELOG.md) for shipped work in progress.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) - issues follow a Context / Problem / Idea / Acceptance Criteria template; PRs run the pi-gauntlet workflow (one-liners exempt from ceremony, never from keeping docs truthful).
+
 ## Support
 
 If `pi-cohort` is useful, consider [buying me a coffee](https://buymeacoffee.com/jjurasszek).
