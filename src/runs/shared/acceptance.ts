@@ -387,10 +387,10 @@ function checkCriteriaSatisfied(criteria: ResolvedAcceptanceGate[], report: Acce
 
 function reportEvidencePresent(report: AcceptanceReport, kind: AcceptanceEvidenceKind): boolean {
 	switch (kind) {
-		case "changed-files": return isStringArray(report.changedFiles) && report.changedFiles.length > 0;
-		case "tests-added": return isStringArray(report.testsAddedOrUpdated) && report.testsAddedOrUpdated.length > 0;
-		case "commands-run": return Array.isArray(report.commandsRun) && report.commandsRun.length > 0;
-		case "validation-output": return isStringArray(report.validationOutput) && report.validationOutput.length > 0;
+		case "changed-files": return isStringArray(report.changedFiles);
+		case "tests-added": return isStringArray(report.testsAddedOrUpdated);
+		case "commands-run": return Array.isArray(report.commandsRun);
+		case "validation-output": return isStringArray(report.validationOutput);
 		case "residual-risks": return isStringArray(report.residualRisks);
 		case "no-staged-files": return report.noStagedFiles === true;
 		case "diff-summary": return typeof report.diffSummary === "string" && report.diffSummary.trim().length > 0;

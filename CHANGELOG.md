@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Async (detached) subagent runs no longer crash at boot with `Cannot find module 'typebox/compile'` on consumer installs: `typebox` is now a real runtime dependency (`^1.3.11`). This deliberately re-reverses 2.0.0's move of typebox to peerDependencies - that decision's "match pi's bundled packages" rationale only holds for code running under pi's jiti aliases, and the detached runner runs outside them (same reasoning as `jiti` itself being a real dependency). ([#9](https://github.com/jjuraszek/pi-cohort/issues/9))
+- Acceptance evidence checks now treat present-but-empty `changedFiles`, `testsAddedOrUpdated`, `commandsRun`, and `validationOutput` arrays as reported evidence ("ran and touched nothing") instead of rejecting the run with `evidence missing`; an absent field still fails structurally. No-op async worker runs with all criteria passing now reach `checked` status. ([#9](https://github.com/jjuraszek/pi-cohort/issues/9))
+
 ## [5.3.0] - 2026-09-01
 
 ### Changed

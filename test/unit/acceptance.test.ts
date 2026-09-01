@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -110,12 +111,121 @@ describe("acceptance gates", () => {
 			});
 			const ledger = await evaluateAcceptance({
 				acceptance,
-				output: report({ testsAddedOrUpdated: [] }),
+				output: report({ testsAddedOrUpdated: undefined }),
 				cwd,
 			});
 
 			assert.equal(ledger.status, "rejected");
 			assert.match(acceptanceFailureMessage(ledger) ?? "", /tests-added evidence missing/);
+		} finally {
+			fs.rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("accepts empty evidence lists as reported for a no-op inferred-reviewed run", async () => {
+		const cwd = tempRepo();
+		try {
+			const acceptance = resolveEffectiveAcceptance({
+				agentName: "worker",
+				task: "Diagnose the flaky run",
+				mode: "single",
+				async: true,
+			});
+			assert.equal(acceptance.level, "reviewed");
+			const ledger = await evaluateAcceptance({
+				acceptance,
+				output: report({
+					criteriaSatisfied: [
+						{ id: "criterion-1", status: "satisfied", evidence: "verified in test" },
+						{ id: "criterion-2", status: "satisfied", evidence: "verified in test" },
+					],
+					changedFiles: [],
+					testsAddedOrUpdated: [],
+					commandsRun: [],
+					validationOutput: [],
+				}),
+				cwd,
+			});
+
+			assert.equal(ledger.status, "checked");
+			assert.equal(ledger.reviewResult?.status, "needs-parent-decision");
+			assert.ok(ledger.runtimeChecks.every((check) => check.status !== "failed"));
+		} finally {
+			fs.rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("still rejects absent evidence fields per kind", async () => {
+		const cases = [
+			{ overrides: { changedFiles: undefined }, message: /changed-files evidence missing/ },
+			{ overrides: { testsAddedOrUpdated: undefined }, message: /tests-added evidence missing/ },
+			{ overrides: { commandsRun: undefined }, message: /commands-run evidence missing/ },
+			{ overrides: { validationOutput: undefined }, message: /validation-output evidence missing/ },
+		];
+		for (const { overrides, message } of cases) {
+			const cwd = tempRepo();
+			try {
+				const acceptance = resolveEffectiveAcceptance({
+					agentName: "worker",
+					task: "Diagnose the flaky run",
+					mode: "single",
+					async: true,
+				});
+				const ledger = await evaluateAcceptance({
+					acceptance,
+					output: report({
+						criteriaSatisfied: [
+							{ id: "criterion-1", status: "satisfied", evidence: "verified in test" },
+							{ id: "criterion-2", status: "satisfied", evidence: "verified in test" },
+						],
+						...overrides,
+					}),
+					cwd,
+				});
+
+				assert.equal(ledger.status, "rejected");
+				assert.match(acceptanceFailureMessage(ledger) ?? "", message);
+			} finally {
+				fs.rmSync(cwd, { recursive: true, force: true });
+			}
+		}
+	});
+
+	it("accepts a non-empty object-array commandsRun as reported evidence", async () => {
+		const cwd = tempRepo();
+		try {
+			const acceptance = resolveEffectiveAcceptance({
+				agentName: "worker",
+				task: "Implement a fix",
+				explicit: { level: "checked" },
+			});
+			const ledger = await evaluateAcceptance({ acceptance, output: report(), cwd });
+
+			assert.equal(ledger.status, "checked");
+			assert.equal(ledger.runtimeChecks.find((check) => check.id === "evidence:commands-run")?.status, "passed");
+		} finally {
+			fs.rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects empty changedFiles when staged files exist in the working tree", async () => {
+		const cwd = tempRepo();
+		try {
+			assert.equal(spawnSync("git", ["init"], { cwd }).status, 0);
+			assert.equal(spawnSync("git", ["add", "file.txt"], { cwd }).status, 0);
+			const acceptance = resolveEffectiveAcceptance({
+				agentName: "worker",
+				task: "Implement a fix",
+				explicit: { level: "checked" },
+			});
+			const ledger = await evaluateAcceptance({
+				acceptance,
+				output: report({ changedFiles: [], testsAddedOrUpdated: [], commandsRun: [] }),
+				cwd,
+			});
+
+			assert.equal(ledger.status, "rejected");
+			assert.match(acceptanceFailureMessage(ledger) ?? "", /Staged files present/);
 		} finally {
 			fs.rmSync(cwd, { recursive: true, force: true });
 		}
