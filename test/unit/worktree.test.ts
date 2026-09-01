@@ -441,3 +441,59 @@ setTimeout(() => {
 		}
 	});
 });
+
+describe("diffWorktrees capture failures", () => {
+	it("reports a diffs-directory creation failure instead of an empty result", () => {
+		const repoDir = createRepo("pi-subagent-diff-mkdir-");
+		const setup = createWorktrees(repoDir, "run-mkdir", 1);
+		try {
+			const blocker = path.join(repoDir, "blocker");
+			fs.writeFileSync(blocker, "not a directory\n", "utf-8");
+			const diffs = diffWorktrees(setup, ["worker"], path.join(blocker, "diffs"));
+			assert.equal(diffs.length, 1);
+			assert.ok(diffs[0]?.captureError, "expected a captureError on the diff entry");
+			assert.match(formatWorktreeDiffSummary(diffs), /patch capture FAILED/);
+		} finally {
+			cleanupWorktrees(setup);
+			cleanupRepo(repoDir);
+		}
+	});
+
+	it("reports a per-task capture failure instead of an empty patch", () => {
+		const repoDir = createRepo("pi-subagent-diff-capture-");
+		const setup = createWorktrees(repoDir, "run-capture", 1);
+		try {
+			fs.rmSync(setup.worktrees[0]!.path, { recursive: true, force: true });
+			const diffs = diffWorktrees(setup, ["worker"], path.join(repoDir, "diffs"));
+			assert.equal(diffs.length, 1);
+			assert.ok(diffs[0]?.captureError, "expected a captureError on the diff entry");
+			const summary = formatWorktreeDiffSummary(diffs);
+			assert.match(summary, /Task 1 \(worker\): patch capture FAILED/);
+		} finally {
+			cleanupWorktrees(setup);
+			cleanupRepo(repoDir);
+		}
+	});
+
+	it("degrades a failed placeholder-patch write into captureError instead of throwing", () => {
+		const repoDir = createRepo("pi-subagent-diff-placeholder-");
+		const setup = createWorktrees(repoDir, "run-placeholder", 1);
+		try {
+			const diffsDir = path.join(repoDir, "diffs");
+			const patchPath = path.join(diffsDir, "task-0-worker.patch");
+			// Pre-create a directory at the exact patch path so both the real
+			// and the recovery placeholder write fail with EISDIR.
+			fs.mkdirSync(patchPath, { recursive: true });
+			// Break the worktree so capture fails before it ever touches patchPath.
+			fs.rmSync(setup.worktrees[0]!.path, { recursive: true, force: true });
+
+			const diffs = diffWorktrees(setup, ["worker"], diffsDir);
+
+			assert.equal(diffs.length, 1);
+			assert.ok(diffs[0]?.captureError, "expected a captureError on the diff entry");
+		} finally {
+			cleanupWorktrees(setup);
+			cleanupRepo(repoDir);
+		}
+	});
+});

@@ -60,7 +60,8 @@ export function cleanupOldArtifacts(dir: string, maxAgeDays: number): void {
 		try {
 			const stat = fs.statSync(filePath);
 			if (stat.mtimeMs < cutoff) {
-				fs.unlinkSync(filePath);
+				if (stat.isDirectory()) fs.rmSync(filePath, { recursive: true, force: true });
+				else fs.unlinkSync(filePath);
 			}
 		} catch {
 			// Artifact cleanup is best-effort housekeeping. Skip files that disappear

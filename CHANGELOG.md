@@ -1,5 +1,37 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- Foreground parallel `worktree: true` patches now write to a run-scoped
+  directory (`<session artifacts>/<runId>/worktree-diffs`) instead of a
+  session-wide `worktree-diffs` directory shared by every dispatch, so
+  concurrent or sequential worktree runs no longer overwrite each other's
+  patches. Background (`<asyncDir>/worktree-diffs/step-<i>`) and chain
+  (`<chainDir>/worktree-diffs/step-<i>`) paths are unchanged. A relative
+  `output:` on a `worktree: true` task now resolves to the run's per-task
+  directory (`<session artifacts>/<runId>/task-<i>/` foreground,
+  `<asyncDir>/step-<i>/task-<j>/` async) instead of inside the throwaway
+  checkout, so the report survives worktree teardown and no longer pollutes
+  the captured patch; an absolute `output:` is unaffected, and `reads:` plus
+  the task's working directory still resolve inside the checkout. This is a
+  behavior change for anyone relying on the old patch/output paths, not a
+  breaking API change - no parameter, schema, or return shape changed.
+- Stale artifact directories are now pruned recursively by the artifact
+  cleanup sweep, alongside files (previously only files were pruned, since
+  `unlinkSync` throws on a directory).
+
+### Fixed
+
+- A relative `output:` that escapes its per-task directory (`../report.md`)
+  or normalizes to the directory itself (`.`) is now rejected at dispatch
+  with a tool error instead of writing outside the intended location.
+- Worktree diffs are now captured before every post-execution return
+  (normal, interrupted, detached, intercom-receipt), so the diff summary is
+  attached even when a run ends early; a patch-capture failure is now
+  surfaced in the summary instead of silently reporting an empty patch.
+
 ## [5.2.0] - 2026-09-01
 
 ### Added

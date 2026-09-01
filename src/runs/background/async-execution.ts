@@ -11,7 +11,7 @@ import { createRequire } from "node:module";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../../agents/agents.ts";
 import { applyThinkingSuffix } from "../shared/pi-args.ts";
-import { injectSingleOutputInstruction, normalizeSingleOutputOverride, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
+import { injectSingleOutputInstruction, normalizeSingleOutputOverride, resolveParallelTaskOutputPath, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
 import { buildChainInstructions, isDynamicParallelStep, isParallelStep, resolveStepBehavior, suppressProgressForReadOnlyTask, writeInitialProgressFile, type ChainStep, type ResolvedStepBehavior, type SequentialStep, type StepOverrides } from "../../shared/settings.ts";
 import type { RunnerStep } from "../shared/parallel-utils.ts";
 import { resolvePiPackageRoot } from "../shared/pi-spawn.ts";
@@ -373,7 +373,7 @@ export function executeAsyncChain(
 			...(s.model ? { model: s.model } : {}),
 		};
 	};
-	const buildSeqStep = (s: SequentialStep, sessionFile?: string, behaviorCwd?: string, progressPrecreated = false, resolvedBehavior?: ResolvedStepBehavior) => {
+	const buildSeqStep = (s: SequentialStep, sessionFile?: string, behaviorCwd?: string, progressPrecreated = false, resolvedBehavior?: ResolvedStepBehavior, isolatedLeaf?: { runDir: string; index: number }) => {
 		const a = agents.find((x) => x.name === s.agent)!;
 		const stepCwd = resolveChildCwd(runnerCwd, s.cwd);
 		const instructionCwd = behaviorCwd ?? stepCwd;
@@ -392,7 +392,16 @@ export function executeAsyncChain(
 		const isFirstProgressAgent = behavior.progress && !progressPrecreated && !progressInstructionCreated;
 		if (behavior.progress) progressInstructionCreated = true;
 		const progressInstructions = buildChainInstructions({ ...behavior, output: false, reads: false }, runnerCwd, isFirstProgressAgent);
-		const outputPath = resolveSingleOutputPath(behavior.output, ctx.cwd, instructionCwd);
+		const resolvedOutput = resolveParallelTaskOutputPath({
+			output: behavior.output,
+			ctxCwd: ctx.cwd,
+			taskCwd: instructionCwd,
+			isolated: Boolean(isolatedLeaf),
+			runDir: isolatedLeaf?.runDir,
+			index: isolatedLeaf?.index ?? 0,
+		});
+		if ("error" in resolvedOutput) throw new AsyncStartValidationError(resolvedOutput.error);
+		const outputPath = resolvedOutput.path;
 		const validationError = validateFileOnlyOutputMode(behavior.outputMode, outputPath, `Async step (${s.agent})`);
 		if (validationError) throw new AsyncStartValidationError(validationError);
 		let taskTemplate = s.task ?? "{previous}";
@@ -470,7 +479,14 @@ export function executeAsyncChain(
 								behaviorCwd = undefined;
 							}
 						}
-						return buildSeqStep(t, nextSessionFile(), behaviorCwd, progressPrecreated, parallelBehaviors[taskIndex]);
+						return buildSeqStep(
+							t,
+							nextSessionFile(),
+							behaviorCwd,
+							progressPrecreated,
+							parallelBehaviors[taskIndex],
+							s.worktree ? { runDir: path.join(asyncDir, `step-${stepIndex}`), index: taskIndex } : undefined,
+						);
 					}),
 					concurrency: s.concurrency,
 					failFast: s.failFast,

@@ -796,7 +796,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.match(payload.workflowGraph?.nodes?.[1]?.error ?? "", /Collected output validation failed/);
 	});
 
-	it("top-level async worktree parallel resolves reads and output against the worktree cwd", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
+	it("top-level async worktree parallel keeps reads in the worktree and output in the run dir", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
 		const repoDir = createRepo("pi-subagent-async-worktree-");
 		try {
 			mockPi.onCall({ output: "Worktree report" });
@@ -845,8 +845,46 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			assert.ok(callFile, "expected a recorded mock pi call");
 			const args = JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")).args as string[];
 			const taskArg = args.at(-1) ?? "";
+			const durableOutput = path.join(asyncDir!, "step-0", "task-0", "report.md");
 			assert.ok(taskArg.includes(`[Read from: ${path.join(worktreeCwd, "input.md")}]`));
-			assert.ok(taskArg.includes(`Write your findings to: ${path.join(worktreeCwd, "report.md")}`));
+			assert.ok(taskArg.includes(`Write your findings to: ${durableOutput}`), `unexpected output path in: ${taskArg}`);
+			assert.equal(fs.existsSync(worktreeCwd), false, "worktree must be torn down");
+			assert.equal(fs.existsSync(asyncDir!), true, "run dir holding the report must outlive the worktree");
+			assert.equal(fs.existsSync(durableOutput), true, "report file must exist at its durable per-task path after teardown");
+		} finally {
+			removeTempDir(repoDir);
+		}
+	});
+
+	it("top-level async worktree parallel rejects an output that escapes its per-task directory", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
+		const repoDir = createRepo("pi-subagent-async-worktree-escape-");
+		try {
+			const executor = createSubagentExecutor!({
+				pi: { events: createEventBus(), getSessionName: () => undefined },
+				state: { baseCwd: repoDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
+				config: {},
+				asyncByDefault: false,
+				tempArtifactsDir: repoDir,
+				getSubagentSessionRoot: () => repoDir,
+				expandTilde: (p: string) => p,
+				discoverAgents: () => ({ agents: [makeAgent("worker")] }),
+			});
+
+			const result = await executor.execute(
+				"async-parallel-worktree-escape",
+				{
+					tasks: [{ agent: "worker", task: "Do worktree work", output: "../escape.md", reads: ["input.md"] }],
+					async: true,
+					clarify: false,
+					worktree: true,
+				},
+				new AbortController().signal,
+				undefined,
+				makeMinimalCtx(repoDir),
+			);
+
+			assert.equal(result.isError, true);
+			assert.match(result.content[0]?.text ?? "", /resolves outside its per-task directory/);
 		} finally {
 			removeTempDir(repoDir);
 		}

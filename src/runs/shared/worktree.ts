@@ -27,6 +27,7 @@ interface WorktreeDiff {
 	insertions: number;
 	deletions: number;
 	patchPath: string;
+	captureError?: string;
 }
 
 interface WorktreeTaskCwdConflict {
@@ -523,24 +524,28 @@ export function createWorktrees(cwd: string, runId: string, count: number, optio
 }
 
 export function diffWorktrees(setup: WorktreeSetup, agents: string[], diffsDir: string): WorktreeDiff[] {
+	const agentFor = (index: number): string => agents[index] ?? `task-${index + 1}`;
 	try {
 		fs.mkdirSync(diffsDir, { recursive: true });
-	} catch {
-		// Returning no diffs is safer than failing the whole command on artifact-dir issues.
-		return [];
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		return setup.worktrees.map((worktree, index) => ({
+			...emptyDiff(index, agentFor(index), worktree.branch, ""),
+			captureError: `could not create patch directory '${diffsDir}': ${message}`,
+		}));
 	}
 
 	const diffs: WorktreeDiff[] = [];
 	for (let index = 0; index < setup.worktrees.length; index++) {
 		const worktree = setup.worktrees[index]!;
-		const agent = agents[index] ?? `task-${index + 1}`;
+		const agent = agentFor(index);
 		const patchPath = path.join(diffsDir, `task-${index}-${safePatchAgentName(agent)}.patch`);
 		try {
 			diffs.push(captureWorktreeDiff(setup, worktree, agent, patchPath));
-		} catch {
-			// Preserve execution flow; failed diff capture maps to an empty per-task patch.
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
 			writeEmptyPatch(patchPath);
-			diffs.push(emptyDiff(index, agent, worktree.branch, patchPath));
+			diffs.push({ ...emptyDiff(index, agent, worktree.branch, patchPath), captureError: message });
 		}
 	}
 
@@ -558,7 +563,8 @@ export function cleanupWorktrees(setup: WorktreeSetup): void {
 
 export function formatWorktreeDiffSummary(diffs: WorktreeDiff[]): string {
 	const changed = diffs.filter(hasWorktreeChanges);
-	if (changed.length === 0) return "";
+	const failed = diffs.filter((diff) => diff.captureError);
+	if (changed.length === 0 && failed.length === 0) return "";
 
 	const lines: string[] = ["=== Worktree Changes ===", ""];
 	for (const diff of changed) {
@@ -570,8 +576,11 @@ export function formatWorktreeDiffSummary(diffs: WorktreeDiff[]): string {
 		}
 		lines.push("");
 	}
+	for (const diff of failed) {
+		lines.push(`--- Task ${diff.index + 1} (${diff.agent}): patch capture FAILED: ${diff.captureError} ---`, "");
+	}
 
-	const patchesDir = path.dirname(changed[0]!.patchPath);
-	lines.push(`Full patches: ${patchesDir}`);
+	const withPatch = changed.find((diff) => diff.patchPath.length > 0);
+	if (withPatch) lines.push(`Full patches: ${path.dirname(withPatch.patchPath)}`);
 	return lines.join("\n").trimEnd();
 }

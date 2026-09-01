@@ -38,7 +38,7 @@ import { createForkContextResolver } from "../../shared/fork-context.ts";
 import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
 import { applyIntercomBridgeToAgent, INTERCOM_BRIDGE_MARKER, resolveIntercomBridge, resolveIntercomSessionTarget, resolveSubagentIntercomTarget, type IntercomBridgeState } from "../../intercom/intercom-bridge.ts";
 import { formatControlIntercomMessage, formatControlNoticeMessage, resolveControlConfig, shouldNotifyControlEvent } from "../shared/subagent-control.ts";
-import { finalizeSingleOutput, injectSingleOutputInstruction, normalizeTopLevelOutput, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
+import { finalizeSingleOutput, injectSingleOutputInstruction, normalizeTopLevelOutput, resolveParallelTaskOutputPath, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
 import { compactForegroundDetails, getSingleResultOutput, mapConcurrent, readStatus, resolveChildCwd } from "../../shared/utils.ts";
 import {
 	attachNestedChildrenToResultChildren,
@@ -1468,12 +1468,34 @@ function resolveParallelTaskCwd(
 function buildParallelWorktreeSuffix(
 	worktreeSetup: WorktreeSetup | undefined,
 	artifactsDir: string,
+	runId: string,
 	tasks: TaskParam[],
 ): string {
 	if (!worktreeSetup) return "";
-	const diffsDir = path.join(artifactsDir, "worktree-diffs");
+	const diffsDir = path.join(artifactsDir, runId, "worktree-diffs");
 	const diffs = diffWorktrees(worktreeSetup, tasks.map((task) => task.agent), diffsDir);
 	return formatWorktreeDiffSummary(diffs);
+}
+
+function resolveParallelTaskOutput(input: {
+	output: string | boolean | undefined;
+	task: TaskParam;
+	paramsCwd: string;
+	ctxCwd: string;
+	worktreeSetup: WorktreeSetup | undefined;
+	artifactsDir: string;
+	runId: string;
+	index: number;
+}): { path: string | undefined } | { error: string } {
+	const taskCwd = resolveParallelTaskCwd(input.task, input.paramsCwd, input.worktreeSetup, input.index);
+	return resolveParallelTaskOutputPath({
+		output: input.output,
+		ctxCwd: input.ctxCwd,
+		taskCwd,
+		isolated: Boolean(input.worktreeSetup),
+		runDir: path.join(input.artifactsDir, input.runId),
+		index: input.index,
+	});
 }
 
 function findDuplicateParallelOutputPath(input: {
@@ -1482,14 +1504,26 @@ function findDuplicateParallelOutputPath(input: {
 	paramsCwd: string;
 	ctxCwd: string;
 	worktreeSetup?: WorktreeSetup;
+	artifactsDir: string;
+	runId: string;
 }): string | undefined {
 	const seen = new Map<string, { index: number; agent: string }>();
 	for (let index = 0; index < input.tasks.length; index++) {
 		const behavior = input.behaviors[index];
 		if (!behavior?.output) continue;
 		const task = input.tasks[index]!;
-		const taskCwd = resolveParallelTaskCwd(task, input.paramsCwd, input.worktreeSetup, index);
-		const outputPath = resolveSingleOutputPath(behavior.output, input.ctxCwd, taskCwd);
+		const resolved = resolveParallelTaskOutput({
+			output: behavior.output,
+			task,
+			paramsCwd: input.paramsCwd,
+			ctxCwd: input.ctxCwd,
+			worktreeSetup: input.worktreeSetup,
+			artifactsDir: input.artifactsDir,
+			runId: input.runId,
+			index,
+		});
+		if ("error" in resolved) return resolved.error;
+		const outputPath = resolved.path;
 		if (!outputPath) continue;
 		const previous = seen.get(outputPath);
 		if (previous) {
@@ -1511,7 +1545,17 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 		const progressInstructions = behavior
 			? buildChainInstructions({ ...behavior, output: false, reads: false }, input.paramsCwd, index === input.firstProgressIndex)
 			: { prefix: "", suffix: "" };
-		const outputPath = resolveSingleOutputPath(behavior?.output, input.ctx.cwd, taskCwd);
+		const resolvedOutput = resolveParallelTaskOutput({
+			output: behavior?.output,
+			task,
+			paramsCwd: input.paramsCwd,
+			ctxCwd: input.ctx.cwd,
+			worktreeSetup: input.worktreeSetup,
+			artifactsDir: input.artifactsDir,
+			runId: input.runId,
+			index,
+		});
+		const outputPath = "error" in resolvedOutput ? undefined : resolvedOutput.path;
 		const taskText = injectSingleOutputInstruction(
 			`${readInstructions.prefix}${input.taskTexts[index]!}${progressInstructions.suffix}`,
 			outputPath,
@@ -1799,12 +1843,23 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 			paramsCwd: effectiveCwd,
 			ctxCwd: ctx.cwd,
 			worktreeSetup,
+			artifactsDir,
+			runId,
 		});
 		if (duplicateOutputError) return buildParallelModeError(duplicateOutputError);
 		for (let index = 0; index < tasks.length; index++) {
-			const taskCwd = resolveParallelTaskCwd(tasks[index]!, effectiveCwd, worktreeSetup, index);
-			const outputPath = resolveSingleOutputPath(behaviors[index]?.output, ctx.cwd, taskCwd);
-			const validationError = validateFileOnlyOutputMode(behaviors[index]?.outputMode, outputPath, `Parallel task ${index + 1} (${tasks[index]!.agent})`);
+			const resolved = resolveParallelTaskOutput({
+				output: behaviors[index]?.output,
+				task: tasks[index]!,
+				paramsCwd: effectiveCwd,
+				ctxCwd: ctx.cwd,
+				worktreeSetup,
+				artifactsDir,
+				runId,
+				index,
+			});
+			if ("error" in resolved) return buildParallelModeError(resolved.error);
+			const validationError = validateFileOnlyOutputMode(behaviors[index]?.outputMode, resolved.path, `Parallel task ${index + 1} (${tasks[index]!.agent})`);
 			if (validationError) return buildParallelModeError(validationError);
 		}
 
@@ -1871,6 +1926,9 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 			if (result.artifactPaths) allArtifactPaths.push(result.artifactPaths);
 		}
 
+		const worktreeSuffix = buildParallelWorktreeSuffix(worktreeSetup, artifactsDir, runId, tasks);
+		const withWorktreeSuffix = (text: string): string => (worktreeSuffix ? `${text}\n\n${worktreeSuffix}` : text);
+
 		const interrupted = results.find((result) => result.interrupted);
 		const details = compactForegroundDetails({
 			mode: "parallel",
@@ -1882,7 +1940,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 		rememberForegroundRun(deps.state, { runId, mode: "parallel", cwd: effectiveCwd, results: details.results });
 		if (interrupted) {
 			return {
-				content: [{ type: "text", text: `Parallel run paused after interrupt (${interrupted.agent}). Waiting for explicit next action.` }],
+				content: [{ type: "text", text: withWorktreeSuffix(`Parallel run paused after interrupt (${interrupted.agent}). Waiting for explicit next action.`) }],
 				details,
 			};
 		}
@@ -1890,7 +1948,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 		const detached = detachedIndex >= 0 ? results[detachedIndex] : undefined;
 		if (detached) {
 			return {
-				content: [{ type: "text", text: `Parallel run detached for intercom coordination (${detached.agent}). Reply to the supervisor request first. After the child exits, start a fresh follow-up if needed.` }],
+				content: [{ type: "text", text: withWorktreeSuffix(`Parallel run detached for intercom coordination (${detached.agent}). Reply to the supervisor request first. After the child exits, start a fresh follow-up if needed.`) }],
 				details,
 			};
 		}
@@ -1906,12 +1964,11 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 		});
 		if (intercomReceipt) {
 			return {
-				content: [{ type: "text", text: intercomReceipt.text }],
+				content: [{ type: "text", text: withWorktreeSuffix(intercomReceipt.text) }],
 				details: intercomReceipt.details,
 			};
 		}
 
-		const worktreeSuffix = buildParallelWorktreeSuffix(worktreeSetup, artifactsDir, tasks);
 		const ok = results.filter((result) => result.exitCode === 0).length;
 		const downgradeNote = backgroundRequestedWhileClarifying ? " (background requested, but clarify kept this run foreground)" : "";
 		const aggregatedOutput = aggregateParallelOutputs(
@@ -1925,9 +1982,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 		);
 
 		const summary = `${ok}/${results.length} succeeded${downgradeNote}`;
-		const fullContent = worktreeSuffix
-			? `${summary}\n\n${aggregatedOutput}\n\n${worktreeSuffix}`
-			: `${summary}\n\n${aggregatedOutput}`;
+		const fullContent = withWorktreeSuffix(`${summary}\n\n${aggregatedOutput}`);
 
 		return {
 			content: [{ type: "text", text: fullContent }],

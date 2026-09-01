@@ -148,7 +148,7 @@ Agent definitions are not loaded into context by default. Management actions let
 | `model` | string | agent default | Override model. |
 | `tasks` | array | - | Top-level parallel tasks. Supports `agent`, `task`, `cwd`, `count`, `output`, `outputMode`, `reads`, `progress`, `skill`, `model`, and `acceptance`. |
 | `concurrency` | number | config or `4` | Top-level parallel concurrency. |
-| `worktree` | boolean | false | Create isolated git worktrees for parallel tasks. |
+| `worktree` | boolean | false | Create isolated git worktrees for parallel tasks. An absolute task `output:` is left untouched at the caller-supplied path, outside the worktree; a relative `output:` is redirected instead to `<runDir>/task-<i>/<output>` (surviving teardown, kept out of the captured patch), and one that escapes that per-task directory (e.g. `../report.md`) or normalizes to it (`.`) is rejected at dispatch. `reads:` and the task cwd still resolve inside the worktree. |
 | `chain` | array | - | Sequential, static parallel, and dynamic fanout chain steps. Steps and chain parallel tasks support `phase`, `label`, `as`, `outputSchema`, and `acceptance` in addition to the usual execution fields. Dynamic fanout uses `expand`, one child `parallel` template, and `collect`. |
 | `context` | `fresh \| fork` | agent default or `fresh` | `fork` creates real branched sessions from the parent leaf. Packaged `planner`, `worker`, and `oracle` default to `fork`. |
 | `chainDir` | string | temp chain dir | Persistent directory for chain artifacts. |

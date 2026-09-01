@@ -40,6 +40,37 @@ export function resolveSingleOutputPath(
 	return path.resolve(baseCwd, output);
 }
 
+export interface ParallelTaskOutputInput {
+	output: string | boolean | undefined;
+	ctxCwd: string;
+	taskCwd?: string;
+	isolated: boolean;
+	runDir?: string;
+	index: number;
+}
+
+export type ParallelTaskOutputResult = { path: string | undefined } | { error: string };
+
+export function resolveParallelTaskOutputPath(input: ParallelTaskOutputInput): ParallelTaskOutputResult {
+	const { output, ctxCwd, taskCwd, isolated, runDir, index } = input;
+	const redirectable = isolated
+		&& Boolean(runDir)
+		&& typeof output === "string"
+		&& output.length > 0
+		&& output !== "false"
+		&& output !== "true"
+		&& !path.isAbsolute(output);
+	if (!redirectable) return { path: resolveSingleOutputPath(output, ctxCwd, taskCwd) };
+
+	const leaf = path.join(runDir!, `task-${index}`);
+	const resolved = path.resolve(leaf, output as string);
+	const relative = path.relative(leaf, resolved);
+	if (relative === "" || relative.split(path.sep)[0] === ".." || path.isAbsolute(relative)) {
+		return { error: `Parallel task ${index + 1} output '${output}' resolves outside its per-task directory (${resolved}). Use a path inside ${leaf}, or an absolute path.` };
+	}
+	return { path: resolved };
+}
+
 export function injectSingleOutputInstruction(task: string, outputPath: string | undefined): string {
 	if (!outputPath) return task;
 	return `${task}\n\n---\n**Output:** Write your findings to: ${outputPath}`;
