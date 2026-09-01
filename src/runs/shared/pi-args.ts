@@ -13,6 +13,7 @@ const FANOUT_CHILD_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.
 export const SUBAGENT_CHILD_ENV = "PI_SUBAGENT_CHILD";
 export const SUBAGENT_ORCHESTRATOR_TARGET_ENV = "PI_SUBAGENT_ORCHESTRATOR_TARGET";
 export const SUBAGENT_RUN_ID_ENV = "PI_SUBAGENT_RUN_ID";
+export const SUBAGENT_RUN_DIR_ENV = "PI_SUBAGENT_RUN_DIR";
 export const SUBAGENT_CHILD_AGENT_ENV = "PI_SUBAGENT_CHILD_AGENT";
 export const SUBAGENT_CHILD_INDEX_ENV = "PI_SUBAGENT_CHILD_INDEX";
 export const SUBAGENT_FANOUT_CHILD_ENV = "PI_SUBAGENT_FANOUT_CHILD";
@@ -66,6 +67,10 @@ interface BuildPiArgsResult {
 	args: string[];
 	env: Record<string, string | undefined>;
 	tempDir?: string;
+}
+
+export function runDirEnv(asyncDir: string): Record<string, string> {
+	return { [SUBAGENT_RUN_DIR_ENV]: asyncDir };
 }
 
 export function applyThinkingSuffix(model: string | undefined, thinking: string | undefined): string | undefined {

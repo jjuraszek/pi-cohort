@@ -64,6 +64,16 @@ interface AsyncExecutionModule {
 	isAsyncAvailable(): boolean;
 	executeAsyncSingle(id: string, params: Record<string, unknown>): AsyncExecutionResult;
 	executeAsyncChain(id: string, params: Record<string, unknown>): AsyncExecutionResult;
+	spawnDetachedWithLog(command: string, args: string[], cwd: string, asyncDir: string): { pid?: number; error?: string };
+}
+
+interface ReconcileAsyncRunModule {
+	reconcileAsyncRun(asyncDir: string, options?: {
+		resultsDir?: string;
+		now?: () => number;
+		startedRun?: { runId: string; pid?: number; startedAt?: number };
+		missingStatusGraceMs?: number;
+	}): { status: unknown; repaired: boolean; resultPath?: string; message?: string };
 }
 
 interface UtilsModule {
@@ -86,16 +96,19 @@ const asyncMod = await tryImport<AsyncExecutionModule>("./src/runs/background/as
 const utils = await tryImport<UtilsModule>("./src/shared/utils.ts");
 const typesMod = await tryImport<TypesModule>("./src/shared/types.ts");
 const executorMod = await tryImport<ExecutorModule>("./src/runs/foreground/subagent-executor.ts");
+const reconcilerMod = await tryImport<ReconcileAsyncRunModule>("./src/runs/background/stale-run-reconciler.ts");
 const available = !!(asyncMod && utils && typesMod);
 
 const isAsyncAvailable = asyncMod?.isAsyncAvailable;
 const executeAsyncSingle = asyncMod?.executeAsyncSingle;
 const executeAsyncChain = asyncMod?.executeAsyncChain;
+const spawnDetachedWithLog = asyncMod?.spawnDetachedWithLog;
 const readStatus = utils?.readStatus;
 const ASYNC_DIR = typesMod?.ASYNC_DIR;
 const RESULTS_DIR = typesMod?.RESULTS_DIR;
 const TEMP_ROOT_DIR = typesMod?.TEMP_ROOT_DIR;
 const createSubagentExecutor = executorMod?.createSubagentExecutor;
+const reconcileAsyncRun = reconcilerMod?.reconcileAsyncRun;
 
 function git(cwd: string, args: string[]): string {
 	const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf-8" });
@@ -232,7 +245,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			shareEnabled: false,
 			maxSubagentDepth: 2,
 		};
-		mockPi.onCall({ output: "single done" });
+		mockPi.onCall({ echoEnv: ["PI_SUBAGENT_RUN_DIR"] });
 		const singleId = `async-handoff-single-${Date.now().toString(36)}`;
 		const singleResult = executeAsyncSingle(singleId, {
 			agent: "worker",
@@ -241,10 +254,14 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			...commonParams,
 		});
 		assert.match(singleResult.content[0]?.text ?? "", /Async: worker \[/);
+		assert.match(singleResult.content[0]?.text ?? "", /Async dir: /);
 		assert.match(singleResult.content[0]?.text ?? "", /Do not run sleep timers or polling loops/);
 		assert.match(singleResult.content[0]?.text ?? "", /end your turn now/);
 		// First detached spawn in the suite pays the cold jiti-transpile cost; give it a wide budget (slow Windows CI).
-		await waitForAsyncResultFile(singleId, 30_000);
+		const singleResultPath = await waitForAsyncResultFile(singleId, 30_000);
+		const singlePayload = JSON.parse(fs.readFileSync(singleResultPath, "utf-8")) as AsyncResultPayload;
+		const observedEnv = JSON.parse(singlePayload.results[0]?.output ?? "{}") as { PI_SUBAGENT_RUN_DIR?: string };
+		assert.equal(observedEnv.PI_SUBAGENT_RUN_DIR, path.join(ASYNC_DIR, singleId));
 
 		mockPi.onCall({ output: "parallel one done" });
 		mockPi.onCall({ output: "parallel two done" });
@@ -273,6 +290,58 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.match(chainResult.content[0]?.text ?? "", /Async chain:/);
 		assert.match(chainResult.content[0]?.text ?? "", /Do not run sleep timers or polling loops/);
 		await waitForAsyncResultFile(chainId, 30_000);
+	});
+
+	it("a runner that crashes at startup is reconciled to failed with the crash cause in the message", { skip: !isAsyncAvailable() || !spawnDetachedWithLog || !reconcileAsyncRun ? "jiti not available" : undefined }, async () => {
+		const asyncDir = path.join(tempDir, "async-crash-run");
+		fs.mkdirSync(asyncDir, { recursive: true });
+		const crashMessage = "startup crash: Cannot find module";
+		const spawnResult = spawnDetachedWithLog!(
+			process.execPath,
+			["-e", `console.error(${JSON.stringify(crashMessage)}); process.exit(1);`],
+			tempDir,
+			asyncDir,
+		);
+		assert.equal(typeof spawnResult.pid, "number");
+		const pid = spawnResult.pid!;
+
+		const logPath = path.join(asyncDir, "runner.log");
+		const deadline = Date.now() + 10_000;
+		let logContainsCrash = false;
+		while (!logContainsCrash) {
+			if (Date.now() > deadline) assert.fail(`Timed out waiting for runner.log to contain the crash message: ${logPath}`);
+			if (fs.existsSync(logPath) && fs.readFileSync(logPath, "utf-8").includes(crashMessage)) {
+				logContainsCrash = true;
+				break;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
+
+		const pidDeadline = Date.now() + 10_000;
+		let pidIsDead = false;
+		while (!pidIsDead) {
+			if (Date.now() > pidDeadline) assert.fail(`Timed out waiting for crashed runner pid ${pid} to exit`);
+			try {
+				process.kill(pid, 0);
+			} catch {
+				pidIsDead = true;
+				break;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
+
+		const runId = "async-crash-run";
+		const resultsDir = path.join(tempDir, "async-crash-results");
+		fs.mkdirSync(resultsDir, { recursive: true });
+		const result = reconcileAsyncRun!(asyncDir, {
+			resultsDir,
+			startedRun: { runId, pid, startedAt: Date.now() - 60_000 },
+			missingStatusGraceMs: 0,
+		});
+
+		assert.equal(result.repaired, true);
+		assert.equal((result.status as { state?: string } | null)?.state, "failed");
+		assert.match(result.message ?? "", /startup crash: Cannot find module/);
 	});
 
 	it("top-level async parallel conversion preserves output, reads, and progress", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {

@@ -88,7 +88,20 @@ function resolveJitiCliPath(): string | undefined {
 	return undefined;
 }
 
-const jitiCliPath = resolveJitiCliPath();
+export function createJitiCliResolver(deps: { resolve?: () => string | undefined; exists?: (p: string) => boolean } = {}): () => string | undefined {
+	const resolve = deps.resolve ?? resolveJitiCliPath;
+	const exists = deps.exists ?? ((p: string) => fs.existsSync(p));
+	let cached = resolve();
+	return () => {
+		if (cached && exists(cached)) return cached;
+		cached = resolve();
+		if (cached && exists(cached)) return cached;
+		cached = undefined;
+		return undefined;
+	};
+}
+
+const ensureJitiCliPath = createJitiCliResolver();
 
 interface AsyncExecutionContext {
 	pi: ExtensionAPI;
@@ -172,13 +185,60 @@ export function formatAsyncStartedMessage(headline: string): string {
  * Check if jiti is available for async execution
  */
 export function isAsyncAvailable(): boolean {
-	return jitiCliPath !== undefined;
+	return ensureJitiCliPath() !== undefined;
+}
+
+/**
+ * Spawn a detached process with stderr/stdout captured to <asyncDir>/runner.log.
+ * Falls back to ignored stdio if the log file cannot be opened; the parent always
+ * closes its copy of the fd, on every exit path.
+ */
+export function spawnDetachedWithLog(command: string, args: string[], cwd: string, asyncDir: string, spawnImpl: typeof spawn = spawn): { pid?: number; error?: string } {
+	let fd: number | undefined;
+	try {
+		try {
+			fd = fs.openSync(path.join(asyncDir, "runner.log"), "a");
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			console.error(`[pi-cohort] could not open runner.log in ${asyncDir}: ${message}`);
+		}
+		const proc = spawnImpl(command, args, {
+			cwd,
+			detached: true,
+			stdio: fd === undefined ? "ignore" : ["ignore", fd, fd],
+			windowsHide: true,
+		});
+		proc.on("error", (error) => {
+			console.error(`[pi-cohort] async spawn failed: ${error.message}`);
+		});
+		if (typeof proc.pid !== "number") {
+			return { error: `async runner did not produce a pid for cwd: ${cwd}` };
+		}
+		proc.unref();
+		return { pid: proc.pid };
+	} finally {
+		if (fd !== undefined) {
+			try {
+				fs.closeSync(fd);
+			} catch {
+				// parent-side close failure never misreports a launched child
+			}
+		}
+	}
 }
 
 /**
  * Spawn the async runner process
  */
-function spawnRunner(cfg: object, suffix: string, cwd: string): { pid?: number; error?: string } {
+export function spawnRunner(
+	cfg: object,
+	suffix: string,
+	cwd: string,
+	asyncDir: string,
+	deps: { ensureJiti?: () => string | undefined; spawnImpl?: typeof spawn } = {},
+): { pid?: number; error?: string } {
+	const ensureJiti = deps.ensureJiti ?? ensureJitiCliPath;
+	const jitiCliPath = ensureJiti();
 	if (!jitiCliPath) {
 		return { error: "upstream jiti for TypeScript execution could not be found; ensure package dependencies are installed" };
 	}
@@ -197,20 +257,15 @@ function spawnRunner(cfg: object, suffix: string, cwd: string): { pid?: number; 
 	fs.writeFileSync(cfgPath, JSON.stringify(cfg));
 	const runner = path.join(path.dirname(fileURLToPath(import.meta.url)), "subagent-runner.ts");
 
-	const proc = spawn(process.execPath, [jitiCliPath, runner, cfgPath], {
-		cwd,
-		detached: true,
-		stdio: "ignore",
-		windowsHide: true,
-	});
-	proc.on("error", (error) => {
-		console.error(`[pi-cohort] async spawn failed: ${error.message}`);
-	});
-	if (typeof proc.pid !== "number") {
-		return { error: `async runner did not produce a pid for cwd: ${cwd}` };
-	}
-	proc.unref();
-	return { pid: proc.pid };
+	return spawnDetachedWithLog(process.execPath, [jitiCliPath, runner, cfgPath], cwd, asyncDir, deps.spawnImpl ?? spawn);
+}
+
+/**
+ * Build the headline shown at the top of an async start message, e.g.
+ * "Async single: my-agent [run-id]\nAsync dir: /tmp/...".
+ */
+export function asyncStartHeadline(prefix: string, id: string, asyncDir: string): string {
+	return `${prefix} [${id}]\nAsync dir: ${asyncDir}`;
 }
 
 function formatAsyncStartError(mode: SubagentRunMode, message: string): AsyncExecutionResult {
@@ -503,6 +558,7 @@ export function executeAsyncChain(
 			},
 			id,
 			runnerCwd,
+			asyncDir,
 		);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -603,7 +659,7 @@ export function executeAsyncChain(
 		.join(" -> ");
 
 	return {
-		content: [{ type: "text", text: formatAsyncStartedMessage(`Async ${resultMode}: ${chainDesc} [${id}]`) }],
+		content: [{ type: "text", text: formatAsyncStartedMessage(asyncStartHeadline(`Async ${resultMode}: ${chainDesc}`, id, asyncDir)) }],
 		details: { mode: resultMode, runId: id, results: [], asyncId: id, asyncDir, workflowGraph },
 	};
 }
@@ -738,6 +794,7 @@ export function executeAsyncSingle(
 			},
 			id,
 			runnerCwd,
+			asyncDir,
 		);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -796,7 +853,7 @@ export function executeAsyncSingle(
 	}
 
 	return {
-		content: [{ type: "text", text: formatAsyncStartedMessage(`Async: ${agent} [${id}]`) }],
+		content: [{ type: "text", text: formatAsyncStartedMessage(asyncStartHeadline(`Async: ${agent}`, id, asyncDir)) }],
 		details: { mode: "single", runId: id, results: [], asyncId: id, asyncDir },
 	};
 }

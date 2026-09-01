@@ -13,9 +13,11 @@ import {
 	SUBAGENT_PARENT_PATH_ENV,
 	SUBAGENT_PARENT_ROOT_RUN_ID_ENV,
 	SUBAGENT_PARENT_RUN_ID_ENV,
+	SUBAGENT_RUN_DIR_ENV,
 	SUBAGENT_RUN_ID_ENV,
 	applyThinkingSuffix,
 	buildPiArgs,
+	runDirEnv,
 } from "../../src/runs/shared/pi-args.ts";
 
 const originalEnv = {
@@ -431,5 +433,19 @@ describe("buildPiArgs forwarded flags", () => {
 	it("no-ops on empty/undefined forwardedFlags", () => {
 		const { args } = buildPiArgs({ ...base });
 		assert.ok(!args.includes("--no-autofix"));
+	});
+});
+
+describe("SUBAGENT_RUN_DIR_ENV", () => {
+	it("is the PI_SUBAGENT_RUN_DIR env var name", () => {
+		assert.equal(SUBAGENT_RUN_DIR_ENV, "PI_SUBAGENT_RUN_DIR");
+	});
+});
+
+describe("runDirEnv", () => {
+	it("builds an env fragment with PI_SUBAGENT_RUN_DIR set to the async dir", () => {
+		assert.deepEqual(runDirEnv("/tmp/async-runs/run-123"), {
+			PI_SUBAGENT_RUN_DIR: "/tmp/async-runs/run-123",
+		});
 	});
 });

@@ -101,7 +101,7 @@ Full reference: agent/chain authoring in [doc/agents-and-chains.md](doc/agents-a
 | Term | Meaning |
 |---|---|
 | Subagent | A focused child Pi session with one job and (by default) a fresh context. |
-| Agent (persona) | A markdown file with frontmatter defining a specialist: `scout`, `planner`, `worker`, `reviewer`, `context-builder`, `oracle`, `delegate`. Full table: [doc/agents-and-chains.md](doc/agents-and-chains.md#builtin-agents-in-plain-english). |
+| Agent (persona) | A markdown file with frontmatter defining a specialist: `scout`, `planner`, `worker`, `reviewer`, `context-builder`, `oracle`, `delegate`, `monitor`. Full table: [doc/agents-and-chains.md](doc/agents-and-chains.md#builtin-agents-in-plain-english). |
 | Chain | A saved or inline sequence of agent steps, with fan-out/fan-in support. |
 | Fresh vs. forked context | Fresh = clean slate; forked = a real branch of the parent's session history. |
 | Recursion guard | Depth cap on nested delegation so a child can only fan out if explicitly allowed. |

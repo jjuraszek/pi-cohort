@@ -429,4 +429,49 @@ describe("async status helpers", () => {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
 	});
+
+	it("surfaces pre-status crashes using aged runner.log tails, but skips healthy empty-log startups", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-pre-status-crash-"));
+		try {
+			const crashedDir = path.join(root, "run-crashed");
+			fs.mkdirSync(crashedDir, { recursive: true });
+			fs.writeFileSync(path.join(crashedDir, "runner.log"), "Error: Cannot find module 'jiti'\n", "utf-8");
+			const then = (Date.now() - 60_000) / 1000;
+			fs.utimesSync(crashedDir, then, then);
+
+			const healthyDir = path.join(root, "run-healthy-starting");
+			fs.mkdirSync(healthyDir, { recursive: true });
+			fs.writeFileSync(path.join(healthyDir, "runner.log"), "", "utf-8");
+			fs.utimesSync(healthyDir, then, then);
+
+			const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-pre-status-crash-results-"));
+			try {
+				const runs = listAsyncRuns(root, { resultsDir });
+				const crashed = runs.find((run) => run.id === "run-crashed");
+				assert.ok(crashed, "expected a synthesized entry for the pre-status crash");
+				assert.equal(crashed?.state, "failed");
+				assert.match(crashed?.diagnostic ?? "", /Runner log tail \(.*runner\.log\):/);
+
+				const healthy = runs.find((run) => run.id === "run-healthy-starting");
+				assert.equal(healthy, undefined, "empty runner.log must not be reported as a crash");
+
+				const activeOnly = listAsyncRuns(root, { resultsDir, states: ["queued", "running"] });
+				assert.equal(
+					activeOnly.find((run) => run.id === "run-crashed"),
+					undefined,
+					"a failed synthesized crash entry must not appear when filtering for active states",
+				);
+
+				const failedOnly = listAsyncRuns(root, { resultsDir, states: ["failed"] });
+				assert.ok(
+					failedOnly.find((run) => run.id === "run-crashed"),
+					"the synthesized crash entry must still appear when filtering for failed state",
+				);
+			} finally {
+				fs.rmSync(resultsDir, { recursive: true, force: true });
+			}
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
 });

@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- `runner.log` diagnostics for the detached async runner: captures the
+  runner's stdout/stderr, spawn-time jiti revalidation, and enriched failure
+  messages that append the log's tail; the run dir is also exported to the
+  child as `PI_SUBAGENT_RUN_DIR` and echoed on an `Async dir:` start line.
+- Builtin `monitor` persona: watches an already-started job (async run dir,
+  PID, log, or probe command), reports progress deltas on a cadence, and
+  flags stalls, plus SKILL.md guidance to pair it with long-running async
+  jobs.
+
 ## [5.1.3] - 2026-08-18
 
 ### Fixed

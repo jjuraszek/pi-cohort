@@ -184,4 +184,36 @@ describe("async stale-run reconciliation", () => {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
 	});
+
+	it("appends runner.log tail to failed repair message when log is non-empty", () => {
+		const asyncDir = path.join(tempRoot("pi-cohort-reconcile-log-"), "run");
+		writeStatus(asyncDir, { runId: "r1", state: "running", pid: 999999, mode: "single", startedAt: Date.now() - 60_000, steps: [{ agent: "worker", status: "running" }] });
+		fs.writeFileSync(path.join(asyncDir, "runner.log"), "Error: Cannot find module 'jiti'\n    at resolve\n");
+		const resultsDir = tempRoot("pi-cohort-results-");
+		const result = reconcileAsyncRun(asyncDir, { resultsDir, kill: () => { throw errno("ESRCH"); } });
+		assert.ok(result.repaired);
+		assert.match(result.message ?? "", /Runner log tail \(.*runner\.log\):/);
+		assert.match(result.message ?? "", /Cannot find module 'jiti'/);
+	});
+
+	it("appends path hint when runner.log is empty and when it is missing (identical behavior)", () => {
+		for (const writeEmpty of [true, false]) {
+			const asyncDir = path.join(tempRoot("pi-cohort-reconcile-hint-"), "run");
+			writeStatus(asyncDir, { runId: "r2", state: "running", pid: 999999, mode: "single", startedAt: Date.now() - 60_000, steps: [{ agent: "worker", status: "running" }] });
+			if (writeEmpty) fs.writeFileSync(path.join(asyncDir, "runner.log"), "");
+			const result = reconcileAsyncRun(asyncDir, { resultsDir: tempRoot("pi-cohort-results-"), kill: () => { throw errno("ESRCH"); } });
+			assert.match(result.message ?? "", /Runner log \(empty or missing\): expected at .*runner\.log/);
+		}
+	});
+
+	it("bounds the tail to the last lines of a large log and enriches the stale-live-pid path", () => {
+		const asyncDir = path.join(tempRoot("pi-cohort-reconcile-big-"), "run");
+		writeStatus(asyncDir, { runId: "r3", state: "running", pid: 999999, mode: "single", startedAt: Date.now() - 60_000, lastUpdate: Date.now() - 25 * 60 * 60 * 1000, steps: [{ agent: "worker", status: "running" }] });
+		fs.writeFileSync(path.join(asyncDir, "runner.log"), Array.from({ length: 500 }, (_, i) => `line-${i}`).join("\n"));
+		const result = reconcileAsyncRun(asyncDir, { resultsDir: tempRoot("pi-cohort-results-"), kill: () => true });
+		assert.ok(result.repaired);
+		assert.match(result.message ?? "", /still has a live PID/);
+		assert.match(result.message ?? "", /line-499/);
+		assert.doesNotMatch(result.message ?? "", /line-100\b/);
+	});
 });

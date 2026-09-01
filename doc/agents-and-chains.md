@@ -14,8 +14,9 @@ chains. Back to [README](../README.md).
 | `context-builder` | A stronger setup pass before planning: gathers code context and writes handoff material such as `context.md` and `meta-prompt.md`. |
 | `oracle` | A second opinion before acting. It challenges assumptions, catches drift, and recommends the safest next move without editing. |
 | `delegate` | A lightweight general delegate when you want a child agent that behaves close to the parent session. |
+| `monitor` | Watching a job you already started (async run dir, PID, log, or probe command). Reports progress deltas on a cadence (default 15m) and flags stalls; read+bash tools, `completionGuard: false`. |
 
-A simple rule of thumb: use `scout` before you understand the code, `planner` before a bigger change, `worker` to implement, `reviewer` to check, and `oracle` when the decision itself feels risky.
+A simple rule of thumb: use `scout` before you understand the code, `planner` before a bigger change, `worker` to implement, `reviewer` to check, and `oracle` when the decision itself feels risky. Pair every long-running async job with a `monitor` dispatch so stalls and crashes surface without polling.
 
 ## Changing a builtin agent's model
 

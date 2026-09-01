@@ -114,6 +114,44 @@ describe("async run status inspection", () => {
 		}
 	});
 
+	it("shows log, events, and runner log paths for detailed async status", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-logs-"));
+		try {
+			const asyncRoot = path.join(root, "runs");
+			const asyncDir = path.join(asyncRoot, "run-with-logs");
+			fs.mkdirSync(asyncDir, { recursive: true });
+			const logPath = path.join(asyncDir, "subagent-log-run-with-logs.md");
+			const eventsPath = path.join(asyncDir, "events.jsonl");
+			const runnerLogPath = path.join(asyncDir, "runner.log");
+			fs.writeFileSync(logPath, "# log", "utf-8");
+			fs.writeFileSync(eventsPath, "{}\n", "utf-8");
+			fs.writeFileSync(runnerLogPath, "runner output\n", "utf-8");
+			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
+				runId: "run-with-logs",
+				mode: "single",
+				state: "running",
+				pid: 12345,
+				startedAt: 100,
+				lastUpdate: 100,
+				steps: [{ agent: "reviewer", status: "running", startedAt: 100 }],
+			}, null, 2), "utf-8");
+
+			const result = inspectSubagentStatus({ id: "run-with-logs" }, {
+				asyncDirRoot: asyncRoot,
+				resultsDir: path.join(root, "results"),
+				kill: () => true,
+				now: () => 200,
+			});
+
+			const text = textContent(result);
+			assert.match(text, new RegExp(`Log: ${logPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+			assert.match(text, new RegExp(`Events: ${eventsPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+			assert.match(text, new RegExp(`Runner log: ${runnerLogPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("shows nested runs under owning steps with exact status hints", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-nested-root-"));
 		const route = createNestedRoute("run-nested-root");
@@ -526,6 +564,45 @@ describe("async run status inspection", () => {
 			assert.equal(result.isError, undefined);
 			assert.match(text, /Resume: unavailable/);
 			assert.doesNotMatch(text, /Revive:/);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("surfaces runner.log path and tail when async dir resolves but status.json is missing", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-runner-log-"));
+		try {
+			const asyncRoot = path.join(root, "runs");
+			const resultsDir = path.join(root, "results");
+			const asyncDir = path.join(asyncRoot, "run-runner-log");
+			fs.mkdirSync(asyncDir, { recursive: true });
+			fs.writeFileSync(path.join(asyncDir, "runner.log"), "Error: Cannot find module 'jiti'\n", "utf-8");
+
+			const result = inspectSubagentStatus({ id: "run-runner-log" }, { asyncDirRoot: asyncRoot, resultsDir });
+
+			const text = textContent(result);
+			assert.equal(result.isError, true);
+			assert.match(text, /Runner log tail \(.*runner\.log\):/);
+			assert.match(text, /Cannot find module 'jiti'/);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("reports empty runner.log location when async dir resolves but status.json and runner.log are empty", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-runner-log-empty-"));
+		try {
+			const asyncRoot = path.join(root, "runs");
+			const resultsDir = path.join(root, "results");
+			const asyncDir = path.join(asyncRoot, "run-runner-log-empty");
+			fs.mkdirSync(asyncDir, { recursive: true });
+			fs.writeFileSync(path.join(asyncDir, "runner.log"), "", "utf-8");
+
+			const result = inspectSubagentStatus({ id: "run-runner-log-empty" }, { asyncDirRoot: asyncRoot, resultsDir });
+
+			const text = textContent(result);
+			assert.equal(result.isError, true);
+			assert.match(text, /Runner log \(empty or missing\): expected at .*runner\.log/);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}

@@ -7,7 +7,7 @@ import { readStatus } from "../../shared/utils.ts";
 import { attachRootChildrenToSteps, findNestedRouteForRootId, projectNestedRegistryForRoot } from "../shared/nested-events.ts";
 import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
 import { flatToLogicalStepIndex, normalizeParallelGroups } from "./parallel-groups.ts";
-import { reconcileAsyncRun, reconcileNestedAsyncDescendants } from "./stale-run-reconciler.ts";
+import { readRunnerLogTail, reconcileAsyncRun, reconcileNestedAsyncDescendants } from "./stale-run-reconciler.ts";
 
 interface AsyncRunStepSummary {
 	index: number;
@@ -64,6 +64,7 @@ export interface AsyncRunSummary {
 	sessionFile?: string;
 	nestedChildren?: NestedRunSummary[];
 	nestedWarnings?: string[];
+	diagnostic?: string;
 }
 
 interface AsyncRunListOptions {
@@ -218,6 +219,29 @@ function sortRuns(runs: AsyncRunSummary[]): AsyncRunSummary[] {
 	});
 }
 
+const PRE_STATUS_CRASH_GRACE_MS = 10_000;
+
+function summarizePreStatusCrash(asyncDir: string, now: number): AsyncRunSummary | undefined {
+	const log = readRunnerLogTail(asyncDir);
+	if (!log.tail) return undefined;
+	let startedAt: number;
+	try {
+		startedAt = fs.statSync(asyncDir).mtimeMs;
+	} catch {
+		return undefined;
+	}
+	if (now - startedAt < PRE_STATUS_CRASH_GRACE_MS) return undefined;
+	return {
+		id: path.basename(asyncDir),
+		asyncDir,
+		state: "failed",
+		mode: "single",
+		startedAt,
+		steps: [],
+		diagnostic: `Runner log tail (${log.path}):\n${log.tail}`,
+	};
+}
+
 export function listAsyncRuns(asyncDirRoot: string, options: AsyncRunListOptions = {}): AsyncRunSummary[] {
 	let entries: string[];
 	try {
@@ -237,7 +261,11 @@ export function listAsyncRuns(asyncDirRoot: string, options: AsyncRunListOptions
 			? undefined
 			: reconcileAsyncRun(asyncDir, { resultsDir: options.resultsDir, kill: options.kill, now: options.now });
 		const status = (reconciliation?.status ?? readStatus(asyncDir)) as (AsyncStatus & { cwd?: string }) | null;
-		if (!status) continue;
+		if (!status) {
+			const crashed = summarizePreStatusCrash(asyncDir, options.now?.() ?? Date.now());
+			if (crashed && (!allowedStates || allowedStates.has(crashed.state))) runs.push(crashed);
+			continue;
+		}
 		const nestedWarnings: string[] = [];
 		try {
 			const nestedRoute = findNestedRouteForRootId(status.runId || path.basename(asyncDir));
@@ -329,6 +357,7 @@ export function formatAsyncRunList(runs: AsyncRunSummary[], heading = "Active as
 		const outputPath = formatAsyncRunOutputPath(run);
 		if (outputPath) lines.push(`  output: ${shortenPath(outputPath)}`);
 		if (run.sessionFile) lines.push(`  session: ${shortenPath(run.sessionFile)}`);
+		if (run.diagnostic) for (const diagLine of run.diagnostic.split("\n")) lines.push(`  ${diagLine}`);
 		lines.push("");
 	}
 	return lines.join("\n").trimEnd();

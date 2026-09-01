@@ -164,10 +164,35 @@ function buildStartedStatus(asyncDir: string, startedRun: StartedRunMetadata, no
 	};
 }
 
+export function readRunnerLogTail(asyncDir: string, maxBytes = 4096, maxLines = 20): { path: string; tail?: string } {
+	const logPath = path.join(asyncDir, "runner.log");
+	try {
+		const stat = fs.statSync(logPath);
+		if (stat.size === 0) return { path: logPath };
+		const fd = fs.openSync(logPath, "r");
+		try {
+			const length = Math.min(stat.size, maxBytes);
+			const buffer = Buffer.alloc(length);
+			fs.readSync(fd, buffer, 0, length, Math.max(0, stat.size - maxBytes));
+			const lines = buffer.toString("utf-8").split("\n").filter((line) => line.trim() !== "");
+			const tail = lines.slice(-maxLines).join("\n");
+			return tail ? { path: logPath, tail } : { path: logPath };
+		} finally {
+			fs.closeSync(fd);
+		}
+	} catch {
+		return { path: logPath };
+	}
+}
+
 function buildFailedRepair(status: AsyncStatus, asyncDir: string, now: number, reason?: string): { status: AsyncStatus; result: object; message: string } {
 	const runId = status.runId || path.basename(asyncDir);
 	const pid = typeof status.pid === "number" ? status.pid : "unknown";
 	const message = reason ?? `Async runner process ${pid} exited or disappeared before writing a result. Marked run failed by stale-run reconciliation.`;
+	const log = readRunnerLogTail(asyncDir);
+	const enrichedMessage = log.tail
+		? `${message}\nRunner log tail (${log.path}):\n${log.tail}`
+		: `${message}\nRunner log (empty or missing): expected at ${log.path}`;
 	const steps = status.steps?.length ? status.steps : [{ agent: "subagent", status: "running" as const }];
 	const repairedSteps = steps.map((step) => step.status === "running" || step.status === "pending"
 		? {
@@ -177,7 +202,7 @@ function buildFailedRepair(status: AsyncStatus, asyncDir: string, now: number, r
 			endedAt: step.endedAt ?? now,
 			durationMs: step.startedAt !== undefined && step.durationMs === undefined ? Math.max(0, now - step.startedAt) : step.durationMs,
 			exitCode: step.exitCode ?? 1,
-			error: step.error ?? message,
+			error: step.error ?? enrichedMessage,
 		}
 		: step);
 	const repairedStatus: AsyncStatus = {
@@ -191,18 +216,18 @@ function buildFailedRepair(status: AsyncStatus, asyncDir: string, now: number, r
 	const resultAgent = repairedSteps[status.currentStep ?? 0]?.agent ?? repairedSteps[0]?.agent ?? "subagent";
 	return {
 		status: repairedStatus,
-		message,
+		message: enrichedMessage,
 		result: {
 			id: runId,
 			agent: resultAgent,
 			mode: status.mode,
 			success: false,
 			state: "failed",
-			summary: message,
+			summary: enrichedMessage,
 			results: repairedSteps.map((step) => ({
 				agent: step.agent,
-				output: step.status === "complete" || step.status === "completed" ? "" : message,
-				error: step.status === "complete" || step.status === "completed" ? undefined : step.error ?? message,
+				output: step.status === "complete" || step.status === "completed" ? "" : enrichedMessage,
+				error: step.status === "complete" || step.status === "completed" ? undefined : step.error ?? enrichedMessage,
 				success: step.status === "complete" || step.status === "completed",
 				model: step.model,
 				attemptedModels: step.attemptedModels,

@@ -351,6 +351,19 @@ subagent({ action: "doctor" })
 
 Humans can use `/cohort-doctor` for the same read-only report. It checks runtime paths, discovery counts, async support, current session context, and intercom bridge state.
 
+Long-running job hygiene:
+
+- The job's task must instruct it to emit observable progress as it works (log lines, counts, phase names; best-effort ETA). A silent long job is a defect.
+- Pair the job with a monitor dispatch, giving it the absolute async dir from the `Async dir:` line of the start message:
+
+```typescript
+subagent({ agent: "worker", async: true, task: "<long job - emit progress lines as you work>" })
+  -> Async: worker [R]  Async dir: <D>
+subagent({ agent: "monitor", async: true, task: "Watch async run R at <D>. Report every 15m. Stop when it ends." })
+```
+
+- Live 15m reports require the pi-intercom bridge; without it the monitor's trail and final summary are post-hoc records.
+
 ### Subagent control
 
 Subagent control is the runtime visibility and intervention layer for delegated runs. It is separate from lifecycle status. Lifecycle status says whether a child is `queued`, `running`, `paused`, `complete`, or `failed`. Activity reporting is factual: it tracks the last observed activity time and the current tool when known. It does not pretend to know that a child is truly stuck.

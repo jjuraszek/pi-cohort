@@ -10,7 +10,7 @@ import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts
 import { resolveAsyncRunLocation } from "./async-resume.ts";
 import { resolveSubagentRunId } from "./run-id-resolver.ts";
 import { flatToLogicalStepIndex, normalizeParallelGroups } from "./parallel-groups.ts";
-import { reconcileAsyncRun, reconcileNestedAsyncDescendants } from "./stale-run-reconciler.ts";
+import { readRunnerLogTail, reconcileAsyncRun, reconcileNestedAsyncDescendants } from "./stale-run-reconciler.ts";
 import { attachRootChildrenToSteps, findNestedRouteForRootId, projectNestedRegistryForRoot, type NestedRunResolutionScope } from "../shared/nested-events.ts";
 
 interface RunStatusParams {
@@ -238,6 +238,8 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 			}
 			if (fs.existsSync(logPath)) lines.push(`Log: ${logPath}`);
 			if (fs.existsSync(eventsPath)) lines.push(`Events: ${eventsPath}`);
+			const runnerLogPath = path.join(asyncDir, "runner.log");
+			if (fs.existsSync(runnerLogPath)) lines.push(`Runner log: ${runnerLogPath}`);
 
 			return { content: [{ type: "text", text: lines.join("\n") }], details: { mode: "single", results: [] } };
 		}
@@ -262,6 +264,18 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 				details: { mode: "single", results: [] },
 			};
 		}
+	}
+
+	if (asyncDir) {
+		const log = readRunnerLogTail(asyncDir);
+		const text = log.tail
+			? `Status file not found.\nRunner log tail (${log.path}):\n${log.tail}`
+			: `Status file not found.\nRunner log (empty or missing): expected at ${log.path}`;
+		return {
+			content: [{ type: "text", text }],
+			isError: true,
+			details: { mode: "single", results: [] },
+		};
 	}
 
 	return {
