@@ -185,28 +185,31 @@ describe("subagent prompt runtime", () => {
 		const control = { role: "custom", customType: "subagent_control_notice", content: "needs attention" };
 		const otherCustom = { role: "custom", customType: "other", content: "keep" };
 
-		assert.deepEqual(stripParentOnlySubagentMessages([user, instruction, slashResult, notify, control, otherCustom]), [user, otherCustom]);
+		assert.deepEqual(stripParentOnlySubagentMessages([user, instruction, slashResult, notify, control, otherCustom], new Set()), [user, otherCustom]);
 	});
 
 	it("strips prior parent subagent tool calls and results from forked child context", () => {
 		const user = { role: "user", content: "Task" };
-		const subagentResult = { role: "toolResult", toolName: "subagent", content: "subagent results" };
+		const subagentResult = { role: "toolResult", toolCallId: "call-1", toolName: "subagent", content: "subagent results" };
 		const readResult = { role: "toolResult", toolName: "read", content: "file contents" };
 		const mixedAssistant = {
 			role: "assistant",
 			content: [
 				{ type: "text", text: "I will inspect the repo." },
-				{ type: "toolCall", name: "subagent", input: { agent: "worker" } },
+				{ type: "toolCall", id: "call-2", name: "subagent", input: { agent: "worker" } },
 				{ type: "toolCall", name: "read", input: { path: "README.md" } },
 			],
 		};
 		const pureSubagentCall = {
 			role: "assistant",
-			content: [{ type: "toolCall", name: "subagent", input: { agent: "reviewer" } }],
+			content: [{ type: "toolCall", id: "call-3", name: "subagent", input: { agent: "reviewer" } }],
 		};
 
 		assert.deepEqual(
-			stripParentOnlySubagentMessages([user, subagentResult, readResult, mixedAssistant, pureSubagentCall]),
+			stripParentOnlySubagentMessages(
+				[user, subagentResult, readResult, mixedAssistant, pureSubagentCall],
+				new Set(["call-1", "call-2", "call-3"]),
+			),
 			[
 				user,
 				readResult,
@@ -219,6 +222,67 @@ describe("subagent prompt runtime", () => {
 				},
 			],
 		);
+	});
+
+	it("strips only inherited parent subagent calls/results when the boundary is known, keeping the child's own", () => {
+		const user = { role: "user", content: "Task" };
+		const inheritedCall = { role: "assistant", content: [{ type: "toolCall", id: "inherited-1", name: "subagent", arguments: { agent: "worker" } }] };
+		const inheritedResult = { role: "toolResult", toolCallId: "inherited-1", toolName: "subagent", content: "inherited results" };
+		const ownCall = { role: "assistant", content: [{ type: "toolCall", id: "own-1", name: "subagent", arguments: { agent: "grandchild" } }] };
+		const ownResult = { role: "toolResult", toolCallId: "own-1", toolName: "subagent", content: "grandchild done" };
+
+		const result = stripParentOnlySubagentMessages(
+			[user, inheritedCall, inheritedResult, ownCall, ownResult],
+			new Set(["inherited-1"]),
+		);
+
+		assert.deepEqual(result, [user, ownCall, ownResult]);
+	});
+
+	it("keeps a fanout child's own delegation call/result across a second turn without re-stripping it", () => {
+		const user = { role: "user", content: "Task" };
+		const firstOwnCall = { role: "assistant", content: [{ type: "toolCall", id: "own-1", name: "subagent", arguments: { agent: "grandchild" } }] };
+		const firstOwnResult = { role: "toolResult", toolCallId: "own-1", toolName: "subagent", content: "grandchild done" };
+		const secondOwnCall = { role: "assistant", content: [{ type: "toolCall", id: "own-2", name: "subagent", arguments: { agent: "grandchild" } }] };
+		const secondOwnResult = { role: "toolResult", toolCallId: "own-2", toolName: "subagent", content: "grandchild done again" };
+
+		// No inherited ids at all (fresh child): everything the child produced itself survives.
+		const result = stripParentOnlySubagentMessages(
+			[user, firstOwnCall, firstOwnResult, secondOwnCall, secondOwnResult],
+			new Set(),
+		);
+
+		assert.deepEqual(result, [user, firstOwnCall, firstOwnResult, secondOwnCall, secondOwnResult]);
+	});
+
+	it("captures the inherited/own boundary from session_start for both fresh and forked child contexts", () => {
+		let sessionStart: ((event: unknown, ctx: { sessionManager: { getBranch(): unknown[] } }) => void) | undefined;
+		let contextHandler: ((event: { messages: unknown[] }) => { messages: unknown[] } | undefined) | undefined;
+		registerSubagentPromptRuntime({
+			on(event: string, handler: (payload: unknown, ctx?: unknown) => unknown) {
+				if (event === "session_start") sessionStart = handler as typeof sessionStart;
+				if (event === "context") contextHandler = handler as typeof contextHandler;
+			},
+		} as { on(event: string, handler: (payload: unknown, ctx?: unknown) => unknown): void });
+
+		assert.ok(sessionStart, "expected a session_start handler");
+		assert.ok(contextHandler, "expected a context handler");
+
+		// Forked child: the branch at session_start already contains an inherited parent subagent call.
+		const inheritedCall = { role: "assistant", content: [{ type: "toolCall", id: "parent-1", name: "subagent", arguments: { agent: "lead" } }] };
+		sessionStart?.({ type: "session_start", reason: "fork" }, { sessionManager: { getBranch: () => [{ type: "message", message: inheritedCall }] } });
+
+		const inheritedResult = { role: "toolResult", toolCallId: "parent-1", toolName: "subagent", content: "inherited" };
+		const ownCall = { role: "assistant", content: [{ type: "toolCall", id: "own-1", name: "subagent", arguments: { agent: "grandchild" } }] };
+		const ownResult = { role: "toolResult", toolCallId: "own-1", toolName: "subagent", content: "own" };
+		assert.deepEqual(
+			contextHandler?.({ messages: [inheritedCall, inheritedResult, ownCall, ownResult] }),
+			{ messages: [ownCall, ownResult] },
+		);
+
+		// Fresh child: nothing inherited at session_start, so the child's own calls all survive.
+		sessionStart?.({ type: "session_start", reason: "new" }, { sessionManager: { getBranch: () => [] } });
+		assert.equal(contextHandler?.({ messages: [ownCall, ownResult] }), undefined);
 	});
 
 	it("sets the child intercom session name from env during agent startup", async () => {
@@ -277,20 +341,25 @@ describe("subagent prompt runtime", () => {
 	});
 
 	it("filters parent-only artifacts from polluted fork context while preserving ordinary history", () => {
+		let sessionStart: ((event: unknown, ctx: { sessionManager: { getBranch(): unknown[] } }) => void) | undefined;
 		let contextHandler: ((event: { messages: unknown[] }) => { messages: unknown[] } | undefined) | undefined;
 		registerSubagentPromptRuntime({
-			on(event: string, handler: (payload: { messages: unknown[] }) => { messages: unknown[] } | undefined) {
-				if (event === "context") contextHandler = handler;
+			on(event: string, handler: (payload: unknown, ctx?: unknown) => unknown) {
+				if (event === "session_start") sessionStart = handler as typeof sessionStart;
+				if (event === "context") contextHandler = handler as typeof contextHandler;
 			},
-		} as { on(event: string, handler: (payload: { messages: unknown[] }) => { messages: unknown[] } | undefined): void });
+		} as { on(event: string, handler: (payload: unknown, ctx?: unknown) => unknown): void });
 
 		const priorParentTurn = { role: "user", content: "Earlier we said planner → worker → reviewers → worker." };
 		const currentTask = { role: "user", content: "Now implement only the assigned fix." };
 		const instruction = { role: "custom", customType: "subagent-orchestration-instructions", content: "Subagent orchestration is enabled." };
 		const slashResult = { role: "custom", customType: "subagent-slash-result", content: "## Orchestration" };
-		const subagentResult = { role: "toolResult", toolName: "subagent", content: "subagent results" };
-		const subagentCall = { role: "assistant", content: [{ type: "toolCall", name: "subagent", input: { agent: "worker" } }] };
+		const subagentCall = { role: "assistant", content: [{ type: "toolCall", id: "subagent-1", name: "subagent", input: { agent: "worker" } }] };
+		const subagentResult = { role: "toolResult", toolCallId: "subagent-1", toolName: "subagent", content: "subagent results" };
 		const otherCustom = { role: "custom", customType: "other", content: "keep" };
+
+		// Mirrors production: session_start fires at fork time with the inherited call already in the branch.
+		sessionStart?.({ type: "session_start", reason: "fork" }, { sessionManager: { getBranch: () => [{ type: "message", message: subagentCall }] } });
 
 		assert.deepEqual(contextHandler?.({ messages: [priorParentTurn, instruction, slashResult, subagentCall, subagentResult, otherCustom, currentTask] }), {
 			messages: [priorParentTurn, otherCustom, currentTask],

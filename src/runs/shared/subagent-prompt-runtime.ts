@@ -115,34 +115,44 @@ function isParentOnlySubagentMessage(message: unknown): boolean {
 		&& PARENT_ONLY_CUSTOM_MESSAGE_TYPES.has(m.customType);
 }
 
-function isSubagentToolResultMessage(message: unknown): boolean {
-	const m = message as { role?: string; toolName?: string };
-	return m?.role === "toolResult" && m.toolName === "subagent";
+function isSubagentToolResultMessage(message: unknown, inheritedToolCallIds: ReadonlySet<string>): boolean {
+	const m = message as { role?: string; toolName?: string; toolCallId?: string };
+	if (m?.role !== "toolResult" || m.toolName !== "subagent") return false;
+	return typeof m.toolCallId === "string" && inheritedToolCallIds.has(m.toolCallId);
 }
 
-function isSubagentToolCallBlock(block: unknown): boolean {
-	const b = block as { type?: string; name?: string };
-	return b?.type === "toolCall" && b.name === "subagent";
+function isInheritedSubagentToolCallBlock(block: unknown, inheritedToolCallIds: ReadonlySet<string>): boolean {
+	const b = block as { type?: string; name?: string; id?: string };
+	if (b?.type !== "toolCall" || b.name !== "subagent") return false;
+	return typeof b.id === "string" && inheritedToolCallIds.has(b.id);
 }
 
-function stripAssistantSubagentToolCallBlocks(message: unknown): unknown | undefined {
+function stripAssistantSubagentToolCallBlocks(message: unknown, inheritedToolCallIds: ReadonlySet<string>): unknown | undefined {
 	const m = message as { role?: string; content?: unknown };
 	if (m?.role !== "assistant" || !Array.isArray(m.content)) return message;
-	const filteredContent = m.content.filter((block) => !isSubagentToolCallBlock(block));
+	const filteredContent = m.content.filter((block) => !isInheritedSubagentToolCallBlock(block, inheritedToolCallIds));
 	if (filteredContent.length === m.content.length) return message;
 	if (filteredContent.length === 0) return undefined;
 	return { ...m, content: filteredContent };
 }
 
-export function stripParentOnlySubagentMessages(messages: unknown[]): unknown[] {
+/**
+ * Strips parent-only orchestration artifacts from a child's context.
+ *
+ * `inheritedToolCallIds` distinguishes history inherited from a forked parent
+ * session (ids captured before the child's own first turn) from the child's
+ * own `subagent` calls/results made during its own session - only the former
+ * is stripped.
+ */
+export function stripParentOnlySubagentMessages(messages: unknown[], inheritedToolCallIds: ReadonlySet<string>): unknown[] {
 	let changed = false;
 	const filtered: unknown[] = [];
 	for (const message of messages) {
-		if (isParentOnlySubagentMessage(message) || isSubagentToolResultMessage(message)) {
+		if (isParentOnlySubagentMessage(message) || isSubagentToolResultMessage(message, inheritedToolCallIds)) {
 			changed = true;
 			continue;
 		}
-		const stripped = stripAssistantSubagentToolCallBlocks(message);
+		const stripped = stripAssistantSubagentToolCallBlocks(message, inheritedToolCallIds);
 		if (stripped === undefined) {
 			changed = true;
 			continue;
@@ -151,6 +161,19 @@ export function stripParentOnlySubagentMessages(messages: unknown[]): unknown[] 
 		filtered.push(stripped);
 	}
 	return changed ? filtered : messages;
+}
+
+function collectSubagentToolCallIds(entries: readonly unknown[]): Set<string> {
+	const ids = new Set<string>();
+	for (const entry of entries) {
+		const e = entry as { type?: string; message?: { role?: string; content?: unknown } };
+		if (e?.type !== "message" || e.message?.role !== "assistant" || !Array.isArray(e.message.content)) continue;
+		for (const block of e.message.content) {
+			const b = block as { type?: string; name?: string; id?: string };
+			if (b?.type === "toolCall" && b.name === "subagent" && typeof b.id === "string") ids.add(b.id);
+		}
+	}
+	return ids;
 }
 
 export default function registerSubagentPromptRuntime(pi: ExtensionAPI): void {
@@ -192,11 +215,21 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI): void {
 		});
 	}
 
-	const onRuntimeEvent = pi.on as unknown as (event: string, handler: (event: unknown) => unknown) => void;
-	onRuntimeEvent("context", (event: { messages: unknown[] }) => {
-		const messages = stripParentOnlySubagentMessages(event.messages);
-		if (messages === event.messages) return undefined;
-		return { messages };
+	let inheritedSubagentToolCallIds: ReadonlySet<string> = new Set<string>();
+	const onRuntimeEvent = pi.on as unknown as (
+		event: string,
+		handler: (event: unknown, ctx?: { sessionManager?: { getBranch(): unknown[] } }) => unknown,
+	) => void;
+	onRuntimeEvent("session_start", (_event: unknown, ctx?: { sessionManager?: { getBranch(): unknown[] } }) => {
+		// Establishes the inherited/own boundary once, before the child's own first turn: any
+		// `subagent` call already in the branch at this point came from the (forked) parent.
+		inheritedSubagentToolCallIds = collectSubagentToolCallIds(ctx?.sessionManager?.getBranch() ?? []);
+	});
+	onRuntimeEvent("context", (event: unknown) => {
+		const { messages } = event as { messages: unknown[] };
+		const stripped = stripParentOnlySubagentMessages(messages, inheritedSubagentToolCallIds);
+		if (stripped === messages) return undefined;
+		return { messages: stripped };
 	});
 
 	onRuntimeEvent("before_agent_start", async (event: { systemPrompt: string }) => {
