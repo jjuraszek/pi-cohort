@@ -3,7 +3,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
-import { asyncStartHeadline, createJitiCliResolver, spawnDetachedWithLog, spawnRunner } from "../../src/runs/background/async-execution.ts";
+import { asyncStartHeadline, spawnDetachedWithLog, spawnRunner } from "../../src/runs/background/async-execution.ts";
+import { createJitiCliResolver } from "../../src/runs/shared/jiti-cli.ts";
 
 function tempDir(prefix: string): string {
 	return fs.mkdtempSync(path.join(os.tmpdir(), prefix));

@@ -56,6 +56,7 @@ class InjectedSocket extends EventEmitter {
 }
 
 const identity = { runId: "run", childId: "child", attemptId: "attempt" };
+const unixOnly = { skip: process.platform === "win32" };
 
 function context(order: string[] = []): TestContext {
 	return {
@@ -70,7 +71,7 @@ function controlReports(api: TestAPI): ExecutionReport[] {
 }
 
 describe("execution control reporting", () => {
-	it("connects after ready and records abort requested, side effect, then applied", async () => {
+	it("connects after ready and records abort requested, side effect, then applied", unixOnly, async () => {
 		const channel = await createExecutionControlChannel(identity);
 		try {
 			const api = new TestAPI();
@@ -94,7 +95,7 @@ describe("execution control reporting", () => {
 		}
 	});
 
-	it("durably records shutdown applied before scheduling shutdown", async () => {
+	it("durably records shutdown applied before scheduling shutdown", unixOnly, async () => {
 		const channel = await createExecutionControlChannel(identity);
 		try {
 			const api = new TestAPI();

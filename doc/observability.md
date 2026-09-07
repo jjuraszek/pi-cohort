@@ -128,3 +128,22 @@ While the session is streaming, foreground control notices are steered to a turn
 The experimental backend reporting slice persists versioned custom session entries with custom type `pi-cohort:execution-report:v1`. A reporter emits `ready`, then `settled`, then exactly one terminal `result`; each entry carries `protocolVersion: 1`, `runId`, `childId`, `attemptId`, a per-attempt sequence, and timestamp. Result entries contain an `outcome` (`success`, `failed`, or `interrupted`), `finalOutput`, and optional `error` and `stopReason` fields.
 
 The host replays complete JSONL records only, tolerates one incomplete trailing write, filters other attempts, rejects correlation/sequence/lifecycle violations, and reconstructs active messages from the exact result entry's `parentId` branch. Messages are not duplicated in result data. Reporter configuration is supplied only through `PI_COHORT_REPORT_CONFIG`, an owner-only regular JSON file; the configuration contains correlation identifiers, never task content or credentials.
+
+### Persistent child-host wire protocol
+
+The experimental external-terminal host uses a private owner-only Unix socket. Its
+owner-only config file, named by `PI_COHORT_CHILD_HOST_CONFIG`, carries only
+`protocolVersion`, socket path, `runId`, and `childId`. The command, attempt
+arguments, cwd, and environment are sent only in memory over that socket.
+
+Messages are version-1 JSON objects, newline-delimited, exact-schema, and capped
+at 64 KiB per buffered frame. The controller accepts this lifecycle only:
+
+```text
+host_ready
+start_attempt -> attempt_started -> attempt_exited | attempt_spawn_error
+shutdown_host -> shutdown_ack
+```
+
+Every message is correlated by `runId` and `childId`; attempt messages also carry
+one non-reusable `attemptId`. Protocol frames and environments are never logged.

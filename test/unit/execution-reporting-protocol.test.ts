@@ -32,11 +32,12 @@ describe("execution reporting protocol", () => {
 			constants: { O_RDONLY: 0, O_NOFOLLOW: 0o400000 },
 			openSync(file: string, flags: number) { calls.push(["open", file]); assert.equal(flags, 0o400000); return descriptor; },
 			fstatSync(openDescriptor: number) { calls.push(["fstat", openDescriptor]); return { isFile: () => true, mode: 0o100600 }; },
+			lstatSync(file: string) { calls.push(["lstat", file]); return { isFile: () => true, isSymbolicLink: () => false }; },
 			readFileSync(openDescriptor: number, encoding: string) { calls.push(["read", openDescriptor]); assert.equal(encoding, "utf8"); return JSON.stringify(config); },
 			closeSync(openDescriptor: number) { calls.push(["close", openDescriptor]); },
 		};
 
-		assert.deepEqual(loadReporterConfig("/config-that-will-be-swapped.json", fileSystem), config);
+		assert.deepEqual(loadReporterConfig("/config-that-will-be-swapped.json", fileSystem, "darwin"), config);
 		assert.deepEqual(calls, [["open", "/config-that-will-be-swapped.json"], ["fstat", descriptor], ["read", descriptor], ["close", descriptor]]);
 	});
 
@@ -46,11 +47,12 @@ describe("execution reporting protocol", () => {
 			constants: { O_RDONLY: 0, O_NOFOLLOW: 0o400000 },
 			openSync() { return 42; },
 			fstatSync() { return { isFile: () => true, mode: 0o100600 }; },
+			lstatSync() { return { isFile: () => true, isSymbolicLink: () => false }; },
 			readFileSync() { return "{}"; },
 			closeSync() { calls.push("close"); },
 		};
 
-		assert.throws(() => loadReporterConfig("/invalid-config.json", fileSystem));
+		assert.throws(() => loadReporterConfig("/invalid-config.json", fileSystem, "darwin"));
 		assert.deepEqual(calls, ["close"]);
 	});
 
@@ -63,7 +65,7 @@ describe("execution reporting protocol", () => {
 
 	it("rejects group or world readable reporter configuration", () => {
 		const file = temporaryFile("config.json"); fs.writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
-		for (const mode of [0o640, 0o604, 0o644]) { fs.chmodSync(file, mode); assert.throws(() => loadReporterConfig(file), /owner-only/); }
+		for (const mode of [0o640, 0o604, 0o644]) { fs.chmodSync(file, mode); assert.throws(() => loadReporterConfig(file, fs, "darwin"), /owner-only/); }
 	});
 
 	it("requires a strictly shaped reporter configuration", () => {
@@ -75,7 +77,8 @@ describe("execution reporting protocol", () => {
 
 	it("creates a zero-byte owner-only session file exclusively", () => {
 		const file = temporaryFile("session.jsonl");
-		createExclusiveSessionFile(file); assert.equal(fs.statSync(file).size, 0); assert.equal(fs.statSync(file).mode & 0o077, 0);
+		createExclusiveSessionFile(file); assert.equal(fs.statSync(file).size, 0);
+		if (process.platform !== "win32") assert.equal(fs.statSync(file).mode & 0o077, 0);
 		assert.throws(() => createExclusiveSessionFile(file), /EEXIST/);
 	});
 

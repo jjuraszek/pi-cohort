@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as net from "node:net";
 import { EventEmitter, once } from "node:events";
+import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
 import { createExecutionControlChannel } from "../../src/execution-backend/control-channel.ts";
@@ -9,6 +10,7 @@ import { ControlFrameDecoder } from "../../src/execution-backend/control-protoco
 import { EXECUTION_REPORT_PROTOCOL_VERSION, loadReporterConfig } from "../../src/execution-backend/reporting-protocol.ts";
 
 const identity = { runId: "run", childId: "child", attemptId: "attempt" };
+const unixOnly = { skip: process.platform === "win32" };
 
 async function connect(configPath: string): Promise<net.Socket> {
 	const socket = net.createConnection(loadReporterConfig(configPath).controlSocketPath);
@@ -29,7 +31,7 @@ class FakeServer extends EventEmitter {
 }
 
 describe("execution control channel", () => {
-	it("is fully private and listening before returning, then reports child connection", async () => {
+	it("is fully private and listening before returning, then reports child connection", unixOnly, async () => {
 		const channel = await createExecutionControlChannel(identity);
 		const directory = path.dirname(channel.configPath);
 		try {
@@ -52,7 +54,7 @@ describe("execution control channel", () => {
 		}
 	});
 
-	it("waits for a child before writing and resolves only after the write callback", async () => {
+	it("waits for a child before writing and resolves only after the write callback", unixOnly, async () => {
 		const channel = await createExecutionControlChannel(identity);
 		const decoder = new ControlFrameDecoder();
 		try {
@@ -74,7 +76,18 @@ describe("execution control channel", () => {
 	});
 
 	it("rejects connection and pending requests when closed before connect", async () => {
-		const channel = await createExecutionControlChannel(identity);
+		const server = new FakeServer();
+		const fileSystem = {
+			...fs,
+			chmodSync(target: fs.PathLike, mode: fs.Mode) {
+				if (!String(target).endsWith("control.sock")) fs.chmodSync(target, mode);
+			},
+		};
+		const channel = await createExecutionControlChannel(identity, {
+			fileSystem,
+			createServer() { return server; },
+			platform: "darwin",
+		});
 		const connected = channel.connected;
 		const requested = channel.request("shutdown");
 		await channel.close();
@@ -83,7 +96,7 @@ describe("execution control channel", () => {
 		await assert.rejects(channel.request("abort"), /control channel closed/);
 	});
 
-	it("captures disconnects, rejects future requests, and accepts only one child", async () => {
+	it("captures disconnects, rejects future requests, and accepts only one child", unixOnly, async () => {
 		const channel = await createExecutionControlChannel(identity);
 		try {
 			const first = await connect(channel.configPath);
@@ -112,6 +125,7 @@ describe("execution control channel", () => {
 		const channel = await createExecutionControlChannel(identity, {
 			fileSystem,
 			createServer(listener) { accept = listener; return server; },
+			platform: "darwin",
 		});
 		try {
 			const socket = new PendingSocket();
@@ -140,6 +154,7 @@ describe("execution control channel", () => {
 		const channel = await createExecutionControlChannel(identity, {
 			fileSystem,
 			createServer(listener) { accept = listener; return server; },
+			platform: "darwin",
 		});
 		try {
 			const socket = new PendingSocket();
@@ -167,14 +182,14 @@ describe("execution control channel", () => {
 		const fileSystem = {
 			...fs,
 			mkdtempSync() {
-				directory = fs.mkdtempSync(path.join(fs.realpathSync("/tmp"), "control-path-"));
+				directory = fs.mkdtempSync(path.join(os.tmpdir(), "control-path-"));
 				privateDirectory = path.join(directory, "x".repeat(100));
 				fs.mkdirSync(privateDirectory);
 				return privateDirectory;
 			},
 		};
 		await assert.rejects(
-			createExecutionControlChannel(identity, { fileSystem }),
+			createExecutionControlChannel(identity, { fileSystem, platform: "darwin" }),
 			/socket path exceeds the portable Unix limit/,
 		);
 		assert.ok(directory);
@@ -183,7 +198,7 @@ describe("execution control channel", () => {
 		fs.rmSync(directory, { recursive: true, force: true });
 	});
 
-	it("awaits idempotent cleanup with zero residue", async () => {
+	it("awaits idempotent cleanup with zero residue", unixOnly, async () => {
 		const channel = await createExecutionControlChannel(identity);
 		const directory = path.dirname(channel.configPath);
 		const socket = await connect(channel.configPath);
@@ -207,7 +222,11 @@ describe("execution control channel", () => {
 			},
 		};
 		await assert.rejects(
-			createExecutionControlChannel(identity, { fileSystem }),
+			createExecutionControlChannel(identity, {
+				fileSystem,
+				createServer() { return new FakeServer(); },
+				platform: "darwin",
+			}),
 			/injected chmod failure/,
 		);
 		assert.ok(directory);
@@ -226,6 +245,7 @@ describe("execution control channel", () => {
 		const channel = await createExecutionControlChannel(identity, {
 			fileSystem,
 			createServer(listener) { accept = listener; return server; },
+			platform: "darwin",
 		});
 		try {
 			assert.ok(accept);
