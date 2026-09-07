@@ -5,6 +5,9 @@
   "author": "Jacek Juraszek",
   "license": "MIT",
   "type": "module",
+  "exports": {
+    "./execution-backend": "./src/execution-backend/index.ts"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jjuraszek/pi-cohort.git"

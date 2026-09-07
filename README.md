@@ -39,6 +39,10 @@ pi install npm:pi-cohort
 
 That is the only required step.
 
+## Execution backend extension API
+
+`pi-cohort/execution-backend` is an API for Pi extensions loaded by Pi's TypeScript-aware runtime. Bare Node is not a supported execution path; consumers outside Pi must supply a TypeScript-aware loader such as [jiti](https://github.com/unjs/jiti).
+
 ## Mental model
 
 Pi is the parent session. A subagent is a focused child Pi session with its own job. When you ask for a subagent, Pi starts the child, gives it the task, and brings the result back. Foreground runs stream in the conversation; background runs keep working and can be checked later.

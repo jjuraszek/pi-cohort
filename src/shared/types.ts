@@ -811,6 +811,8 @@ export interface ExtensionConfig {
 	showRosterOnStart?: boolean;
 	/** Forward the parent pi's extension CLI flags (e.g. --no-autofix) into spawned children. Default: true. */
 	forwardParentFlags?: boolean;
+	/** Execution backend to use: 'auto' (default, select first available), 'native' (bypass adapters), or a registered backend name. */
+	executionBackend?: string;
 }
 
 // ============================================================================
