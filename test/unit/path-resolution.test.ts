@@ -6,58 +6,63 @@ import * as path from "node:path";
 import { discoverAgents } from "../../src/agents/agents.ts";
 import { resolveSkillPath, clearSkillCache } from "../../src/agents/skills.ts";
 
-const tmpDir = path.join(os.tmpdir(), "pi-path-resolution-test");
-const cwdDir = path.join(tmpDir, "cwd");
+let tempHomeDir: string;
+let tempCwdDir: string;
+const originalEnv = {
+	HOME: process.env.HOME,
+	USERPROFILE: process.env.USERPROFILE,
+	PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
+};
 
-const realHomeDir = os.homedir();
-const realUserAgentsDir = path.join(realHomeDir, ".agents");
-const userAgentsDirBackup = path.join(tmpDir, ".agents_backup");
+function restoreEnv(key: keyof typeof originalEnv): void {
+	const value = originalEnv[key];
+	if (value === undefined) delete process.env[key];
+	else process.env[key] = value;
+}
 
 before(() => {
-	fs.mkdirSync(cwdDir, { recursive: true });
-
-	if (fs.existsSync(realUserAgentsDir)) {
-		fs.cpSync(realUserAgentsDir, userAgentsDirBackup, { recursive: true });
-	}
+	tempHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-path-resolution-test-"));
+	tempCwdDir = path.join(tempHomeDir, "cwd");
+	fs.mkdirSync(tempCwdDir, { recursive: true });
+	process.env.HOME = tempHomeDir;
+	process.env.USERPROFILE = tempHomeDir;
+	delete process.env.PI_CODING_AGENT_DIR;
 });
 
 after(() => {
-	if (fs.existsSync(userAgentsDirBackup)) {
-		fs.rmSync(realUserAgentsDir, { recursive: true, force: true });
-		fs.cpSync(userAgentsDirBackup, realUserAgentsDir, { recursive: true });
-	} else {
-		fs.rmSync(realUserAgentsDir, { recursive: true, force: true });
-	}
-	fs.rmSync(tmpDir, { recursive: true, force: true });
+	restoreEnv("HOME");
+	restoreEnv("USERPROFILE");
+	restoreEnv("PI_CODING_AGENT_DIR");
+	fs.rmSync(tempHomeDir, { recursive: true, force: true });
 });
 
 describe("Path resolution for .agents and ~/.agents", () => {
 	test("should resolve skills in .agents/skills", () => {
-		const skillsDir = path.join(cwdDir, ".agents", "skills");
+		const skillsDir = path.join(tempCwdDir, ".agents", "skills");
 		fs.mkdirSync(skillsDir, { recursive: true });
 		fs.writeFileSync(path.join(skillsDir, "test-skill-1.md"), "---\nname: test-skill-1\ndescription: test desc\n---\nSkill content");
 
 		clearSkillCache();
-		const resolved = resolveSkillPath("test-skill-1", cwdDir);
+		const resolved = resolveSkillPath("test-skill-1", tempCwdDir);
 		assert.ok(resolved);
 		assert.strictEqual(resolved?.path, path.join(skillsDir, "test-skill-1.md"));
 	});
 
 	test("should resolve skills in ~/.agents/skills", () => {
-		const userSkillsDir = path.join(realHomeDir, ".agents", "skills");
+		const userSkillsDir = path.join(tempHomeDir, ".agents", "skills");
 		fs.mkdirSync(userSkillsDir, { recursive: true });
 		fs.writeFileSync(path.join(userSkillsDir, "test-skill-2.md"), "---\nname: test-skill-2\ndescription: test desc\n---\nSkill content");
 
 		clearSkillCache();
-		const resolved = resolveSkillPath("test-skill-2", cwdDir);
+		const resolved = resolveSkillPath("test-skill-2", tempCwdDir);
 		assert.ok(resolved);
 		assert.strictEqual(resolved?.path, path.join(userSkillsDir, "test-skill-2.md"));
 	});
 
 	test("should resolve project agents from both .agents and .pi/agents", () => {
-		const legacyDir = path.join(cwdDir, ".agents");
-		const agentsDir = path.join(cwdDir, ".pi", "agents");
-		fs.mkdirSync(path.join(cwdDir, ".agents", "skills"), { recursive: true });
+		const legacyDir = path.join(tempCwdDir, ".agents");
+		const agentsDir = path.join(tempCwdDir, ".pi", "agents");
+		fs.mkdirSync(path.join(tempCwdDir, ".agents", "skills"), { recursive: true });
 		fs.mkdirSync(legacyDir, { recursive: true });
 		fs.mkdirSync(agentsDir, { recursive: true });
 		fs.writeFileSync(
@@ -69,7 +74,7 @@ describe("Path resolution for .agents and ~/.agents", () => {
 			"---\nname: test-agent-1\ndescription: Test agent\n---\nAgent content"
 		);
 
-		const result = discoverAgents(cwdDir, "project");
+		const result = discoverAgents(tempCwdDir, "project");
 		const legacyAgent = result.agents.find((a) => a.name === "test-agent-legacy");
 		const agent = result.agents.find((a) => a.name === "test-agent-1");
 		assert.ok(legacyAgent);
@@ -79,14 +84,14 @@ describe("Path resolution for .agents and ~/.agents", () => {
 	});
 
 	test("should resolve agents in ~/.agents", () => {
-		const userAgentsDir = path.join(realHomeDir, ".agents");
+		const userAgentsDir = path.join(tempHomeDir, ".agents");
 		fs.mkdirSync(userAgentsDir, { recursive: true });
 		fs.writeFileSync(
 			path.join(userAgentsDir, "test-agent-2.md"),
 			"---\nname: test-agent-2\ndescription: Test agent\n---\nAgent content"
 		);
 
-		const result = discoverAgents(cwdDir, "user");
+		const result = discoverAgents(tempCwdDir, "user");
 		const agent = result.agents.find((a) => a.name === "test-agent-2");
 		assert.ok(agent);
 		assert.strictEqual(agent?.filePath, path.join(userAgentsDir, "test-agent-2.md"));
