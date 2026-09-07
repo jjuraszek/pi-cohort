@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [5.3.4] - 2026-09-07
+
 ### Fixed
 
 - A fanout lead no longer loses its own `subagent` call/result before its next turn: the child-context filter now only strips `subagent` history inherited from a forked parent (captured at `session_start`), not the child's own delegation made during its own session. Previously a deterministic provider would see the delegation as never having happened and repeat it instead of finishing.
