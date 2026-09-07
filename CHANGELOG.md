@@ -1,5 +1,11 @@
 # Changelog
 
+## [5.3.3] - 2026-09-07
+
+### Fixed
+
+- Nested foreground delegation no longer crashes when a grandchild reports cost progress because child-safe state now initializes the required grand-total accumulator. ([#13](https://github.com/jjuraszek/pi-cohort/issues/13))
+
 ## [5.3.2] - 2026-09-06
 
 ### Fixed
