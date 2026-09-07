@@ -5,7 +5,7 @@ export interface WorkflowGraphBuildInput {
 	runId: string;
 	mode?: SubagentRunMode;
 	steps: ChainStep[];
-	results?: Array<Pick<SingleResult, "exitCode" | "detached" | "interrupted" | "error" | "acceptance">>;
+	results?: Array<Pick<SingleResult, "exitCode" | "interrupted" | "error" | "acceptance">>;
 	currentFlatIndex?: number;
 	currentStepIndex?: number;
 	stepStatuses?: Array<{ status?: string; error?: string }>;
@@ -24,8 +24,6 @@ function normalizeStatus(status: string | undefined): WorkflowNodeStatus | undef
 			return "failed";
 		case "paused":
 			return "paused";
-		case "detached":
-			return "detached";
 		case "pending":
 			return "pending";
 		default:
@@ -33,9 +31,8 @@ function normalizeStatus(status: string | undefined): WorkflowNodeStatus | undef
 	}
 }
 
-function resultStatus(result: Pick<SingleResult, "exitCode" | "detached" | "interrupted"> | undefined): WorkflowNodeStatus | undefined {
+function resultStatus(result: Pick<SingleResult, "exitCode" | "interrupted"> | undefined): WorkflowNodeStatus | undefined {
 	if (!result) return undefined;
-	if (result.detached) return "detached";
 	if (result.interrupted) return "paused";
 	return result.exitCode === 0 ? "completed" : "failed";
 }
@@ -64,7 +61,6 @@ function summarizeParallelStatuses(statuses: WorkflowNodeStatus[]): WorkflowNode
 	if (statuses.some((status) => status === "running")) return "running";
 	if (statuses.some((status) => status === "failed")) return "failed";
 	if (statuses.some((status) => status === "paused")) return "paused";
-	if (statuses.some((status) => status === "detached")) return "detached";
 	if (statuses.length > 0 && statuses.every((status) => status === "completed")) return "completed";
 	if (statuses.some((status) => status === "completed")) return "running";
 	return "pending";

@@ -367,7 +367,7 @@ describe("builtin agent overrides", () => {
 		});
 	});
 
-	// reviewer builtin has tools: read, grep, find, ls, bash, edit, write, intercom
+	// reviewer builtin has tools: read, grep, find, ls, bash, edit, write
 	it("toolsPrepend on builtin: prepended tool leads, base tools preserved", () => {
 		writeJson(path.join(tempHome, ".pi", "agent", "settings.json"), {
 			subagents: { agentOverrides: { reviewer: { toolsPrepend: ["custom-tool"] } } },

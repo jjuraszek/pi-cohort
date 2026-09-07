@@ -21,8 +21,6 @@ import {
 	type SingleResult,
 	type Usage,
 	DEFAULT_MAX_OUTPUT,
-	INTERCOM_DETACH_REQUEST_EVENT,
-	INTERCOM_DETACH_RESPONSE_EVENT,
 	truncateOutput,
 	getSubagentDepthEnv,
 } from "../../shared/types.ts";
@@ -43,7 +41,7 @@ import {
 	extractTextFromContent,
 } from "../../shared/utils.ts";
 import { buildSkillInjection, resolveSkillsWithFallback } from "../../agents/skills.ts";
-import { evaluateCompletionMutationGuard } from "../shared/completion-guard.ts";
+import { blockedLine, evaluateCompletionMutationGuard } from "../shared/completion-guard.ts";
 import { getPiSpawnCommand } from "../shared/pi-spawn.ts";
 import { createJsonlWriter } from "../../shared/jsonl-writer.ts";
 import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
@@ -169,8 +167,6 @@ async function runSingleAttempt(
 		systemPrompt: shared.systemPrompt,
 		cwd: options.cwd ?? runtimeCwd,
 		promptFileStem: agent.name,
-		intercomSessionName: options.intercomSessionName,
-		orchestratorIntercomTarget: options.orchestratorIntercomTarget,
 		runId: options.runId,
 		childAgentName: agent.name,
 		childIndex: options.index ?? 0,
@@ -245,27 +241,11 @@ async function runSingleAttempt(
 		let buf = "";
 		let processClosed = false;
 		let settled = false;
-		let detached = false;
-		let intercomStarted = false;
 		let assistantError: string | undefined;
 		let removeAbortListener: (() => void) | undefined;
 		let removeInterruptListener: (() => void) | undefined;
 		let activityTimer: NodeJS.Timeout | undefined;
 
-		const detachForIntercom = () => {
-			detached = true;
-			processClosed = true;
-			result.detached = true;
-			result.detachedReason = "intercom coordination";
-			progress.status = "detached";
-			progress.durationMs = Date.now() - startTime;
-			result.progressSummary = {
-				toolCount: progress.toolCount,
-				tokens: progress.tokens,
-				durationMs: progress.durationMs,
-			};
-			finish(-2);
-		};
 
 		// If the child emits a terminal assistant stop but never exits,
 		// give it a short grace period to flush naturally, then clean it up.
@@ -287,9 +267,9 @@ async function runSingleAttempt(
 			}
 		};
 		const startFinalDrain = () => {
-			if (childExited || finalDrainTimer || settled || processClosed || detached) return;
+			if (childExited || finalDrainTimer || settled || processClosed) return;
 			finalDrainTimer = setTimeout(() => {
-				if (settled || processClosed || detached) return;
+				if (settled || processClosed) return;
 				const termSent = trySignalChild(proc, "SIGTERM");
 				if (!termSent) return;
 				forcedTerminationSignal = true;
@@ -297,7 +277,7 @@ async function runSingleAttempt(
 					result.error = result.error ?? `Subagent process did not exit within ${FINAL_STOP_GRACE_MS}ms after its final message. Forcing termination.`;
 				}
 				finalHardKillTimer = setTimeout(() => {
-					if (settled || processClosed || detached) return;
+					if (settled || processClosed) return;
 					forcedTerminationSignal = trySignalChild(proc, "SIGKILL") || forcedTerminationSignal;
 				}, HARD_KILL_MS);
 				finalHardKillTimer.unref?.();
@@ -307,7 +287,7 @@ async function runSingleAttempt(
 
 		let silenceKillRequested = false;
 		const requestSilenceKill = (silenceMs: number) => {
-			if (silenceKillRequested || childExited || settled || processClosed || detached) return;
+			if (silenceKillRequested || childExited || settled || processClosed) return;
 			silenceKillRequested = true;
 			const termSent = trySignalChild(proc, "SIGTERM");
 			if (!termSent) return;
@@ -316,20 +296,12 @@ async function runSingleAttempt(
 				`Subagent killed: in-flight turn produced no output for ${Math.round(silenceMs / 1000)}s ` +
 				`(exceeded inFlightSilenceKillMs=${controlConfig.inFlightSilenceKillMs}ms). Likely wedged in a tool call.`;
 			const hardKill = setTimeout(() => {
-				if (settled || processClosed || detached) return;
+				if (settled || processClosed) return;
 				forcedTerminationSignal = trySignalChild(proc, "SIGKILL") || forcedTerminationSignal;
 			}, HARD_KILL_MS);
 			hardKill.unref?.();
 		};
 
-		const unsubscribeIntercomDetach = options.intercomEvents?.on?.(INTERCOM_DETACH_REQUEST_EVENT, (payload) => {
-			if (!options.allowIntercomDetach || detached || processClosed || !intercomStarted) return;
-			if (!payload || typeof payload !== "object") return;
-			const requestId = (payload as { requestId?: unknown }).requestId;
-			if (typeof requestId !== "string" || requestId.length === 0) return;
-			options.intercomEvents?.emit(INTERCOM_DETACH_RESPONSE_EVENT, { requestId, accepted: true });
-			detachForIntercom();
-		});
 
 		const finish = (code: number) => {
 			if (settled) return;
@@ -340,7 +312,6 @@ async function runSingleAttempt(
 				clearInterval(activityTimer);
 				activityTimer = undefined;
 			}
-			unsubscribeIntercomDetach?.();
 			removeAbortListener?.();
 			removeInterruptListener?.();
 			resolve(code);
@@ -495,9 +466,6 @@ async function runSingleAttempt(
 				const toolArgs = evt.args && typeof evt.args === "object" && !Array.isArray(evt.args)
 					? evt.args as Record<string, unknown>
 					: {};
-				if (options.allowIntercomDetach && (evt.toolName === "intercom" || evt.toolName === "contact_supervisor")) {
-					intercomStarted = true;
-				}
 				progress.toolCount++;
 				progress.currentTool = evt.toolName;
 				progress.currentToolArgs = extractToolArgsPreview(toolArgs);
@@ -588,7 +556,7 @@ async function runSingleAttempt(
 
 		if (controlConfig.enabled) {
 			activityTimer = setInterval(() => {
-				if (processClosed || settled || detached) return;
+				if (processClosed || settled) return;
 				const now = Date.now();
 				if (updateActivityState(now)) {
 					progress.durationMs = now - startTime;
@@ -621,10 +589,6 @@ async function runSingleAttempt(
 				// JSONL artifact flush is best effort.
 			});
 			cleanupTempDir(tempDir);
-			if (detached) {
-				finish(-2);
-				return;
-			}
 			processClosed = true;
 			if (buf.trim()) processLine(buf);
 			if (!result.error && assistantError) result.error = assistantError;
@@ -650,11 +614,7 @@ async function runSingleAttempt(
 
 		if (options.signal) {
 			const kill = () => {
-				if (processClosed || detached) return;
-				if (options.allowIntercomDetach && intercomStarted && !detached) {
-					detachForIntercom();
-					return;
-				}
+				if (processClosed) return;
 				proc.kill("SIGTERM");
 				setTimeout(() => !proc.killed && proc.kill("SIGKILL"), 3000);
 			};
@@ -667,7 +627,7 @@ async function runSingleAttempt(
 
 		if (options.interruptSignal) {
 			const interrupt = () => {
-				if (processClosed || detached || settled) return;
+				if (processClosed || settled) return;
 				interruptedByControl = true;
 				progress.status = "running";
 				progress.durationMs = Date.now() - startTime;
@@ -677,7 +637,7 @@ async function runSingleAttempt(
 				fireUpdate();
 				trySignalChild(proc, "SIGINT");
 				setTimeout(() => {
-					if (settled || processClosed || detached) return;
+					if (settled || processClosed) return;
 					trySignalChild(proc, "SIGTERM");
 				}, 1000).unref?.();
 			};
@@ -704,12 +664,6 @@ async function runSingleAttempt(
 		};
 		return result;
 	}
-	if (result.detached) {
-		result.exitCode = 0;
-		result.finalOutput = "Detached for intercom coordination.";
-		return result;
-	}
-
 	if (result.error && result.exitCode === 0) {
 		result.exitCode = 1;
 	}
@@ -721,6 +675,12 @@ async function runSingleAttempt(
 				? `${errInfo.errorType} failed (exit ${errInfo.exitCode}): ${errInfo.details}`
 				: `${errInfo.errorType} failed with exit code ${errInfo.exitCode}`;
 		}
+	}
+	const acceptanceOutput = getFinalOutput(result.messages);
+	let fullOutput = stripAcceptanceReport(acceptanceOutput);
+	if (result.exitCode === 0 && !result.error && blockedLine(fullOutput)) {
+		result.exitCode = 1;
+		result.error = fullOutput;
 	}
 	if (options.structuredOutput && result.exitCode === 0 && !result.error) {
 		const structured = readStructuredOutput({
@@ -753,8 +713,6 @@ async function runSingleAttempt(
 		durationMs: progress.durationMs,
 	};
 
-		const acceptanceOutput = getFinalOutput(result.messages);
-		let fullOutput = stripAcceptanceReport(acceptanceOutput);
 	const completionGuard = result.exitCode === 0 && !result.error && agent.completionGuard !== false
 		? evaluateCompletionMutationGuard({
 			agent: agent.name,
@@ -937,7 +895,7 @@ export async function runSync(
 		if (attemptSucceeded) {
 			break;
 		}
-		if (!isRetryableModelFailure(result.error) || i === modelsToTry.length - 1) {
+		if (blockedLine(result.error ?? "") || !isRetryableModelFailure(result.error) || i === modelsToTry.length - 1) {
 			break;
 		}
 		attemptNotes.push(formatModelAttemptNote(attempt, modelsToTry[i + 1]));
@@ -1016,7 +974,7 @@ export async function runSync(
 		});
 		const acceptanceFailure = acceptanceFailureMessage(result.acceptance);
 		stripAcceptanceReportsFromMessages(result.messages);
-		if (acceptanceFailure && result.acceptance.explicit && result.exitCode === 0 && !result.detached && !result.interrupted) {
+		if (acceptanceFailure && result.acceptance.explicit && result.exitCode === 0 && !result.interrupted) {
 		result.exitCode = 1;
 		result.error = result.error ? `${result.error}\n${acceptanceFailure}` : acceptanceFailure;
 		if (result.progress) {

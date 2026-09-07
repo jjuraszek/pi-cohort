@@ -1,7 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { ASYNC_DIR, RESULTS_DIR, type AsyncStatus } from "../../shared/types.ts";
-import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import { reconcileAsyncRun } from "./stale-run-reconciler.ts";
 
 export interface AsyncResumeParams {
@@ -19,13 +18,12 @@ export interface AsyncResumeDeps {
 }
 
 export type AsyncResumeTarget = {
-	kind: "live" | "revive";
+	kind: "revive";
 	runId: string;
 	asyncDir?: string;
 	state: AsyncStatus["state"];
 	agent: string;
 	index: number;
-	intercomTarget: string;
 	cwd?: string;
 	sessionFile?: string;
 };
@@ -39,7 +37,7 @@ interface AsyncResultFile {
 	success?: boolean;
 	cwd?: string;
 	sessionFile?: string;
-	results?: Array<{ agent?: string; success?: boolean; sessionFile?: string; intercomTarget?: string }>;
+	results?: Array<{ agent?: string; success?: boolean; sessionFile?: string }>;
 }
 
 export interface AsyncRunLocation {
@@ -76,10 +74,9 @@ function validateResultFile(value: unknown, resultPath: string): AsyncResultFile
 			const child = ensureObject(entry, `${resultPath} results[${index}]`);
 			const agent = validateOptionalString(child, "agent", resultPath, `results[${index}].agent`);
 			const sessionFile = validateOptionalString(child, "sessionFile", resultPath, `results[${index}].sessionFile`);
-			const intercomTarget = validateOptionalString(child, "intercomTarget", resultPath, `results[${index}].intercomTarget`);
 			const success = child.success;
 			if (success !== undefined && typeof success !== "boolean") throw new Error(`Invalid async result file '${resultPath}': results[${index}].success must be a boolean.`);
-			return { agent, sessionFile, intercomTarget, ...(typeof success === "boolean" ? { success } : {}) };
+			return { agent, sessionFile, ...(typeof success === "boolean" ? { success } : {}) };
 		});
 	}
 	const success = data.success;
@@ -265,40 +262,13 @@ export function resolveAsyncResumeTarget(params: AsyncResumeParams, deps: AsyncR
 		if (requestedIndex !== undefined) {
 			if (requestedIndex < 0 || requestedIndex >= stepCount) throw new Error(`Async run '${runId}' has ${stepCount} children. Index ${requestedIndex} is out of range.`);
 			const selectedStep = statusSteps[requestedIndex];
-			if (selectedStep?.status === "running") {
-				return {
-					kind: "live",
-					runId,
-					asyncDir: location.asyncDir ?? undefined,
-					state,
-					agent: selectedStep.agent,
-					index: requestedIndex,
-					intercomTarget: resolveSubagentIntercomTarget(runId, selectedStep.agent, requestedIndex),
-					cwd: status?.cwd ?? result?.cwd,
-					sessionFile: selectedStep.sessionFile ?? status?.sessionFile ?? result?.sessionFile,
-				};
-			}
 			if (selectedStep?.status === "pending") throw new Error(`Async run '${runId}' child ${requestedIndex} is pending and has not started yet. Wait for it to run or complete before resuming.`);
+			if (selectedStep?.status === "running") throw new Error("Selected child is still active; wait for completion, then resume.");
 			if (selectedStep && !terminalStepStatuses.has(selectedStep.status)) throw new Error(`Async run '${runId}' child ${requestedIndex} is ${selectedStep.status} and cannot be revived yet.`);
 		} else {
-			const running = statusSteps
-				.map((step, index) => ({ step, index }))
-				.filter(({ step }) => step.status === "running");
-			const selected = running.length === 1 ? running[0] : undefined;
-			if (!selected) {
-				throw new Error(`Async run '${runId}' has ${running.length} running children. Provide index to choose one.`);
-			}
-			return {
-				kind: "live",
-				runId,
-				asyncDir: location.asyncDir ?? undefined,
-				state,
-				agent: selected.step.agent,
-				index: selected.index,
-				intercomTarget: resolveSubagentIntercomTarget(runId, selected.step.agent, selected.index),
-				cwd: status?.cwd ?? result?.cwd,
-				sessionFile: selected.step.sessionFile ?? status?.sessionFile ?? result?.sessionFile,
-			};
+			const running = statusSteps.filter((step) => step.status === "running");
+			if (running.length === 1) throw new Error("Selected child is still active; wait for completion, then resume.");
+			if (running.length > 1) throw new Error(`Async run '${runId}' has ${running.length} running children. Provide index to choose one.`);
 		}
 	}
 
@@ -323,7 +293,6 @@ export function resolveAsyncResumeTarget(params: AsyncResumeParams, deps: AsyncR
 		state,
 		agent,
 		index,
-		intercomTarget: resolveSubagentIntercomTarget(runId, agent, index),
 		cwd: status?.cwd ?? result?.cwd,
 		sessionFile: resolvedSessionFile,
 	};

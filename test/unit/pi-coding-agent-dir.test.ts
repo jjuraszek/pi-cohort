@@ -7,7 +7,6 @@ import { discoverAgents, discoverAgentsAll } from "../../src/agents/agents.ts";
 import { handleCreate } from "../../src/agents/agent-management.ts";
 import { clearSkillCache, discoverAvailableSkills, resolveSkillPath } from "../../src/agents/skills.ts";
 import { loadConfig } from "../../src/extension/config.ts";
-import { diagnoseIntercomBridge, resolveIntercomBridge } from "../../src/intercom/intercom-bridge.ts";
 import { loadRunsForAgent, recordRun } from "../../src/runs/shared/run-history.ts";
 import { cleanupAllArtifactDirs } from "../../src/shared/artifacts.ts";
 import { getAgentDir } from "../../src/shared/utils.ts";
@@ -239,27 +238,4 @@ Package skill content.
 		assert.equal(fs.existsSync(artifactPath), false);
 	});
 
-	it("uses the configured agent dir for default intercom bridge paths", () => {
-		const extensionDir = path.join(agentDir, "extensions", "pi-intercom");
-		const configPath = path.join(agentDir, "intercom", "config.json");
-		fs.mkdirSync(extensionDir, { recursive: true });
-		writeFile(configPath, JSON.stringify({ enabled: true }));
-
-		const diagnostic = diagnoseIntercomBridge({
-			config: { mode: "always" },
-			context: "fresh",
-			orchestratorTarget: "main",
-		});
-		assert.equal(diagnostic.active, true);
-		assert.equal(diagnostic.extensionDir, path.resolve(extensionDir));
-		assert.equal(diagnostic.configPath, path.resolve(configPath));
-
-		const bridge = resolveIntercomBridge({
-			config: { mode: "always" },
-			context: "fresh",
-			orchestratorTarget: "main",
-		});
-		assert.equal(bridge.active, true);
-		assert.equal(bridge.extensionDir, path.resolve(extensionDir));
-	});
 });

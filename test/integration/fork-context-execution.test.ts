@@ -5,7 +5,6 @@ import * as path from "node:path";
 import type { MockPi } from "../support/helpers.ts";
 import { createEventBus, createMockPi, createTempDir, events, removeTempDir, tryImport } from "../support/helpers.ts";
 import { discoverAgents } from "../../src/agents/agents.ts";
-import { INTERCOM_DETACH_REQUEST_EVENT } from "../../src/shared/types.ts";
 
 interface ExecutorModule {
 	createSubagentExecutor?: (...args: unknown[]) => {
@@ -22,7 +21,7 @@ interface ExecutorModule {
 				context?: "fresh" | "fork";
 				mode?: "single" | "parallel" | "chain";
 				asyncId?: string;
-				results?: Array<{ detached?: boolean; exitCode?: number; skills?: string[] }>;
+				results?: Array<{ exitCode?: number; skills?: string[]; error?: string; savedOutputPath?: string }>;
 			};
 		}>;
 	};
@@ -550,6 +549,70 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		assert.equal(fs.existsSync(args[sessionIndex + 1]!), true);
 	});
 
+	it("preserves blocker output for a forked single run", async () => {
+		const blocked = "BLOCKED: need approval\nDone: inspected\nRemaining: rotate key";
+		mockPi.reset();
+		mockPi.onCall({ output: blocked });
+		const { manager } = makeForkingSessionManagerRecorder({ sessionFile: path.join(tempDir, "parent.jsonl"), leafId: "leaf-blocked" });
+		const result = await makeExecutor().execute(
+			"blocked-fork", { agent: "echo", task: "Implement key rotation", context: "fork" },
+			new AbortController().signal, undefined, makeCtx(manager),
+		);
+
+		assert.equal(result.isError, true);
+		assert.equal(result.details?.results?.[0]?.exitCode, 1);
+		assert.match(result.content[0]?.text ?? "", /BLOCKED: need approval/);
+		assert.match(result.content[0]?.text ?? "", /Done: inspected/);
+		assert.match(result.content[0]?.text ?? "", /Remaining: rotate key/);
+	});
+
+	it("keeps blocker and sibling outputs with artifacts in a forked parallel run", async () => {
+		const blocked = "BLOCKED: choose an API\nDone: compared options\nRemaining: implement";
+		const blockedOutput = path.join(tempDir, "blocked.md");
+		const siblingOutput = path.join(tempDir, "sibling.md");
+		mockPi.reset();
+		mockPi.onCall({ output: blocked });
+		mockPi.onCall({ output: "Sibling completed" });
+		const { manager } = makeForkingSessionManagerRecorder({ sessionFile: path.join(tempDir, "parent.jsonl"), leafId: "leaf-parallel-blocked" });
+
+		const result = await makeExecutor().execute(
+			"parallel-blocked-fork",
+			{ tasks: [{ agent: "echo", task: "Implement API", output: blockedOutput }, { agent: "second", task: "Review docs", output: siblingOutput }], context: "fork", concurrency: 1 },
+			new AbortController().signal, undefined, makeCtx(manager),
+		);
+
+		assert.match(result.content[0]?.text ?? "", /BLOCKED: choose an API/);
+		assert.match(result.content[0]?.text ?? "", /Sibling completed/);
+		const results = result.details?.results ?? [];
+		const ok = results.find((r) => r.exitCode === 0);
+		const blockedResult = results.find((r) => r.exitCode !== 0);
+		assert.ok(ok);
+		assert.ok(blockedResult);
+		assert.equal(blockedResult.error, blocked);
+		assert.equal(blockedResult.savedOutputPath, undefined);
+		assert.equal(typeof ok.savedOutputPath, "string");
+		assert.equal(fs.readFileSync(ok.savedOutputPath, "utf-8"), "Sibling completed");
+	});
+
+	it("stops a forked sequential chain on a blocker", async () => {
+		const blocked = "BLOCKED: choose a migration\nDone: inspected schema\nRemaining: migrate";
+		const output = path.join(tempDir, "blocked-chain.md");
+		mockPi.reset();
+		mockPi.onCall({ output: blocked });
+		const { manager } = makeForkingSessionManagerRecorder({ sessionFile: path.join(tempDir, "parent.jsonl"), leafId: "leaf-chain-blocked" });
+
+		const result = await makeExecutor().execute(
+			"chain-blocked-fork",
+			{ chain: [{ agent: "echo", task: "Choose migration", output }, { agent: "second", task: "Apply migration" }], context: "fork", clarify: false },
+			new AbortController().signal, undefined, makeCtx(manager),
+		);
+
+		assert.equal(result.isError, true);
+		assert.match(result.content[0]?.text ?? "", /BLOCKED: choose a migration/);
+		assert.equal(mockPi.callCount(), 1);
+		assert.equal(fs.existsSync(output), false);
+	});
+
 	it("creates isolated forked sessions per parallel task", async () => {
 		const { manager, openedPaths, branchedLeafIds } = makeForkingSessionManagerRecorder({
 			sessionFile: path.join(tempDir, "parent-parallel.jsonl"),
@@ -713,46 +776,6 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		}
 	});
 
-	it("detaches parallel child runs cleanly on intercom handoff", async () => {
-		mockPi.reset();
-		mockPi.onCall({
-			steps: [
-				{ jsonl: [events.toolStart("intercom", { action: "send", to: "orchestrator" })] },
-				{ delay: 1000, jsonl: [events.assistantMessage("after handoff")] },
-			],
-		});
-		mockPi.onCall({ output: "other done" });
-		const executor = makeExecutorWithDiscoverAgents(() => ({
-			agents: [
-				{ name: "echo", description: "Echo", systemPrompt: "Intercom orchestration channel:" },
-				{ name: "second", description: "Second", systemPrompt: "Intercom orchestration channel:" },
-			],
-			projectAgentsDir: null,
-		}));
-		let detachEmitted = false;
-		const result = await executor.execute(
-			"intercom-parallel",
-			{
-				tasks: [
-					{ agent: "echo", task: "send handoff" },
-					{ agent: "second", task: "continue" },
-				],
-			},
-			new AbortController().signal,
-			(update: ProgressUpdate) => {
-				if (detachEmitted) return;
-				if (!update.details?.progress?.some((entry) => entry.currentTool === "intercom")) return;
-				detachEmitted = true;
-				executor.eventsApi.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "parallel-detach" });
-			},
-			makeCtx(makeSessionManagerRecorder().manager),
-		);
-
-		assert.equal(result.isError, undefined);
-		assert.match(result.content[0]?.text ?? "", /Parallel run detached for intercom coordination/);
-		assert.equal(detachEmitted, true);
-		assert.equal(result.details?.results?.some((entry) => entry.detached === true && entry.exitCode === 0), true);
-	});
 
 	it("runs top-level parallel async requests in the background", { skip: !asyncAvailable ? "jiti not available" : undefined }, async () => {
 		const executor = makeExecutor();

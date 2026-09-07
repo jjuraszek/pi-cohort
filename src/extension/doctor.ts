@@ -2,7 +2,6 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { discoverAgentsAll, type AgentSource } from "../agents/agents.ts";
 import { isAsyncAvailable } from "../runs/background/async-execution.ts";
-import { diagnoseIntercomBridge, type IntercomBridgeDiagnostic } from "../intercom/intercom-bridge.ts";
 import { discoverAvailableSkills, type SkillSource } from "../agents/skills.ts";
 import {
 	ASYNC_DIR,
@@ -24,18 +23,15 @@ interface DoctorDeps {
 	isAsyncAvailable: () => boolean;
 	discoverAgentsAll: typeof discoverAgentsAll;
 	discoverAvailableSkills: typeof discoverAvailableSkills;
-	diagnoseIntercomBridge: typeof diagnoseIntercomBridge;
 }
 
 interface DoctorReportInput {
 	cwd: string;
 	config: ExtensionConfig;
 	state: SubagentState;
-	context?: "fresh" | "fork";
 	requestedSessionDir?: string;
 	currentSessionFile?: string | null;
 	currentSessionId?: string | null;
-	orchestratorTarget?: string;
 	sessionError?: string;
 	expandTilde?: (value: string) => string;
 	paths?: DoctorPaths;
@@ -53,7 +49,6 @@ const DEFAULT_DEPS: DoctorDeps = {
 	isAsyncAvailable,
 	discoverAgentsAll,
 	discoverAvailableSkills,
-	diagnoseIntercomBridge,
 };
 
 function errorText(error: unknown): string {
@@ -186,22 +181,6 @@ function formatCostLines(input: DoctorReportInput): string[] {
 	return lines;
 }
 
-function formatIntercomDiagnostic(diagnostic: IntercomBridgeDiagnostic, context: "fresh" | "fork" | undefined): string[] {
-	const lines = [
-		`- bridge: ${diagnostic.active ? "active" : "inactive"}${diagnostic.reason ? ` (${diagnostic.reason})` : ""}`,
-		`- mode: ${diagnostic.mode}; context: ${context ?? "unspecified"}`,
-		`- orchestrator target: ${diagnostic.orchestratorTarget ?? "not available"}`,
-		`- pi-intercom: ${diagnostic.piIntercomAvailable ? "available" : "unavailable"} at ${diagnostic.extensionDir}`,
-	];
-	if (diagnostic.configPath && diagnostic.intercomConfigEnabled !== undefined) {
-		lines.push(`- intercom config: ${diagnostic.intercomConfigEnabled === false ? "disabled" : "enabled or absent"} (${diagnostic.configPath})`);
-	}
-	if (diagnostic.intercomConfigError) {
-		lines.push(`- intercom config warning: ${diagnostic.intercomConfigError}; runtime assumes enabled`);
-	}
-	return lines;
-}
-
 export function buildDoctorReport(input: DoctorReportInput): string {
 	const paths = input.paths ?? DEFAULT_PATHS;
 	const deps = { ...DEFAULT_DEPS, ...input.deps };
@@ -221,14 +200,6 @@ export function buildDoctorReport(input: DoctorReportInput): string {
 		"",
 		"Discovery",
 		...formatDiscovery(input, deps),
-		"",
-		"Intercom bridge",
-		...lineFromCheck("intercom bridge", () => formatIntercomDiagnostic(deps.diagnoseIntercomBridge({
-			config: input.config.intercomBridge,
-			context: input.context,
-			orchestratorTarget: input.orchestratorTarget,
-			cwd: input.cwd,
-		}), input.context).join("\n")).split("\n"),
 		"",
 		...formatCostLines(input),
 	];

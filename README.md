@@ -121,7 +121,6 @@ Parent extension CLI flags (e.g. pi-lens's `--no-autofix`) are forwarded into sp
 
 Optional companions:
 
-- [pi-intercom](https://github.com/jjuraszek/pi-intercom) - lets a blocked child ask the parent a question instead of guessing. [doc/skills-and-companions.md](doc/skills-and-companions.md#optional-pi-intercom-companion)
 - [pi-essentials](https://github.com/jjuraszek/pi-essentials) - lets `context-builder` read referenced URLs. [doc/skills-and-companions.md](doc/skills-and-companions.md#optional-pi-essentials-companion)
 
 ## Deeper reference

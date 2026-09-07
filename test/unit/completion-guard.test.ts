@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import type { Message } from "@earendil-works/pi-ai";
 
 import {
+	blockedLine,
 	evaluateCompletionMutationGuard,
 	expectsImplementationMutation,
 	hasMutationToolCall,
@@ -22,6 +23,17 @@ function assistantText(text: string): Message {
 		content: [{ type: "text", text }],
 	} as unknown as Message;
 }
+
+test("blockedLine accepts only a column-zero marker on the first non-empty line", () => {
+	assert.equal(blockedLine("\n\nBLOCKED: approve deployment\nDone: inspected\nRemaining: deploy"), "BLOCKED: approve deployment");
+	assert.equal(blockedLine("BLOCKED:reason"), "BLOCKED:reason");
+	assert.equal(blockedLine("BLOCKED:"), "BLOCKED:");
+	assert.equal(blockedLine(" BLOCKED: indented"), undefined);
+	assert.equal(blockedLine("**BLOCKED:** bold"), undefined);
+	assert.equal(blockedLine("## BLOCKED: heading"), undefined);
+	assert.equal(blockedLine("Note\nBLOCKED: later"), undefined);
+	assert.equal(blockedLine("blocked: lowercase"), undefined);
+});
 
 test("implementation task with no mutation triggers the completion guard", () => {
 	const result = evaluateCompletionMutationGuard({

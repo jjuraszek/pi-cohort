@@ -4,18 +4,12 @@ import { buildCompletionKey, markSeenWithTtl } from "./completion-dedupe.ts";
 import { createFileCoalescer } from "../../shared/file-coalescer.ts";
 import {
 	SUBAGENT_ASYNC_COMPLETE_EVENT,
-	type IntercomEventBus,
 	type NestedRunSummary,
-	type SubagentResultIntercomChild,
+	type SubagentEventBus,
+	type SubagentResultChild,
 	type SubagentState,
 } from "../../shared/types.ts";
-import {
-	attachNestedChildrenToResultChildren,
-	buildSubagentResultIntercomPayload,
-	compactNestedResultChildren,
-	deliverSubagentResultIntercomEvent,
-	resolveSubagentResultStatus,
-} from "../../intercom/result-intercom.ts";
+import { attachNestedChildrenToResultChildren, compactNestedResultChildren, resolveSubagentResultStatus } from "../shared/result-children.ts";
 import { projectNestedRegistryForRoot, sanitizeSummary } from "../shared/nested-events.ts";
 
 const WATCHER_RESTART_DELAY_MS = 3000;
@@ -42,7 +36,6 @@ type ResultFileChild = {
 	success?: boolean;
 	sessionFile?: string;
 	artifactPaths?: { outputPath?: string };
-	intercomTarget?: string;
 	children?: unknown;
 };
 
@@ -60,7 +53,6 @@ type ResultFileData = {
 	cwd?: string;
 	sessionFile?: string;
 	asyncDir?: string;
-	intercomTarget?: string;
 };
 
 function sanitizeNestedResultChildren(value: unknown, resultPath: string, label: string): NestedRunSummary[] | undefined {
@@ -92,7 +84,7 @@ function shouldFallBackToPolling(error: unknown): boolean {
 }
 
 export function createResultWatcher(
-	pi: { events: IntercomEventBus },
+	pi: { events: SubagentEventBus },
 	state: SubagentState,
 	resultsDir: string,
 	completionTtlMs: number,
@@ -139,7 +131,7 @@ export function createResultWatcher(
 					output: data.summary,
 					success: data.success,
 				}];
-			const normalizedChildren = attachNestedChildrenToResultChildren(runId, resultChildren.map((result = {}, index): SubagentResultIntercomChild => {
+			const normalizedChildren = attachNestedChildrenToResultChildren(runId, resultChildren.map((result = {}, index): SubagentResultChild => {
 				const baseOutput = result.output ?? data.summary;
 				const hasRealOutput = typeof baseOutput === "string" && baseOutput.trim().length > 0;
 				const output = hasRealOutput ? baseOutput : "(no output)";
@@ -158,30 +150,10 @@ export function createResultWatcher(
 					index,
 					artifactPath: result.artifactPaths?.outputPath,
 					...(typeof sessionPath === "string" && fsApi.existsSync(sessionPath) ? { sessionPath } : {}),
-					...(result.intercomTarget ? { intercomTarget: result.intercomTarget } : {}),
 					...(childNestedChildren ? { children: childNestedChildren } : {}),
 				};
 			}), nestedChildren);
 
-			const intercomTarget = data.intercomTarget?.trim();
-			if (intercomTarget) {
-				const mode = data.mode === "single" || data.mode === "parallel" || data.mode === "chain"
-					? data.mode
-					: resultChildren.length > 1 ? "chain" : "single";
-				const payload = buildSubagentResultIntercomPayload({
-					to: intercomTarget,
-					runId,
-					mode,
-					source: "async",
-					children: normalizedChildren,
-					asyncId: data.id,
-					asyncDir: data.asyncDir,
-				});
-				const delivered = await deliverSubagentResultIntercomEvent(pi.events, payload);
-				if (!delivered) {
-					console.error(`Subagent async grouped result intercom delivery was not acknowledged for '${resultPath}'.`);
-				}
-			}
 
 			pi.events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
 				...data,

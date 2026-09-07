@@ -31,7 +31,6 @@ import {
 	buildControlEvent,
 	deriveActivityState,
 	claimControlNotification,
-	formatControlIntercomMessage,
 	formatControlNoticeMessage,
 } from "../shared/subagent-control.ts";
 import {
@@ -52,7 +51,7 @@ import { nestedSummaryFromAsyncStatus, writeNestedEvent } from "../shared/nested
 import { formatModelAttemptNote, isRetryableModelFailure } from "../shared/model-fallback.ts";
 import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
 import { detectSubagentError, extractTextFromContent, extractToolArgsPreview, getFinalOutput } from "../../shared/utils.ts";
-import { evaluateCompletionMutationGuard } from "../shared/completion-guard.ts";
+import { blockedLine, evaluateCompletionMutationGuard } from "../shared/completion-guard.ts";
 import {
 	createMutatingFailureState,
 	didMutatingToolFail,
@@ -77,7 +76,6 @@ import {
 } from "../shared/worktree.ts";
 import { resolveEffectiveThinking } from "../../shared/model-info.ts";
 import { writeInitialProgressFile } from "../../shared/settings.ts";
-import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import { acceptanceFailureMessage, aggregateAcceptanceReport, evaluateAcceptance, formatAcceptancePrompt, stripAcceptanceReport } from "../shared/acceptance.ts";
 
 interface SubagentRunConfig {
@@ -101,8 +99,6 @@ interface SubagentRunConfig {
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;
 	controlConfig?: ResolvedControlConfig;
-	controlIntercomTarget?: string;
-	childIntercomTargets?: Array<string | undefined>;
 	resultMode?: SubagentRunMode;
 	dynamicFanoutMaxItems?: number;
 	workflowGraph?: WorkflowGraphSnapshot;
@@ -118,7 +114,6 @@ interface StepResult {
 	exitCode?: number | null;
 	skipped?: boolean;
 	sessionFile?: string;
-	intercomTarget?: string;
 	model?: string;
 	attemptedModels?: string[];
 	modelAttempts?: ModelAttempt[];
@@ -577,8 +572,6 @@ interface SingleStepContext {
 	piArgv1?: string;
 	forwardedFlags?: string[];
 	registerInterrupt?: (interrupt: (() => void) | undefined) => void;
-	childIntercomTarget?: string;
-	orchestratorIntercomTarget?: string;
 	nestedRoute?: NestedRouteInfo;
 	onAttemptStart?: (attempt: { model?: string; thinking?: string }) => void;
 	onChildEvent?: (event: ChildEvent) => void;
@@ -599,7 +592,6 @@ async function runSingleStep(
 	artifactPaths?: ArtifactPaths;
 	interrupted?: boolean;
 	sessionFile?: string;
-	intercomTarget?: string;
 	completionGuardTriggered?: boolean;
 	structuredOutput?: unknown;
 	structuredOutputPath?: string;
@@ -669,8 +661,6 @@ async function runSingleStep(
 			systemPromptMode: step.systemPromptMode,
 			cwd: step.cwd ?? ctx.cwd,
 			promptFileStem: step.agent,
-			intercomSessionName: ctx.childIntercomTarget,
-			orchestratorIntercomTarget: ctx.orchestratorIntercomTarget,
 			runId: ctx.id,
 			childAgentName: step.agent,
 			childIndex: ctx.flatIndex,
@@ -696,9 +686,13 @@ async function runSingleStep(
 		cleanupTempDir(tempDir);
 
 		const hiddenError = run.exitCode === 0 && !run.error ? detectSubagentError(run.messages) : null;
+		const blockedOutput = stripAcceptanceReport(getFinalOutput(run.messages));
+		const blockedError = run.exitCode === 0 && !run.interrupted && !run.error && !hiddenError?.hasError && blockedLine(blockedOutput)
+			? blockedOutput
+			: undefined;
 		let structuredOutput: unknown;
 		let structuredError: string | undefined;
-		if (effectiveStructuredOutput && run.exitCode === 0 && !run.error && !hiddenError?.hasError) {
+		if (effectiveStructuredOutput && run.exitCode === 0 && !run.error && !hiddenError?.hasError && !blockedError) {
 			const structured = readStructuredOutput({
 				schema: effectiveStructuredOutput.schema,
 				schemaPath: effectiveStructuredOutput.schemaPath,
@@ -707,7 +701,7 @@ async function runSingleStep(
 			if (structured.error) structuredError = structured.error;
 			else structuredOutput = structured.value;
 		}
-		const completionGuard = run.exitCode === 0 && !run.error && !hiddenError?.hasError && step.completionGuard !== false
+		const completionGuard = run.exitCode === 0 && !run.error && !hiddenError?.hasError && !blockedError && step.completionGuard !== false
 			? evaluateCompletionMutationGuard({
 				agent: step.agent,
 				task: taskForCompletionGuard,
@@ -719,7 +713,7 @@ async function runSingleStep(
 		const completionGuardError = completionGuardTriggered
 			? "Subagent completed without making edits for an implementation task.\nIt appears to have returned planning or scratchpad output instead of applying changes."
 			: undefined;
-		const effectiveExitCode = completionGuardTriggered
+		const effectiveExitCode = blockedError || completionGuardTriggered
 			? 1
 			: structuredError
 				? 1
@@ -728,7 +722,8 @@ async function runSingleStep(
 				: run.error && run.exitCode === 0
 					? 1
 					: run.exitCode;
-		const error = completionGuardError
+		const error = blockedError
+			?? completionGuardError
 			?? structuredError
 			?? (hiddenError?.hasError
 				? hiddenError.details
@@ -747,7 +742,7 @@ async function runSingleStep(
 		completionGuardTriggeredFinal = completionGuardTriggered;
 		finalOutputSnapshot = outputSnapshot;
 		finalResult = { ...run, exitCode: effectiveExitCode, model: candidate ?? run.model, error, structuredOutput } as RunPiStreamingResult & { structuredOutput?: unknown };
-		if (attempt.success || completionGuardTriggered) break;
+		if (attempt.success || completionGuardTriggered || blockedError) break;
 		if (!isRetryableModelFailure(error) || index === candidates.length - 1) break;
 		attemptNotes.push(formatModelAttemptNote(attempt, candidates[index + 1]));
 	}
@@ -817,7 +812,6 @@ async function runSingleStep(
 		exitCode: effectiveFinalExitCode,
 		error: effectiveFinalError,
 		sessionFile: step.sessionFile,
-		intercomTarget: ctx.childIntercomTarget,
 		model: finalResult?.model,
 		attemptedModels: attemptedModels.length > 0 ? attemptedModels : undefined,
 		modelAttempts,
@@ -1088,7 +1082,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	const refreshWorkflowGraph = (): void => {
 		if (!config.workflowGraph) return;
 		const graph = structuredClone(statusPayload.workflowGraph ?? config.workflowGraph);
-		const normalize = (status: RunnerStatusStep["status"]): "pending" | "running" | "completed" | "failed" | "paused" | "detached" => {
+		const normalize = (status: RunnerStatusStep["status"]): "pending" | "running" | "completed" | "failed" | "paused" => {
 			if (status === "complete" || status === "completed") return "completed";
 			if (status === "running" || status === "failed" || status === "paused" || status === "pending") return status;
 			return "pending";
@@ -1148,23 +1142,13 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	const mutatingFailureWindowMs = 5 * 60_000;
 	const appendControlEvent = (event: ReturnType<typeof buildControlEvent>) => {
 		if (!controlConfig.enabled) return;
-		const childIntercomTarget = config.childIntercomTargets?.[event.index ?? statusPayload.currentStep];
-		const channels = event.type === "active_long_running"
-			? controlConfig.notifyChannels.filter((channel) => channel !== "intercom")
-			: controlConfig.notifyChannels;
-		if (channels.length === 0 || !claimControlNotification(controlConfig, event, emittedControlEventKeys, childIntercomTarget)) return;
+		const channels = controlConfig.notifyChannels;
+		if (channels.length === 0 || !claimControlNotification(controlConfig, event, emittedControlEventKeys)) return;
 		appendJsonl(eventsPath, JSON.stringify({
 			type: "subagent.control",
 			event,
 			channels,
-			childIntercomTarget,
-			noticeText: formatControlNoticeMessage(event, childIntercomTarget),
-			...(config.controlIntercomTarget && channels.includes("intercom") ? {
-				intercom: {
-					to: config.controlIntercomTarget,
-					message: formatControlIntercomMessage(event, childIntercomTarget),
-				},
-			} : {}),
+			noticeText: formatControlNoticeMessage(event),
 		}));
 	};
 	const syncTopLevelCurrentTool = (): void => {
@@ -1533,9 +1517,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					recentOutput: [],
 				}));
 			statusPayload.steps.splice(groupStartFlatIndex, 1, ...dynamicStatusSteps);
-			if (config.childIntercomTargets) {
-				config.childIntercomTargets = statusPayload.steps.map((statusStep, index) => resolveSubagentIntercomTarget(id, statusStep.agent, index));
-			}
 			mutatingFailureStates.splice(groupStartFlatIndex, 1, ...dynamicStatusSteps.map(() => createMutatingFailureState()));
 			pendingToolResults.splice(groupStartFlatIndex, 1, ...dynamicStatusSteps.map(() => undefined));
 			const materializedDelta = dynamicStatusSteps.length - 1;
@@ -1615,8 +1596,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					piPackageRoot: config.piPackageRoot,
 					piArgv1: config.piArgv1,
 					forwardedFlags: config.forwardedFlags,
-					childIntercomTarget: config.childIntercomTargets?.[fi],
-					orchestratorIntercomTarget: config.controlIntercomTarget,
 					nestedRoute: config.nestedRoute,
 					registerInterrupt: (interrupt) => {
 						activeChildInterrupt = interrupt;
@@ -1659,7 +1638,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					exitCode: pr.exitCode,
 					skipped: pr.skipped,
 					sessionFile: pr.sessionFile,
-					intercomTarget: pr.intercomTarget,
 					model: pr.model,
 					attemptedModels: pr.attemptedModels,
 					modelAttempts: pr.modelAttempts,
@@ -1863,8 +1841,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 							piPackageRoot: config.piPackageRoot,
 							piArgv1: config.piArgv1,
 							forwardedFlags: config.forwardedFlags,
-							childIntercomTarget: config.childIntercomTargets?.[fi],
-							orchestratorIntercomTarget: config.controlIntercomTarget,
 							nestedRoute: config.nestedRoute,
 							registerInterrupt: (interrupt) => {
 								activeChildInterrupt = interrupt;
@@ -1950,7 +1926,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 						exitCode: pr.exitCode,
 						skipped: pr.skipped,
 						sessionFile: pr.sessionFile,
-						intercomTarget: pr.intercomTarget,
 						model: pr.model,
 						attemptedModels: pr.attemptedModels,
 						modelAttempts: pr.modelAttempts,
@@ -2031,8 +2006,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				piPackageRoot: config.piPackageRoot,
 				piArgv1: config.piArgv1,
 				forwardedFlags: config.forwardedFlags,
-				childIntercomTarget: config.childIntercomTargets?.[flatIndex],
-				orchestratorIntercomTarget: config.controlIntercomTarget,
 				nestedRoute: config.nestedRoute,
 				registerInterrupt: (interrupt) => {
 					activeChildInterrupt = interrupt;
@@ -2052,7 +2025,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				success: singleResult.exitCode === 0,
 				exitCode: singleResult.exitCode,
 				sessionFile: singleResult.sessionFile,
-				intercomTarget: singleResult.intercomTarget,
 				model: singleResult.model,
 				attemptedModels: singleResult.attemptedModels,
 				modelAttempts: singleResult.modelAttempts,
@@ -2260,7 +2232,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				success: r.success,
 				skipped: r.skipped || undefined,
 				sessionFile: r.sessionFile,
-				intercomTarget: r.intercomTarget,
 				model: r.model,
 				attemptedModels: r.attemptedModels,
 				modelAttempts: r.modelAttempts,
@@ -2282,7 +2253,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			asyncDir,
 			sessionId: config.sessionId,
 			sessionFile: effectiveSessionFile,
-			intercomTarget: config.controlIntercomTarget,
 			shareUrl,
 			gistUrl,
 			shareError,

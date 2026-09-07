@@ -23,7 +23,6 @@ import {
 	tryImport,
 	events,
 } from "../support/helpers.ts";
-import { INTERCOM_DETACH_REQUEST_EVENT } from "../../src/shared/types.ts";
 
 interface TestSequentialStep {
 	agent: string;
@@ -87,7 +86,6 @@ interface ChainResultItem {
 	finalOutput?: string;
 	structuredOutput?: unknown;
 	task?: string;
-	detached?: boolean;
 	attemptedModels?: string[];
 	skills?: string[];
 	acceptance?: { status?: string; verifyRuns?: Array<{ status?: string }>; childReport?: unknown; runtimeChecks?: Array<{ status?: string; id?: string }> };
@@ -341,6 +339,42 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 		assert.equal(failed.details.results[0]?.acceptance?.status, "rejected");
 		assert.equal(failed.details.results[0]?.acceptance?.verifyRuns?.[0]?.status, "failed");
 		assert.match(failed.details.results[0]?.error ?? "", /runtime-fail/);
+	});
+
+	it("stops a sequential chain on blocker output and keeps the full decision", async () => {
+		const blocked = "BLOCKED: choose the migration\nDone: inspected schema\nRemaining: migrate";
+		mockPi.onCall({ output: blocked });
+		const agents = [makeAgent("step1"), makeAgent("step2")];
+
+		const result = await executeChain(
+			makeChainParams([{ agent: "step1", task: "Implement migration" }, { agent: "step2", task: "Continue" }], agents),
+		);
+
+		assert.equal(result.isError, true);
+		assert.equal(result.details.results.length, 1);
+		assert.equal(result.details.results[0]?.exitCode, 1);
+		assert.equal(result.details.results[0]?.finalOutput, blocked);
+		assert.match(result.content[0]?.text ?? "", /BLOCKED: choose the migration/);
+		assert.match(result.content[0]?.text ?? "", /Done: inspected schema/);
+		assert.match(result.content[0]?.text ?? "", /Remaining: migrate/);
+		assert.equal(mockPi.callCount(), 1);
+	});
+
+	it("stops after a blocked child in a parallel chain step", async () => {
+		const blocked = "BLOCKED: choose a target\nDone: compared\nRemaining: decide";
+		mockPi.onCall({ output: blocked });
+		mockPi.onCall({ output: "Sibling completed" });
+		const result = await executeChain(makeChainParams([
+			{ parallel: [{ agent: "blocked", task: "Implement" }, { agent: "sibling", task: "Review" }] },
+			{ agent: "later", task: "Must not run" },
+		], [makeAgent("blocked"), makeAgent("sibling"), makeAgent("later")]));
+
+		assert.equal(result.isError, true);
+		assert.match(result.content[0]?.text ?? "", /BLOCKED: choose a target/);
+		assert.equal(result.details.results.length, 2);
+		assert.ok(result.details.results.some((item) => item.finalOutput === blocked));
+		assert.ok(result.details.results.some((item) => item.finalOutput === "Sibling completed"));
+		assert.equal(mockPi.callCount(), 2);
 	});
 
 	it("retries chain steps with fallback models on retryable provider failures", async () => {
@@ -1127,90 +1161,6 @@ describe("chain execution — parallel steps", { skip: !available ? "pi packages
 		assert.equal(mockPi.callCount(), 0);
 	});
 
-	it("detaches parallel chain children cleanly on intercom handoff", async () => {
-		mockPi.onCall({
-			steps: [
-				{ jsonl: [events.toolStart("intercom", { action: "send", to: "orchestrator" })] },
-				{ delay: 1000, jsonl: [events.assistantMessage("after handoff")] },
-			],
-		});
-		mockPi.onCall({ output: "Other task done" });
-		const agents = [
-			makeAgent("a", { systemPrompt: "Intercom orchestration channel:" }),
-			makeAgent("b", { systemPrompt: "Intercom orchestration channel:" }),
-		];
-		const intercomEvents = createEventBus();
-		let detachEmitted = false;
-
-		const result = await executeChain(
-			makeChainParams(
-				[
-					{
-						parallel: [
-							{ agent: "a", task: "Send handoff" },
-							{ agent: "b", task: "Keep working" },
-						],
-					},
-				],
-				agents,
-				{
-					intercomEvents,
-					onUpdate(update: { details?: { progress?: Array<{ currentTool?: string }> } }) {
-						if (detachEmitted) return;
-						if (!update.details?.progress?.some((entry) => entry.currentTool === "intercom")) return;
-						detachEmitted = true;
-						intercomEvents.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "chain-parallel-detach" });
-					},
-				},
-			),
-		);
-
-		assert.equal(result.isError, undefined);
-		assert.match(result.content[0]?.text ?? "", /Chain detached for intercom coordination/);
-		assert.doesNotMatch(result.content[0]?.text ?? "", /resume/);
-		assert.equal(detachEmitted, true);
-		assert.equal(result.details.results.some((entry) => entry.detached === true && entry.exitCode === 0), true);
-	});
-
-	it("stops a sequential chain when a child detaches for intercom coordination", async () => {
-		mockPi.onCall({
-			steps: [
-				{ jsonl: [events.toolStart("contact_supervisor", { reason: "need_decision", message: "Need a decision" })] },
-				{ delay: 1000, jsonl: [events.assistantMessage("after reply")] },
-			],
-		});
-		const agents = [
-			makeAgent("a", { systemPrompt: "Intercom orchestration channel:" }),
-			makeAgent("b"),
-		];
-		const intercomEvents = createEventBus();
-		let detachEmitted = false;
-
-		const result = await executeChain(
-			makeChainParams(
-				[
-					{ agent: "a", task: "Ask supervisor" },
-					{ agent: "b", task: "Must not run yet" },
-				],
-				agents,
-				{
-					intercomEvents,
-					onUpdate(update: { details?: { progress?: Array<{ currentTool?: string }> } }) {
-						if (detachEmitted) return;
-						if (!update.details?.progress?.some((entry) => entry.currentTool === "contact_supervisor")) return;
-						detachEmitted = true;
-						intercomEvents.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "chain-sequential-detach" });
-					},
-				},
-			),
-		);
-
-		assert.equal(result.isError, undefined);
-		assert.match(result.content[0]?.text ?? "", /Chain detached for intercom coordination/);
-		assert.doesNotMatch(result.content[0]?.text ?? "", /resume/);
-		assert.equal(detachEmitted, true);
-		assert.equal(mockPi.callCount(), 1);
-	});
 
 	it("fails chain on parallel step failure", async () => {
 		mockPi.onCall({ exitCode: 1, stderr: "Parallel task failed" });

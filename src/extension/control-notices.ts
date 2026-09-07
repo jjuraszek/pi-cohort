@@ -8,21 +8,15 @@ export interface SubagentControlMessageDetails {
 	event: ControlEvent;
 	source?: "foreground" | "async";
 	asyncDir?: string;
-	childIntercomTarget?: string;
 	noticeText?: string;
 }
 
-export function controlNoticeTarget(details: SubagentControlMessageDetails): string | undefined {
-	return details.childIntercomTarget;
-}
-
 export function formatSubagentControlNotice(details: SubagentControlMessageDetails, content?: string): string {
-	return details.noticeText ?? content ?? formatControlNoticeMessage(details.event, controlNoticeTarget(details));
+	return details.noticeText ?? content ?? formatControlNoticeMessage(details.event);
 }
 
 function noticeTimerKey(details: SubagentControlMessageDetails): string {
-	const childIntercomTarget = controlNoticeTarget(details);
-	return `${details.event.runId}:${controlNotificationKey(details.event, childIntercomTarget)}`;
+	return `${details.event.runId}:${controlNotificationKey(details.event)}`;
 }
 
 export function clearPendingForegroundControlNotices(state: SubagentState, runId?: string): void {
@@ -41,17 +35,16 @@ function deliverControlNotice(input: {
 	details: SubagentControlMessageDetails;
 	isIdle: () => boolean;
 }): void {
-	const childIntercomTarget = controlNoticeTarget(input.details);
-	const key = controlNotificationKey(input.details.event, childIntercomTarget);
+	const key = controlNotificationKey(input.details.event);
 	if (input.visibleControlNotices.has(key)) return;
 	input.visibleControlNotices.add(key);
-	const noticeText = input.details.noticeText ?? formatControlNoticeMessage(input.details.event, childIntercomTarget);
+	const noticeText = input.details.noticeText ?? formatControlNoticeMessage(input.details.event);
 	input.pi.sendMessage(
 		{
 			customType: SUBAGENT_CONTROL_MESSAGE_TYPE,
 			content: noticeText,
 			display: true,
-			details: { ...input.details, childIntercomTarget, noticeText },
+			details: { ...input.details, noticeText },
 		},
 		{ triggerTurn: input.details.source !== "foreground" || !input.isIdle() },
 	);

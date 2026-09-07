@@ -31,7 +31,6 @@ import {
 	type ResolvedTemplates,
 } from "../../shared/settings.ts";
 import { discoverAvailableSkills, normalizeSkillInput } from "../../agents/skills.ts";
-import { INTERCOM_BRIDGE_MARKER } from "../../intercom/intercom-bridge.ts";
 import { runSync } from "./execution.ts";
 import { buildChainSummary } from "../../shared/formatters.ts";
 import { compactForegroundDetails, getSingleResultOutput, mapConcurrent, resolveChildCwd } from "../../shared/utils.ts";
@@ -52,7 +51,6 @@ import {
 	type ArtifactPaths,
 	type ControlEvent,
 	type Details,
-	type IntercomEventBus,
 	type NestedRouteInfo,
 	type ResolvedControlConfig,
 	type SingleResult,
@@ -82,7 +80,7 @@ interface ChainExecutionDetailsInput {
 	outputs?: ChainOutputMap;
 	currentFlatIndex?: number;
 	dynamicChildren?: Record<number, Array<{ agent: string; label?: string; flatIndex: number; itemKey: string; outputName?: string; structured?: boolean; error?: string }>>;
-	dynamicGroupStatuses?: Record<number, { status: "pending" | "running" | "completed" | "failed" | "paused" | "detached"; error?: string; acceptance?: SingleResult["acceptance"] }>;
+	dynamicGroupStatuses?: Record<number, { status: "pending" | "running" | "completed" | "failed" | "paused"; error?: string; acceptance?: SingleResult["acceptance"] }>;
 }
 
 interface ParallelChainRunInput {
@@ -96,7 +94,6 @@ interface ParallelChainRunInput {
 	prev: string;
 	originalTask: string;
 	ctx: ExtensionContext;
-	intercomEvents?: IntercomEventBus;
 	cwd?: string;
 	runId: string;
 	globalTaskIndex: number;
@@ -109,8 +106,6 @@ interface ParallelChainRunInput {
 	onUpdate?: (r: AgentToolResult<Details>) => void;
 	onControlEvent?: (event: ControlEvent) => void;
 	controlConfig: ResolvedControlConfig;
-	childIntercomTarget?: (agent: string, index: number) => string | undefined;
-	orchestratorIntercomTarget?: string;
 	foregroundControl?: {
 		updatedAt: number;
 		currentAgent?: string;
@@ -267,8 +262,6 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 				cwd: taskCwd,
 				signal: input.signal,
 				interruptSignal: interruptController.signal,
-				allowIntercomDetach: taskAgentConfig?.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
-				intercomEvents: input.intercomEvents,
 				runId: input.runId,
 				index: input.globalTaskIndex + taskIndex,
 				sessionDir: input.sessionDirForIndex(input.globalTaskIndex + taskIndex),
@@ -281,8 +274,6 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 				maxSubagentDepth,
 				controlConfig: input.controlConfig,
 				onControlEvent: input.onControlEvent,
-				intercomSessionName: input.childIntercomTarget?.(task.agent, input.globalTaskIndex + taskIndex),
-				orchestratorIntercomTarget: input.orchestratorIntercomTarget,
 				nestedRoute: input.nestedRoute,
 				modelOverride: effectiveModel,
 				availableModels: input.availableModels,
@@ -357,7 +348,6 @@ interface ChainExecutionParams {
 	task?: string;
 	agents: AgentConfig[];
 	ctx: ExtensionContext;
-	intercomEvents?: IntercomEventBus;
 	signal?: AbortSignal;
 	runId: string;
 	cwd?: string;
@@ -371,8 +361,6 @@ interface ChainExecutionParams {
 	onUpdate?: (r: AgentToolResult<Details>) => void;
 	onControlEvent?: (event: ControlEvent) => void;
 	controlConfig: ResolvedControlConfig;
-	childIntercomTarget?: (agent: string, index: number) => string | undefined;
-	orchestratorIntercomTarget?: string;
 	foregroundControl?: {
 		updatedAt: number;
 		currentAgent?: string;
@@ -429,10 +417,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 		onUpdate,
 		onControlEvent,
 		controlConfig,
-		childIntercomTarget,
-		orchestratorIntercomTarget,
 		foregroundControl,
-		intercomEvents,
 		chainSkills: chainSkillsParam,
 		chainDir: chainDirBase,
 	} = params;
@@ -643,7 +628,6 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					prev,
 					originalTask,
 					ctx,
-					intercomEvents,
 					cwd,
 					runId,
 					globalTaskIndex,
@@ -665,8 +649,6 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					dynamicGroupStatuses,
 					controlConfig,
 					onControlEvent,
-					childIntercomTarget,
-					orchestratorIntercomTarget,
 					foregroundControl,
 					nestedRoute: params.nestedRoute,
 					worktreeSetup,
@@ -687,17 +669,6 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 						details: buildChainExecutionDetails(makeDetailsInput({
 							currentStepIndex: stepIndex,
 							currentFlatIndex: globalTaskIndex - step.parallel.length + interruptedIndexInStep,
-						})),
-					};
-				}
-				const detachedIndexInStep = parallelResults.findIndex((result) => result.detached);
-				const detached = detachedIndexInStep >= 0 ? parallelResults[detachedIndexInStep] : undefined;
-				if (detached) {
-					return {
-						content: [{ type: "text", text: `Chain detached for intercom coordination at step ${stepIndex + 1} (${detached.agent}). Reply to the supervisor request first. After the child exits, start a fresh follow-up if needed.` }],
-						details: buildChainExecutionDetails(makeDetailsInput({
-							currentStepIndex: stepIndex,
-							currentFlatIndex: globalTaskIndex - step.parallel.length + detachedIndexInStep,
 						})),
 					};
 				}
@@ -850,7 +821,6 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				prev,
 				originalTask,
 				ctx,
-				intercomEvents,
 				cwd,
 				runId,
 				globalTaskIndex,
@@ -872,8 +842,6 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				dynamicGroupStatuses,
 				controlConfig,
 				onControlEvent,
-				childIntercomTarget,
-				orchestratorIntercomTarget,
 				foregroundControl,
 				nestedRoute: params.nestedRoute,
 				maxSubagentDepth: params.maxSubagentDepth,
@@ -894,17 +862,6 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					details: buildChainExecutionDetails(makeDetailsInput({
 						currentStepIndex: stepIndex,
 						currentFlatIndex: globalTaskIndex - dynamicParallelStep.parallel.length + interruptedIndexInStep,
-					})),
-				};
-			}
-			const detachedIndexInStep = parallelResults.findIndex((result) => result.detached);
-			const detached = detachedIndexInStep >= 0 ? parallelResults[detachedIndexInStep] : undefined;
-			if (detached) {
-				return {
-					content: [{ type: "text", text: `Chain detached for intercom coordination at step ${stepIndex + 1} (${detached.agent}). Reply to the supervisor request first. After the child exits, start a fresh follow-up if needed.` }],
-					details: buildChainExecutionDetails(makeDetailsInput({
-						currentStepIndex: stepIndex,
-						currentFlatIndex: globalTaskIndex - dynamicParallelStep.parallel.length + detachedIndexInStep,
 					})),
 				};
 			}
@@ -1056,8 +1013,6 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				cwd: resolveChildCwd(cwd ?? ctx.cwd, seqStep.cwd),
 				signal,
 				interruptSignal: interruptController.signal,
-				allowIntercomDetach: agentConfig.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
-				intercomEvents,
 				runId,
 				index: globalTaskIndex,
 				sessionDir: sessionDirForIndex(globalTaskIndex),
@@ -1071,8 +1026,6 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				maxSubagentDepth,
 				controlConfig,
 				onControlEvent,
-				intercomSessionName: childIntercomTarget?.(seqStep.agent, globalTaskIndex),
-				orchestratorIntercomTarget,
 				nestedRoute: params.nestedRoute,
 				modelOverride: effectiveModel,
 				availableModels,
@@ -1139,12 +1092,6 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 			if (r.interrupted) {
 				return {
 					content: [{ type: "text", text: `Chain paused after interrupt at step ${stepIndex + 1} (${r.agent}). Waiting for explicit next action.` }],
-					details: buildChainExecutionDetails(makeDetailsInput({ currentStepIndex: stepIndex, currentFlatIndex: globalTaskIndex - 1 })),
-				};
-			}
-			if (r.detached) {
-				return {
-					content: [{ type: "text", text: `Chain detached for intercom coordination at step ${stepIndex + 1} (${r.agent}). Reply to the supervisor request first. After the child exits, start a fresh follow-up if needed.` }],
 					details: buildChainExecutionDetails(makeDetailsInput({ currentStepIndex: stepIndex, currentFlatIndex: globalTaskIndex - 1 })),
 				};
 			}

@@ -1,7 +1,7 @@
 # Skills and companions
 
 How agent system prompts pick up skills, the bundled orchestration skill, the
-optional prompt shortcuts, and the two optional companion packages. Back to
+optional prompt shortcuts, and the optional companion package. Back to
 [README](../README.md).
 
 ## Skills
@@ -46,8 +46,7 @@ What the bundled skill covers:
 - **Delegation patterns**: when to launch which agent, whether to use single, parallel, chain, or async mode, and whether to use fresh or forked context
 - **Prompt workflow recipes**: how to apply the packaged techniques directly with `subagent(...)` when the user describes the workflow in natural language instead of invoking a slash command. This includes parallel review, review-loop, parallel context-build, parallel handoff-plan, gather-context-and-clarify, and parallel cleanup
 - **Role-agent prompting guidance**: compact contract prompts instead of long scripts, what to include in role-specific meta prompts, and retrieval budgets for context gathering
-- **Safety boundaries**: child agents must not run subagents unless their resolved builtin tools explicitly include `subagent`, must not invent intercom targets, and must escalate unapproved decisions
-- **Intercom conventions**: when to ask vs send, and how parent-side result delivery works with `pi-intercom`
+- **Safety boundaries**: child agents must not run subagents unless their resolved builtin tools explicitly include `subagent`, and must stop on unapproved decisions
 - **Control and diagnostics**: attention signals, soft interrupts, status, and the `doctor` action
 
 If you are writing an agent that orchestrates subagents, the bundled skill helps it behave correctly without guessing the patterns. If you are a human user, you do not need to read it directly; the README and prompt shortcuts encode the same workflows in user-facing form.
@@ -67,41 +66,7 @@ The package includes reusable prompt templates for common workflows. You do not 
 
 Add `autofix` to `/parallel-review` or `/parallel-cleanup` to apply only the synthesized fixes worth doing now after reviewers return.
 
-## Optional pi-intercom companion
-
-`pi-cohort` works without `pi-intercom`. Install `pi-intercom` only if you want child agents to talk back to the parent Pi session while they are running.
-
-```bash
-pi install npm:pi-intercom
-```
-
-Most users do not call `intercom` directly. After `pi-intercom` is installed, `pi-cohort` can automatically give child agents a private coordination channel back to the parent session. The bridge recognizes the normal `pi install npm:pi-intercom` package install as well as legacy local extension checkouts.
-
-Use it for work where the child might need a decision instead of guessing:
-
-```text
-Run this implementation in the background. If the worker gets blocked or needs a product decision, have it ask me through intercom.
-```
-
-```text
-Ask oracle to review this plan. If it sees a decision I need to make, have it ask me instead of assuming.
-```
-
-The child can use one dedicated coordination tool:
-
-- `contact_supervisor`: the child contacts the parent/supervisor session that delegated the task. Use `reason: "need_decision"` for blocking decisions or clarification, and `reason: "progress_update"` for short non-blocking updates when a discovery changes the plan. Do not ask for clarification when the only conflict is review-only/no-edit versus progress-writing or artifact-writing instructions; no-edit wins.
-
-Child-side routine completion handoffs are still not expected. With the intercom bridge active, parent-side `pi-cohort` sends grouped completion results through `pi-intercom`: one grouped message per foreground parent `subagent` run and one per completed async result file. Acknowledged foreground delivery returns a compact receipt with artifact/session paths; if unacknowledged, the normal full output is preserved. Grouped messages include child intercom targets, full child summaries, and compact nested child summaries under the parent child that launched them.
-
-If a child appears stalled, needs-attention notices can show up in the parent session with useful next actions, such as checking `subagent({ action: "status" })`, interrupting the run, or nudging the child.
-
-If messages do not show up, run:
-
-```text
-/cohort-doctor
-```
-
-For normal use, you do not need to configure anything. Advanced users can tune the bridge with `intercomBridge` in [configuration.md](configuration.md#intercombridge).
+When a child needs an unapproved decision, it must stop with `BLOCKED: <decision needed>` as the first line, followed by `Done: <complete>` and `Remaining: <left>`. The parent receives an ordinary failed result; sequential chains stop at that step, parallel siblings keep their results, and follow-up is a fresh dispatch after the parent or human decides.
 
 ## Optional pi-essentials companion
 

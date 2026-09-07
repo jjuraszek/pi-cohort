@@ -25,7 +25,6 @@ import {
 	events,
 	tryImport,
 } from "../support/helpers.ts";
-import { INTERCOM_DETACH_REQUEST_EVENT, INTERCOM_DETACH_RESPONSE_EVENT } from "../../src/shared/types.ts";
 import {
 	SUBAGENT_FANOUT_CHILD_ENV,
 	SUBAGENT_PARENT_CHILD_INDEX_ENV,
@@ -76,8 +75,6 @@ interface RunSyncResult {
 	artifactPaths?: ArtifactPaths;
 	finalOutput?: string;
 	interrupted?: boolean;
-	detached?: boolean;
-	detachedReason?: string;
 	savedOutputPath?: string;
 	outputMode?: "inline" | "file-only";
 	outputReference?: { path: string; bytes: number; lines: number; message: string };
@@ -191,7 +188,57 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.equal(output, "Hello from mock agent");
 	});
 
-	it("fails implementation runs that complete without mutation attempts", async () => {
+	it("classifies blocker output as a failed result before mutation checks and model fallback", async () => {
+		const blocked = "BLOCKED: need approval to rotate the api key\nDone: inspected config\nRemaining: deploy";
+		mockPi.onCall({ output: blocked });
+		const agents = [makeAgent("worker", {
+			model: "openai/gpt-5-mini",
+			fallbackModels: ["anthropic/claude-sonnet-4"],
+		})];
+
+		const result = await runSync(tempDir, agents, "worker", "Implement the approved deployment", {
+			runId: "blocked-run",
+		});
+
+		assert.equal(result.exitCode, 1);
+		assert.equal(result.error, blocked);
+		assert.equal(result.finalOutput, blocked);
+		assert.equal(result.progress.status, "failed");
+		assert.equal(result.modelAttempts?.length, 1);
+		assert.doesNotMatch(result.error ?? "", /fallback/i);
+		assert.equal(mockPi.callCount(), 1);
+	});
+
+	it("completes a fresh foreground follow-up after a blocker decision", async () => {
+		const blocked = "BLOCKED: need approval to rotate the api key\nDone: inspected config\nRemaining: deploy";
+		mockPi.onCall({ output: blocked });
+		mockPi.onCall({ output: "Deployment completed" });
+		const agents = makeAgentConfigs(["echo"]);
+
+		const first = await runSync(tempDir, agents, "echo", "Deploy the service", { runId: "blocked-run" });
+		const followUp = await runSync(tempDir, agents, "echo", "Deploy the service. Decision: rotate the api key is approved.", { runId: "follow-up-run" });
+
+		assert.equal(first.exitCode, 1);
+		assert.equal(followUp.exitCode, 0);
+		assert.equal(getFinalOutput(followUp.messages), "Deployment completed");
+		assert.equal(mockPi.callCount(), 2);
+		assert.match(readCallArgs().at(-1) ?? "", /Decision: rotate the api key is approved/);
+	});
+
+	it("preserves blocker output when a structured result is configured", async () => {
+		const blocked = "BLOCKED: need approval\nDone: inspected\nRemaining: rotate key";
+		mockPi.onCall({ output: blocked });
+		const result = await makeExecutor([makeAgent("worker")]).execute(
+			"blocked-structured", { agent: "worker", task: "Implement key rotation", outputSchema: { type: "object" } },
+			new AbortController().signal, undefined, makeMinimalCtx(tempDir),
+		);
+
+		assert.equal(result.isError, true);
+		assert.match(result.content[0]?.text ?? "", /BLOCKED: need approval/);
+		assert.doesNotMatch(result.content[0]?.text ?? "", /structured output missing/);
+	});
+
+	it("fails implementation runs that complete without mutation attempts",  async () => {
 		mockPi.onCall({ output: "Validation:\nlet rawFilename = params.filename.trim();" });
 		const agents = [makeAgent("worker")];
 		const controlEvents: Array<{ message: string }> = [];
@@ -1066,6 +1113,20 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.equal(fs.readFileSync(result.artifactPaths.outputPath, "utf-8"), "full saved output\nwith details");
 	});
 
+	it("preserves blocker output in file-only mode", async () => {
+		const outputPath = path.join(tempDir, "blocked-file-only.md");
+		const blocked = "BLOCKED: need approval\nDone: inspected\nRemaining: rotate key";
+		mockPi.onCall({ output: blocked });
+		const result = await runSync(tempDir, makeAgentConfigs(["echo"]), "echo", "Task", {
+			runId: "blocked-file-only", outputPath, outputMode: "file-only",
+		});
+
+		assert.equal(result.exitCode, 1);
+		assert.equal(result.error, blocked);
+		assert.equal(result.finalOutput, blocked);
+		assert.doesNotMatch(result.finalOutput ?? "", /Output saved to:/);
+	});
+
 	it("passes maxSubagentDepth through to child execution env", async () => {
 		mockPi.onCall({ echoEnv: ["PI_SUBAGENT_DEPTH", "PI_SUBAGENT_MAX_DEPTH"] });
 		const agents = makeAgentConfigs(["echo"]);
@@ -1158,10 +1219,8 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		}
 	});
 
-	it("passes supervisor metadata through to child execution", async () => {
+	it("passes run metadata through to child execution", async () => {
 		mockPi.onCall({ echoEnv: [
-			"PI_SUBAGENT_INTERCOM_SESSION_NAME",
-			"PI_SUBAGENT_ORCHESTRATOR_TARGET",
 			"PI_SUBAGENT_RUN_ID",
 			"PI_SUBAGENT_CHILD_AGENT",
 			"PI_SUBAGENT_CHILD_INDEX",
@@ -1171,14 +1230,10 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		const result = await runSync(tempDir, agents, "echo", "Task", {
 			runId: "78f659a3",
 			index: 2,
-			intercomSessionName: "subagent-echo-78f659a3-3",
-			orchestratorIntercomTarget: "subagent-chat-parent",
 		});
 
 		assert.equal(result.exitCode, 0);
 		assert.deepEqual(JSON.parse(result.finalOutput ?? "{}"), {
-			PI_SUBAGENT_INTERCOM_SESSION_NAME: "subagent-echo-78f659a3-3",
-			PI_SUBAGENT_ORCHESTRATOR_TARGET: "subagent-chat-parent",
 			PI_SUBAGENT_RUN_ID: "78f659a3",
 			PI_SUBAGENT_CHILD_AGENT: "echo",
 			PI_SUBAGENT_CHILD_INDEX: "2",
@@ -1320,102 +1375,6 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.match(result.finalOutput ?? "", /Interrupted/);
 	});
 
-	for (const toolName of ["intercom", "contact_supervisor"]) {
-		it(`detaches cleanly on ${toolName} handoff without aborting the child process`, async () => {
-			const eventBus = createEventBus();
-			let accepted = false;
-			eventBus.on(INTERCOM_DETACH_RESPONSE_EVENT, (payload) => {
-				if (!payload || typeof payload !== "object") return;
-				accepted = (payload as { accepted?: unknown }).accepted === true;
-			});
-			mockPi.onCall({
-				steps: [
-					{ jsonl: [events.toolStart(toolName, toolName === "intercom" ? { action: "ask", to: "orchestrator" } : { reason: "need_decision", message: "Need a decision" })] },
-					{ delay: 1000, jsonl: [events.assistantMessage("received pong")] },
-				],
-			});
-			const agents = makeAgentConfigs(["echo"]);
-
-			// Emit the detach request the moment we observe the coordination tool start
-			// in a progress update — this is the signal the parent has set
-			// `intercomStarted=true`. Using a fixed delay here races the mock's
-			// cold spawn and flakes under load.
-			let detachEmitted = false;
-			const runPromise = runSync(tempDir, agents, "echo", "Task", {
-				runId: `${toolName}-detach`,
-				allowIntercomDetach: true,
-				intercomEvents: eventBus,
-				onUpdate: (update) => {
-					if (detachEmitted) return;
-					const progress = (update as { details?: { progress?: Array<{ currentTool?: string }> } }).details?.progress;
-					const sawCoordinationTool = Array.isArray(progress) && progress.some((p) => p?.currentTool === toolName);
-					if (!sawCoordinationTool) return;
-					detachEmitted = true;
-					eventBus.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "test-request" });
-				},
-			});
-
-			const result = await runPromise;
-
-			assert.equal(result.exitCode, 0);
-			assert.equal(result.detached, true);
-			assert.equal(result.detachedReason, "intercom coordination");
-			assert.equal(result.finalOutput, "Detached for intercom coordination.");
-			assert.equal(result.progress?.status, "detached");
-			assert.equal(accepted, true);
-		});
-	}
-
-	it("lets an active intercom child accept detach when another child is listening", async () => {
-		const eventBus = createEventBus();
-		let firstDetachResponse: boolean | undefined;
-		eventBus.on(INTERCOM_DETACH_RESPONSE_EVENT, (payload) => {
-			if (!payload || typeof payload !== "object") return;
-			if ((payload as { requestId?: unknown }).requestId !== "parallel-request") return;
-			firstDetachResponse ??= (payload as { accepted?: unknown }).accepted === true;
-		});
-		mockPi.onCall({ delay: 500, output: "quiet child done" });
-		const agents = makeAgentConfigs(["quiet", "intercom"]);
-
-		const quietRun = runSync(tempDir, agents, "quiet", "Quiet task", {
-			runId: "quiet-listener",
-			allowIntercomDetach: true,
-			intercomEvents: eventBus,
-		});
-		for (let attempt = 0; attempt < 50 && mockPi.callCount() < 1; attempt++) {
-			await new Promise((resolve) => setTimeout(resolve, 10));
-		}
-		assert.equal(mockPi.callCount(), 1);
-		mockPi.onCall({
-			steps: [
-				{ jsonl: [events.toolStart("intercom", { action: "send", to: "orchestrator" })] },
-				{ delay: 500, jsonl: [events.assistantMessage("after intercom")] },
-			],
-		});
-
-		let detachEmitted = false;
-		const intercomRun = runSync(tempDir, agents, "intercom", "Intercom task", {
-			runId: "active-intercom",
-			allowIntercomDetach: true,
-			intercomEvents: eventBus,
-			onUpdate: (update) => {
-				if (detachEmitted) return;
-				const progress = (update as { details?: { progress?: Array<{ currentTool?: string }> } }).details?.progress;
-				const sawIntercom = Array.isArray(progress) && progress.some((p) => p?.currentTool === "intercom");
-				if (!sawIntercom) return;
-				detachEmitted = true;
-				eventBus.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "parallel-request" });
-			},
-		});
-
-		const [quietResult, intercomResult] = await Promise.all([quietRun, intercomRun]);
-
-		assert.equal(quietResult.exitCode, 0);
-		assert.equal(quietResult.detached, undefined);
-		assert.equal(intercomResult.exitCode, 0);
-		assert.equal(intercomResult.detached, true);
-		assert.equal(firstDetachResponse, true);
-	});
 
 	it("handles stderr without exit code as info (not error)", async () => {
 		mockPi.onCall({ output: "Success", stderr: "Warning: something", exitCode: 0 });

@@ -30,7 +30,7 @@ export interface ChainOutputMapEntry {
 
 export type ChainOutputMap = Record<string, ChainOutputMapEntry>;
 
-export type WorkflowNodeStatus = "pending" | "running" | "completed" | "failed" | "paused" | "detached";
+export type WorkflowNodeStatus = "pending" | "running" | "completed" | "failed" | "paused";
 
 export interface WorkflowGraphNode {
 	id: string;
@@ -96,7 +96,7 @@ export interface TokenUsage {
 
 export type ActivityState = "active_long_running" | "needs_attention";
 export type ControlEventType = "active_long_running" | "needs_attention";
-export type ControlNotificationChannel = "event" | "async" | "intercom";
+export type ControlNotificationChannel = "event" | "async";
 
 export interface ControlConfig {
 	enabled?: boolean;
@@ -146,7 +146,7 @@ export interface ControlEvent {
 	recentFailureSummary?: string;
 }
 
-export type SubagentResultStatus = "completed" | "failed" | "paused" | "detached";
+export type SubagentResultStatus = "completed" | "failed" | "paused";
 export type SubagentRunMode = "single" | "parallel" | "chain";
 
 export type PublicNestedStepSummary = Pick<
@@ -158,40 +158,20 @@ export type PublicNestedStepSummary = Pick<
 
 export type PublicNestedRunSummary = Pick<
 	NestedRunSummary,
-	"id" | "parentRunId" | "parentStepIndex" | "parentAgent" | "depth" | "path" | "asyncDir" | "sessionId" | "sessionFile" | "intercomTarget" | "ownerIntercomTarget" | "leafIntercomTarget" | "ownerState" | "mode" | "state" | "agent" | "agents" | "currentStep" | "chainStepCount" | "parallelGroups" | "activityState" | "lastActivityAt" | "currentTool" | "currentToolStartedAt" | "currentPath" | "turnCount" | "toolCount" | "totalTokens" | "startedAt" | "endedAt" | "lastUpdate" | "error"
+	"id" | "parentRunId" | "parentStepIndex" | "parentAgent" | "depth" | "path" | "asyncDir" | "sessionId" | "sessionFile" | "ownerState" | "mode" | "state" | "agent" | "agents" | "currentStep" | "chainStepCount" | "parallelGroups" | "activityState" | "lastActivityAt" | "currentTool" | "currentToolStartedAt" | "currentPath" | "turnCount" | "toolCount" | "totalTokens" | "startedAt" | "endedAt" | "lastUpdate" | "error"
 > & {
 	steps?: PublicNestedStepSummary[];
 	children?: PublicNestedRunSummary[];
 };
 
-export interface SubagentResultIntercomChild {
+export interface SubagentResultChild {
 	agent: string;
 	status: SubagentResultStatus;
 	summary: string;
 	index?: number;
 	artifactPath?: string;
 	sessionPath?: string;
-	intercomTarget?: string;
 	children?: PublicNestedRunSummary[];
-}
-
-export interface SubagentResultIntercomPayload {
-	to: string;
-	message: string;
-	requestId?: string;
-	runId: string;
-	mode: SubagentRunMode;
-	status: SubagentResultStatus;
-	summary: string;
-	source: "foreground" | "async";
-	children: SubagentResultIntercomChild[];
-	asyncId?: string;
-	asyncDir?: string;
-	chainSteps?: number;
-	agent?: string;
-	index?: number;
-	artifactPath?: string;
-	sessionPath?: string;
 }
 
 // ============================================================================
@@ -201,7 +181,7 @@ export interface SubagentResultIntercomPayload {
 export interface AgentProgress {
 	index: number;
 	agent: string;
-	status: "pending" | "running" | "completed" | "failed" | "detached";
+	status: "pending" | "running" | "completed" | "failed";
 	activityState?: ActivityState;
 	task: string;
 	skills?: string[];
@@ -394,8 +374,6 @@ export interface SingleResult {
 	agent: string;
 	task: string;
 	exitCode: number;
-	detached?: boolean;
-	detachedReason?: string;
 	interrupted?: boolean;
 	messages?: Message[];
 	usage: Usage;
@@ -515,9 +493,6 @@ export interface NestedRunSummary extends NestedRunAddress {
 	pid?: number;
 	sessionId?: string;
 	sessionFile?: string;
-	intercomTarget?: string;
-	ownerIntercomTarget?: string;
-	leafIntercomTarget?: string;
 	ownerState?: NestedOwnerState;
 	controlInbox?: string;
 	capabilityToken?: string;
@@ -755,19 +730,14 @@ export interface ErrorInfo {
 	details?: string;
 }
 
-export interface IntercomEventBus {
+export interface SubagentEventBus {
 	on(channel: string, handler: (data: unknown) => void): () => void;
 	emit(channel: string, data: unknown): void;
 }
 
-export const INTERCOM_DETACH_REQUEST_EVENT = "pi-intercom:detach-request";
-export const INTERCOM_DETACH_RESPONSE_EVENT = "pi-intercom:detach-response";
 export const SUBAGENT_ASYNC_STARTED_EVENT = "subagent:async-started";
 export const SUBAGENT_ASYNC_COMPLETE_EVENT = "subagent:async-complete";
 export const SUBAGENT_CONTROL_EVENT = "subagent:control-event";
-export const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
-export const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
-export const SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT = "subagent:result-intercom-delivery";
 
 // ============================================================================
 // Execution Options
@@ -777,13 +747,9 @@ export interface RunSyncOptions {
 	cwd?: string;
 	signal?: AbortSignal;
 	interruptSignal?: AbortSignal;
-	allowIntercomDetach?: boolean;
-	intercomEvents?: IntercomEventBus;
 	onUpdate?: (r: import("@earendil-works/pi-agent-core").AgentToolResult<Details>) => void;
 	onControlEvent?: (event: ControlEvent) => void;
 	controlConfig?: ResolvedControlConfig;
-	intercomSessionName?: string;
-	orchestratorIntercomTarget?: string;
 	maxOutput?: MaxOutputConfig;
 	artifactsDir?: string;
 	artifactConfig?: ArtifactConfig;
@@ -820,13 +786,6 @@ export interface RunSyncOptions {
 	};
 }
 
-export type IntercomBridgeMode = "off" | "fork-only" | "always";
-
-export interface IntercomBridgeConfig {
-	mode?: IntercomBridgeMode;
-	instructionFile?: string;
-}
-
 interface TopLevelParallelConfig {
 	maxTasks?: number;
 	concurrency?: number;
@@ -848,7 +807,6 @@ export interface ExtensionConfig {
 	chain?: ExtensionChainConfig;
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;
-	intercomBridge?: IntercomBridgeConfig;
 	/** Print a roster of discovered subagents/chains into chat at session start. Default: true. */
 	showRosterOnStart?: boolean;
 	/** Forward the parent pi's extension CLI flags (e.g. --no-autofix) into spawned children. Default: true. */

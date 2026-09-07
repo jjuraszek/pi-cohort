@@ -78,28 +78,6 @@ Parent extension CLI flags are forwarded into spawned children by default: whate
 
 Caveat: if a child runs with a `cwd` in a different project whose *project-scoped* extension owns a forwarded flag, the child can fail to start on the unknown flag. User-scoped extensions (e.g. pi-lens) load regardless of `cwd` and are unaffected; set `forwardParentFlags: false` if the cross-project case bites.
 
-## `intercomBridge`
-
-```json
-{
-  "intercomBridge": {
-    "mode": "always",
-    "instructionFile": "./intercom-bridge.md"
-  }
-}
-```
-
-Controls whether subagents receive runtime intercom coordination instructions and whether `intercom` and `contact_supervisor` are auto-added to their tool allowlist when needed.
-
-Fields:
-
-- `mode`: default `always`; use `fork-only` to inject only for forked runs, or `off` to disable the bridge.
-- `instructionFile`: optional Markdown template replacing the default bridge instructions. `{orchestratorTarget}` is interpolated. Relative paths resolve from `~/.pi/agent/extensions/pi-cohort/`.
-
-Bridge activation also requires `pi-intercom` to be installed and enabled through `pi install npm:pi-intercom` or a legacy local extension checkout, a targetable current session name or fallback alias, and `pi-intercom` in any explicit agent `extensions` allowlist.
-
-The default injected guidance tells children to use `contact_supervisor` with `reason: "need_decision"` when blocked or needing a decision, `reason: "progress_update"` only for meaningful blocked/progress updates, generic `intercom` as fallback plumbing, and avoid routine completion handoffs. See [skills-and-companions.md](skills-and-companions.md#optional-pi-intercom-companion).
-
 ## `worktreeSetupHook`
 
 ```json

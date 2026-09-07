@@ -388,29 +388,47 @@ Do work
 		}
 	});
 
-	it("worker and delegate include the child-facing supervisor tool", () => {
-		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cohort-builtin-supervisor-tool-"));
-		const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cohort-builtin-supervisor-tool-home-"));
+	it("decision personas use blocker output and no coordination tools", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cohort-builtin-blocker-output-"));
 		tempDirs.push(dir);
-		tempDirs.push(homeDir);
-		const previousHome = process.env.HOME;
-		const previousUserProfile = process.env.USERPROFILE;
+		const agents = discoverAgentsAll(dir).builtin;
 
-		try {
-			process.env.HOME = homeDir;
-			process.env.USERPROFILE = homeDir;
-			const agents = discoverAgentsAll(dir).builtin;
-			for (const name of ["worker", "delegate"]) {
-				const agent = agents.find((candidate) => candidate.name === name);
-				assert.ok(agent, `${name} builtin should be discovered`);
-				assert.deepEqual(agent?.tools, ["read", "grep", "find", "ls", "bash", "edit", "write", "contact_supervisor"]);
-			}
-		} finally {
-			if (previousHome === undefined) delete process.env.HOME;
-			else process.env.HOME = previousHome;
-			if (previousUserProfile === undefined) delete process.env.USERPROFILE;
-			else process.env.USERPROFILE = previousUserProfile;
+		const expectedTools = {
+			worker: ["read", "grep", "find", "ls", "bash", "edit", "write"],
+			delegate: ["read", "grep", "find", "ls", "bash", "edit", "write"],
+			oracle: ["read", "grep", "find", "ls", "bash"],
+			reviewer: ["read", "grep", "find", "ls", "bash", "edit", "write"],
+			scout: ["read", "grep", "find", "ls", "bash", "write"],
+			planner: ["read", "grep", "find", "ls", "write"],
+			"context-builder": ["read", "grep", "find", "ls", "bash", "write", "fetch"],
+		};
+
+		for (const [name, tools] of Object.entries(expectedTools)) {
+			const agent = agents.find((candidate) => candidate.name === name);
+			assert.ok(agent, `${name} builtin should be discovered`);
+			const source = fs.readFileSync(path.join(process.cwd(), "agents", `${name}.md`), "utf-8");
+			const toolsLine = source.match(/^tools: (.+)$/m)?.[1];
+			assert.deepEqual(toolsLine?.split(", "), tools);
+			assert.match(agent.systemPrompt, /If an unapproved decision is required to continue safely, stop: begin your reply `BLOCKED: <decision needed>`, then `Done: <complete>` and `Remaining: <left>`; no heading, bold, list marker, or code fence; do not guess or wait for a reply\./);
 		}
+	});
+
+	it("does not inject the blocker contract into custom agents", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cohort-custom-agent-no-blocker-injection-"));
+		tempDirs.push(dir);
+		const agentsDir = path.join(dir, ".pi", "agents");
+		fs.mkdirSync(agentsDir, { recursive: true });
+		fs.writeFileSync(path.join(agentsDir, "custom.md"), `---
+name: custom
+description: Custom
+---
+
+Make decisions as directed.
+`, "utf-8");
+
+		const custom = discoverAgents(dir, "project").agents.find((agent) => agent.name === "custom");
+		assert.equal(custom?.systemPrompt, "Make decisions as directed.");
+		assert.doesNotMatch(custom?.systemPrompt ?? "", /BLOCKED:/);
 	});
 
 	it("defaults delegate to append mode with inherited project context", () => {

@@ -9,7 +9,7 @@
  * Toggle: async parameter (default: false, configurable via config.json)
  *
  * Config file: ~/.pi/agent/extensions/pi-cohort/config.json
- *   { "asyncByDefault": true, "forceTopLevelAsync": true, "maxSubagentDepth": 1, "showRosterOnStart": true, "intercomBridge": { "mode": "always", "instructionFile": "./intercom-bridge.md" }, "worktreeSetupHook": "./scripts/setup-worktree.mjs" }
+ *   { "asyncByDefault": true, "forceTopLevelAsync": true, "maxSubagentDepth": 1, "showRosterOnStart": true, "worktreeSetupHook": "./scripts/setup-worktree.mjs" }
  */
 
 import * as fs from "node:fs";
@@ -442,7 +442,7 @@ MANAGEMENT: action=list/get/create/update/delete (chainName for chains; packaged
 CONTROL: action=status/interrupt/resume (id, message, index); details: pi-cohort skill.
 
 DIAGNOSTICS:
-• { action: "doctor" } - read-only report for runtime paths, discovery, sessions, and intercom`,
+• { action: "doctor" } - read-only report for runtime paths, discovery, and sessions`,
 		parameters: SubagentParams,
 
 		execute(id, params, signal, onUpdate, ctx) {

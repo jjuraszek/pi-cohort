@@ -62,7 +62,7 @@ function createExecutor(state = createState(), agents: Array<Record<string, unkn
 	return createSubagentExecutor({
 		pi: { events, getSessionName() { return "parent"; } } as any,
 		state,
-		config: { maxSubagentDepth: 2, control: {}, intercomBridge: {} } as any,
+		config: { maxSubagentDepth: 2, control: {} } as any,
 		asyncByDefault: false,
 		tempArtifactsDir: os.tmpdir(),
 		getSubagentSessionRoot: (parentSessionFile) => parentSessionFile ? path.join(path.dirname(parentSessionFile), path.basename(parentSessionFile, ".jsonl")) : os.tmpdir(),
@@ -259,29 +259,26 @@ describe("nested control routing", () => {
 		}
 	});
 
-	it("routes resume for live nested runs through the control inbox", async () => {
+	it("rejects resume for live nested runs through the control inbox", async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-nested-live-resume-"));
 		try {
-			const emitted: Array<{ name: string; payload: unknown }> = [];
-			const events = { emit(name: string, payload: unknown) { emitted.push({ name, payload }); }, on() { return () => {}; } };
-			const route = createNestedRun("nested-live-resume", "running", { intercomTarget: "attacker-target", leafIntercomTarget: "attacker-leaf" });
-			const executor = createExecutor(stateWithNestedRoute(route), [], true, events);
+			const route = createNestedRun("nested-live-resume");
+			const executor = createExecutor(stateWithNestedRoute(route));
 			setTimeout(() => {
 				const request = readNestedControlRequests(route)[0];
 				assert.ok(request, "expected a nested resume request");
 				assert.equal(request.action, "resume");
 				assert.equal(request.message, "continue please");
-				writeNestedControlResult(route, { ts: Date.now(), requestId: request.requestId, targetRunId: request.targetRunId, ok: true, message: "nested resume accepted" });
+				const controlResult = { ts: Date.now(), requestId: request.requestId, targetRunId: request.targetRunId, ok: false, message: `Nested run ${request.targetRunId} is still active; wait for completion, then resume.` };
+				assert.equal(controlResult.ok, false);
+				assert.match(controlResult.message, /is still active; wait for completion, then resume\./);
+				writeNestedControlResult(route, controlResult);
 			}, 50);
 
 			const result = await executor.execute("resume", { action: "resume", id: "nested-live-resume", message: "continue please" }, new AbortController().signal, undefined, ctx(root));
 
-			assert.equal(result.isError, undefined);
-			assert.match(text(result), /nested resume accepted/);
-			assert.equal(emitted.some((event) => {
-				const payload = event.payload as { to?: unknown };
-				return payload.to === "attacker-target" || payload.to === "attacker-leaf";
-			}), false);
+			assert.equal(result.isError, true);
+			assert.match(text(result), /is still active; wait for completion, then resume\./);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}

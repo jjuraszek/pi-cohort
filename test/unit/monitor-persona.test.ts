@@ -44,7 +44,8 @@ describe("builtin monitor persona", () => {
 		assert.match(body, /no growth in the watched log/);
 		assert.match(body, /status\.json lastUpdate/);
 		assert.match(body, /no output for/);
-		assert.match(body, /need_decision/);
+		assert.doesNotMatch(body, /BLOCKED:/);
+		assert.match(body, /record .* in the trail only/i);
 		assert.match(body, /24h/);
 		assert.match(body, /first check immediately/i);
 		assert.match(body, /cannot observe target: <reason>/);
@@ -77,7 +78,6 @@ describe("SKILL.md long-running job pairing guidance", () => {
 		assert.match(skill, /A silent long job is a defect/);
 		assert.match(skill, /agent: "monitor", async: true/);
 		assert.match(skill, /Async dir:/);
-		assert.match(skill, /pi-intercom bridge/);
 	});
 
 	it("ties the pairing example's monitor task to the start message's async dir placeholder", () => {

@@ -473,36 +473,6 @@ describe("async run status inspection", () => {
 		}
 	});
 
-	it("shows expected intercom target for still-running async steps", () => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-intercom-"));
-		try {
-			const asyncRoot = path.join(root, "runs");
-			const asyncDir = path.join(asyncRoot, "run-live");
-			fs.mkdirSync(asyncDir, { recursive: true });
-			fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
-				runId: "run-live",
-				mode: "single",
-				state: "running",
-				pid: 12345,
-				startedAt: 100,
-				lastUpdate: 100,
-				steps: [{ agent: "scout", status: "running", startedAt: 100 }],
-			}, null, 2), "utf-8");
-
-			const result = inspectSubagentStatus({ id: "run-live" }, {
-				asyncDirRoot: asyncRoot,
-				resultsDir: path.join(root, "results"),
-				kill: () => true,
-				now: () => 200,
-			});
-
-			const text = textContent(result);
-			assert.match(text, /Step 1: scout running/);
-			assert.match(text, /Intercom target: subagent-scout-run-live-1 \(if registered\)/);
-		} finally {
-			fs.rmSync(root, { recursive: true, force: true });
-		}
-	});
 
 	it("rejects ambiguous async run id prefixes", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-ambiguous-"));

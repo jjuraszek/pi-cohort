@@ -11,6 +11,7 @@ function writeJson(filePath: string, value: object): void {
 }
 
 describe("async resume lookup", () => {
+
 	it("resolves a completed single-child run from persisted status", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-resume-"));
 		try {
@@ -36,7 +37,6 @@ describe("async resume lookup", () => {
 			assert.equal(target.agent, "worker");
 			assert.equal(target.sessionFile, sessionFile);
 			assert.equal(target.cwd, root);
-			assert.equal(target.intercomTarget, "subagent-worker-run-abc-1");
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
@@ -155,7 +155,7 @@ describe("async resume lookup", () => {
 		}
 	});
 
-	it("returns a live intercom target for a running child", () => {
+	it("rejects a selected running child until it completes", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-resume-live-"));
 		try {
 			const asyncRoot = path.join(root, "runs");
@@ -168,10 +168,10 @@ describe("async resume lookup", () => {
 				steps: [{ agent: "scout", status: "running" }],
 			});
 
-			const target = resolveAsyncResumeTarget({ id: "run-live" }, { asyncDirRoot: asyncRoot, resultsDir: path.join(root, "results") });
-
-			assert.equal(target.kind, "live");
-			assert.equal(target.intercomTarget, "subagent-scout-run-live-1");
+			assert.throws(
+				() => resolveAsyncResumeTarget({ id: "run-live" }, { asyncDirRoot: asyncRoot, resultsDir: path.join(root, "results") }),
+				/Selected child is still active; wait for completion, then resume\./,
+			);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
@@ -198,6 +198,60 @@ describe("async resume lookup", () => {
 			const target = resolveAsyncResumeTarget({ id: "run-partial", index: 0 }, { asyncDirRoot: asyncRoot, resultsDir: path.join(root, "results") });
 			assert.equal(target.kind, "revive");
 			assert.equal(target.agent, "done");
+			assert.equal(target.sessionFile, sessionFile);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("revives a failed child by index while a sibling async child is still running", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-resume-failed-"));
+		try {
+			const asyncRoot = path.join(root, "runs");
+			const sessionFile = path.join(root, "failed.jsonl");
+			fs.writeFileSync(sessionFile, "", "utf-8");
+			writeJson(path.join(asyncRoot, "run-failed", "status.json"), {
+				runId: "run-failed",
+				mode: "parallel",
+				state: "running",
+				startedAt: 100,
+				lastUpdate: 200,
+				steps: [
+					{ agent: "failed", status: "failed", sessionFile },
+					{ agent: "active", status: "running" },
+				],
+			});
+
+			const target = resolveAsyncResumeTarget({ id: "run-failed", index: 0 }, { asyncDirRoot: asyncRoot, resultsDir: path.join(root, "results") });
+			assert.equal(target.kind, "revive");
+			assert.equal(target.agent, "failed");
+			assert.equal(target.sessionFile, sessionFile);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("revives a paused child by index while a sibling async child is still running", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-resume-paused-"));
+		try {
+			const asyncRoot = path.join(root, "runs");
+			const sessionFile = path.join(root, "paused.jsonl");
+			fs.writeFileSync(sessionFile, "", "utf-8");
+			writeJson(path.join(asyncRoot, "run-paused", "status.json"), {
+				runId: "run-paused",
+				mode: "parallel",
+				state: "running",
+				startedAt: 100,
+				lastUpdate: 200,
+				steps: [
+					{ agent: "paused", status: "paused", sessionFile },
+					{ agent: "active", status: "running" },
+				],
+			});
+
+			const target = resolveAsyncResumeTarget({ id: "run-paused", index: 0 }, { asyncDirRoot: asyncRoot, resultsDir: path.join(root, "results") });
+			assert.equal(target.kind, "revive");
+			assert.equal(target.agent, "paused");
 			assert.equal(target.sessionFile, sessionFile);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
@@ -272,7 +326,6 @@ describe("async resume lookup", () => {
 			state: "complete",
 			agent: "worker",
 			index: 0,
-			intercomTarget: "subagent-worker-run-old-1",
 			sessionFile: "/tmp/session.jsonl",
 		}, "What changed?");
 

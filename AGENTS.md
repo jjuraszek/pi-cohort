@@ -1,6 +1,6 @@
 # pi-cohort (jjuraszek fork)
 
-Pi extension. Lets Pi delegate work to focused child agents: code review, scouting, implementation, parallel audits, saved chains, background/async jobs, intercom-coordinated multi-agent workflows.
+Pi extension. Lets Pi delegate work to focused child agents: code review, scouting, implementation, parallel audits, saved chains, and background/async jobs.
 
 This repo **originated as a fork of [`nicobailon/pi-subagents`](https://github.com/nicobailon/pi-subagents)** but **no longer tracks upstream** - it is a standalone semver project with no upstream remote. It is published to npm and installed with `pi install npm:pi-cohort`. See [Release model](#release-model).
 

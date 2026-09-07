@@ -65,7 +65,7 @@ If something feels misconfigured, run:
 or ask:
 
 ```text
-Check whether subagents and intercom are set up correctly.
+Check whether subagents are set up correctly.
 ```
 
 ## Files, logs, and observability
@@ -102,7 +102,7 @@ Async runs write:
   runner.log
 ```
 
-`runner.log` captures the detached runner's stdout/stderr: crash stacks for deaths that happen before `status.json` exists, and its tail is appended to stale-failure messages. `status.json` powers the widget and `subagent({ action: "status" })` output. `events.jsonl` contains wrapper events plus child Pi JSON events annotated with run and step metadata. Nested fanout status is stored as compact sidecar event/registry metadata and merged into parent status views and result/intercom payloads; full recursive status snapshots are not embedded in parent result files. `output-<n>.log` is a live human-readable tail. Fallback information is persisted so background runs are debuggable after completion.
+`runner.log` captures the detached runner's stdout/stderr: crash stacks for deaths that happen before `status.json` exists, and its tail is appended to stale-failure messages. `status.json` powers the widget and `subagent({ action: "status" })` output. `events.jsonl` contains wrapper events plus child Pi JSON events annotated with run and step metadata. Nested fanout status is stored as compact sidecar event/registry metadata and merged into parent status views and result payloads; full recursive status snapshots are not embedded in parent result files. `output-<n>.log` is a live human-readable tail. Fallback information is persisted so background runs are debuggable after completion.
 
 ## Live progress
 
@@ -119,11 +119,6 @@ Async events:
 - `subagent:async-started`
 - `subagent:async-complete`
 
-Intercom delivery events:
-
-- `subagent:control-intercom`
-- `subagent:result-intercom`
-
-The result watcher emits `subagent:async-complete`; `src/extension/index.ts` registers the notification handler that consumes it. Control/attention events are surfaced as visible parent notices and persisted for async runs. With `pi-intercom`, needs-attention notices and grouped parent-side subagent result deliveries can reach the orchestrator over intercom.
+The result watcher emits `subagent:async-complete`; `src/extension/index.ts` registers the notification handler that consumes it. Control/attention events are surfaced as visible parent notices and persisted for async runs.
 
 While the session is streaming, foreground control notices are steered to a turn boundary - never between an assistant `toolCall` and its `toolResult`; while idle, they append without starting a turn.

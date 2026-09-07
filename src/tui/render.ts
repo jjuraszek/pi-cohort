@@ -223,7 +223,6 @@ function firstOutputLine(text: string): string {
 }
 
 function resultStatusLine(result: Details["results"][number], output: string): string {
-	if (result.detached) return result.detachedReason ? `Detached: ${result.detachedReason}` : "Detached";
 	if (result.interrupted) return "Paused";
 	if (result.exitCode !== 0) return `Error: ${result.error ?? (firstOutputLine(output) || `exit ${result.exitCode}`)}`;
 	if (result.acceptance?.status && result.acceptance.status !== "not-required") return `Done · acceptance: ${result.acceptance.status}`;
@@ -233,7 +232,6 @@ function resultStatusLine(result: Details["results"][number], output: string): s
 
 function resultGlyph(result: Details["results"][number], output: string, theme: Theme, running = result.progress?.status === "running", seed = progressRunningSeed(result.progress ?? result.progressSummary)): string {
 	if (running) return theme.fg("accent", runningGlyph(seed));
-	if (result.detached) return theme.fg("warning", "■");
 	if (result.interrupted) return theme.fg("warning", "■");
 	if (result.exitCode !== 0) return theme.fg("error", "✗");
 	if (hasEmptyTextOutputWithoutOutputTarget(result.task, output)) return theme.fg("warning", "✓");
@@ -501,7 +499,7 @@ function isDoneResult(result: Details["results"][number]): boolean {
 	const status = result.progress?.status;
 	if (status === "completed") return true;
 	if (status === "running" || status === "pending") return false;
-	if (result.interrupted || result.detached) return false;
+	if (result.interrupted) return false;
 	return result.exitCode === 0;
 }
 
@@ -573,7 +571,7 @@ function buildMultiProgressLabel(details: Pick<Details, "mode" | "results" | "pr
 
 	if (details.mode === "parallel") {
 		const totalCount = details.totalSteps ?? details.results.length;
-		const statuses = new Array(totalCount).fill("pending") as Array<"pending" | "running" | "completed" | "failed" | "detached">;
+		const statuses = new Array(totalCount).fill("pending") as Array<"pending" | "running" | "completed" | "failed">;
 		for (const progress of details.progress ?? []) {
 			if (progress.index >= 0 && progress.index < totalCount) statuses[progress.index] = progress.status;
 		}
@@ -584,8 +582,8 @@ function buildMultiProgressLabel(details: Pick<Details, "mode" | "results" | "pr
 			const index = result.progress?.index ?? progressFromArray?.index ?? i;
 			if (index < 0 || index >= totalCount) continue;
 			const status = result.progress?.status
-				?? (result.interrupted || result.detached
-					? "detached"
+				?? (result.interrupted
+					? "paused"
 					: result.exitCode === 0
 						? "completed"
 						: "failed");
@@ -1051,8 +1049,8 @@ function renderMultiCompact(d: Details, theme: Theme): Component {
 		|| workflowGraphHasStatus(d, ["running"]);
 	const failed = d.results.some((r) => r.exitCode !== 0 && r.progress?.status !== "running")
 		|| workflowGraphHasStatus(d, ["failed"]);
-	const paused = d.results.some((r) => (r.interrupted || r.detached) && r.progress?.status !== "running")
-		|| workflowGraphHasStatus(d, ["paused", "detached"]);
+	const paused = d.results.some((r) => r.interrupted && r.progress?.status !== "running")
+		|| workflowGraphHasStatus(d, ["paused"]);
 	let totalSummary = d.progressSummary;
 	if (!totalSummary) {
 		let sawProgress = false;
@@ -1126,7 +1124,7 @@ function renderMultiCompact(d: Details, theme: Theme): Component {
 			const activity = compactCurrentActivity(rProg);
 			c.addChild(new Text(truncLine(theme.fg("dim", `    ⎿  ${activity}`), width), 0, 0));
 			c.addChild(new Text(truncLine(theme.fg("accent", "    Press Ctrl+O for live detail"), width), 0, 0));
-		} else if (!rPending && (r.exitCode !== 0 || r.interrupted || r.detached || hasEmptyTextOutputWithoutOutputTarget(r.task, output))) {
+		} else if (!rPending && (r.exitCode !== 0 || r.interrupted || hasEmptyTextOutputWithoutOutputTarget(r.task, output))) {
 			c.addChild(new Text(truncLine(theme.fg(r.exitCode !== 0 ? "error" : "dim", `    ⎿  ${resultStatusLine(r, output)}`), width), 0, 0));
 		}
 		const outputTarget = extractOutputTarget(r.task);
@@ -1162,8 +1160,6 @@ export function renderSubagentResult(
 		const isRunning = r.progress?.status === "running";
 		const icon = isRunning
 			? theme.fg("warning", "running")
-			: r.detached
-				? theme.fg("warning", "detached")
 				: r.exitCode === 0
 					? theme.fg("success", "ok")
 					: theme.fg("error", "failed");
@@ -1264,7 +1260,7 @@ export function renderSubagentResult(
 		&& hasEmptyTextOutputWithoutOutputTarget(r.task, getSingleResultOutput(r)),
 	);
 	const hasWorkflowFailure = workflowGraphHasStatus(d, ["failed"]);
-	const hasWorkflowPause = workflowGraphHasStatus(d, ["paused", "detached"]);
+	const hasWorkflowPause = workflowGraphHasStatus(d, ["paused"]);
 	const icon = hasRunning
 		? theme.fg("warning", "running")
 		: hasEmptyWithoutTarget

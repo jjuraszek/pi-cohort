@@ -39,7 +39,6 @@ const runSync = execution?.runSync;
 const mapConcurrent = utils?.mapConcurrent;
 const createSubagentExecutor = executorMod?.createSubagentExecutor;
 const TEMP_ARTIFACTS_DIR: string | undefined = typesMod?.TEMP_ARTIFACTS_DIR;
-const INTERCOM_DETACH_REQUEST_EVENT: string | undefined = typesMod?.INTERCOM_DETACH_REQUEST_EVENT;
 
 // ---------------------------------------------------------------------------
 // mapConcurrent — always runs (pure logic, no pi deps beyond utils.ts)
@@ -176,6 +175,28 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 		assert.equal(results[1].agent, "b");
 		const ok = results.filter((r: any) => r.exitCode === 0).length;
 		assert.equal(ok, 2);
+	});
+
+	it("keeps sibling results when a parallel child reports a blocker", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+		const blocked = "BLOCKED: select an API\nDone: compared options\nRemaining: implement";
+		mockPi.onCall({ output: blocked });
+		mockPi.onCall({ output: "Sibling completed" });
+		const executor = makeExecutor([makeAgent("blocked"), makeAgent("sibling")]);
+
+		const result = await executor.execute(
+			"parallel-blocked",
+			{ tasks: [{ agent: "blocked", task: "Implement API" }, { agent: "sibling", task: "Review docs" }] },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+
+		assert.equal(result.isError, undefined);
+		assert.equal(result.details?.results?.length, 2);
+		assert.ok(result.details?.results?.some((item: any) => item.exitCode === 1 && item.error === blocked));
+		assert.ok(result.details?.results?.some((item: any) => item.finalOutput === "Sibling completed"));
+		assert.match(result.content[0]?.text ?? "", /BLOCKED: select an API/);
+		assert.match(result.content[0]?.text ?? "", /Sibling completed/);
 	});
 
 	it("top-level parallel defaults require explicit output and progress", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
@@ -743,171 +764,6 @@ describe("parallel worktree artifact scoping", { skip: !piAvailable || !createSu
 		}
 	});
 
-	it("captures the run-scoped patch directory before a detached run returns", { skip: !INTERCOM_DETACH_REQUEST_EVENT ? "types module not importable" : undefined }, async () => {
-		const repoDir = createParallelRepo("pi-parallel-worktree-detach-");
-		try {
-			mockPi.onCall({
-				steps: [
-					{ jsonl: [events.toolStart("intercom", { action: "send", to: "orchestrator" })] },
-					{ delay: 1000, jsonl: [events.assistantMessage("after handoff")] },
-				],
-			});
-			mockPi.onCall({ output: "other done" });
 
-			const eventsApi = createEventBus();
-			const state = {
-				baseCwd: repoDir,
-				currentSessionId: null,
-				asyncJobs: new Map(),
-				grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() },
-				foregroundControls: new Map(),
-				lastForegroundControlId: null,
-			};
-			const executor = createSubagentExecutor({
-				pi: { events: eventsApi, getSessionName: () => undefined },
-				state,
-				config: {},
-				asyncByDefault: false,
-				tempArtifactsDir: repoDir,
-				getSubagentSessionRoot: () => repoDir,
-				expandTilde: (value: string) => value,
-				discoverAgents: () => ({
-					agents: [
-						makeAgent("echo", { systemPrompt: "Intercom orchestration channel:" }),
-						makeAgent("second", { systemPrompt: "Intercom orchestration channel:" }),
-					],
-				}),
-			});
 
-			let detachEmitted = false;
-			const result = await executor.execute(
-				"worktree-detach",
-				{
-					tasks: [
-						{ agent: "echo", task: "send handoff" },
-						{ agent: "second", task: "continue" },
-					],
-					worktree: true,
-				},
-				new AbortController().signal,
-				(update: { details?: { progress?: Array<{ currentTool?: string }> } }) => {
-					if (detachEmitted) return;
-					if (!update.details?.progress?.some((entry) => entry.currentTool === "intercom")) return;
-					detachEmitted = true;
-					eventsApi.emit(INTERCOM_DETACH_REQUEST_EVENT!, { requestId: "worktree-detach" });
-				},
-				makeMinimalCtx(repoDir),
-			);
-
-			assert.equal(result.isError, undefined);
-			assert.match(result.content[0]?.text ?? "", /Parallel run detached for intercom coordination/);
-			assert.equal(detachEmitted, true);
-			const runId = result.details?.runId;
-			assert.ok(runId, "expected a runId on the parallel result");
-			const diffsDir = path.join(TEMP_ARTIFACTS_DIR!, runId, "worktree-diffs");
-			assert.equal(fs.existsSync(diffsDir), true);
-		} finally {
-			removeTempDir(repoDir);
-		}
-	});
-
-	describe("intercom-receipt branch", () => {
-		let homeDir: string;
-		let originalHome: string | undefined;
-		let originalUserProfile: string | undefined;
-
-		before(() => {
-			originalHome = process.env.HOME;
-			originalUserProfile = process.env.USERPROFILE;
-			homeDir = createTempDir("pi-parallel-worktree-receipt-home-");
-			process.env.HOME = homeDir;
-			process.env.USERPROFILE = homeDir;
-			fs.mkdirSync(path.join(homeDir, ".pi", "agent", "extensions", "pi-intercom"), { recursive: true });
-			fs.mkdirSync(path.join(homeDir, ".pi", "agent", "intercom"), { recursive: true });
-			fs.writeFileSync(path.join(homeDir, ".pi", "agent", "intercom", "config.json"), JSON.stringify({ enabled: true }), "utf-8");
-		});
-
-		after(() => {
-			if (originalHome === undefined) delete process.env.HOME;
-			else process.env.HOME = originalHome;
-			if (originalUserProfile === undefined) delete process.env.USERPROFILE;
-			else process.env.USERPROFILE = originalUserProfile;
-			removeTempDir(homeDir);
-		});
-
-		function createAcknowledgingEventBus() {
-			const listeners = new Map<string, Set<(payload: unknown) => void>>();
-			const bus = {
-				on(channel: string, handler: (payload: unknown) => void) {
-					const channelListeners = listeners.get(channel) ?? new Set();
-					channelListeners.add(handler);
-					listeners.set(channel, channelListeners);
-					return () => {
-						channelListeners.delete(handler);
-						if (channelListeners.size === 0) listeners.delete(channel);
-					};
-				},
-				emit(channel: string, payload: unknown) {
-					for (const handler of listeners.get(channel) ?? []) handler(payload);
-					if (channel === "subagent:result-intercom") {
-						const requestId = payload && typeof payload === "object" ? (payload as { requestId?: unknown }).requestId : undefined;
-						if (typeof requestId === "string") {
-							setImmediate(() => bus.emit("subagent:result-intercom-delivery", { requestId, delivered: true }));
-						}
-					}
-				},
-			};
-			return bus;
-		}
-
-		it("captures the run-scoped patch directory before an intercom-receipt run returns", async () => {
-			const repoDir = createParallelRepo("pi-parallel-worktree-receipt-");
-			try {
-				mockPi.onCall({ output: "Parallel child output" });
-				mockPi.onCall({ output: "Parallel child output" });
-
-				const state = {
-					baseCwd: repoDir,
-					currentSessionId: null,
-					asyncJobs: new Map(),
-					grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() },
-					foregroundControls: new Map(),
-					lastForegroundControlId: null,
-				};
-				const executor = createSubagentExecutor({
-					pi: { events: createAcknowledgingEventBus(), getSessionName: () => "orchestrator", setSessionName: () => {} },
-					state,
-					config: { intercomBridge: { mode: "always" } },
-					asyncByDefault: false,
-					tempArtifactsDir: repoDir,
-					getSubagentSessionRoot: () => repoDir,
-					expandTilde: (value: string) => value,
-					discoverAgents: () => ({ agents: [makeAgent("a"), makeAgent("b")] }),
-				});
-
-				const result = await executor.execute(
-					"worktree-receipt",
-					{
-						tasks: [
-							{ agent: "a", task: "task-a" },
-							{ agent: "b", task: "task-b" },
-						],
-						worktree: true,
-					},
-					new AbortController().signal,
-					undefined,
-					makeMinimalCtx(repoDir),
-				);
-
-				assert.equal(result.isError, undefined);
-				assert.match(result.content[0]?.text ?? "", /Delivered parallel subagent results via intercom\./);
-				const runId = result.details?.runId;
-				assert.ok(runId, "expected a runId on the parallel result");
-				const diffsDir = path.join(TEMP_ARTIFACTS_DIR!, runId, "worktree-diffs");
-				assert.equal(fs.existsSync(diffsDir), true);
-			} finally {
-				removeTempDir(repoDir);
-			}
-		});
-	});
 });

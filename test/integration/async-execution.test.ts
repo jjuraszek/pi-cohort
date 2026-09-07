@@ -29,7 +29,7 @@ interface AsyncResultPayload {
 	sessionId?: string;
 	mode?: string;
 	summary?: string;
-	results: Array<{ output?: string; success?: boolean; error?: string; model?: string; attemptedModels?: string[]; modelAttempts?: Array<{ success?: boolean; error?: string }>; structuredOutput?: unknown; intercomTarget?: string; acceptance?: { status?: string; childReport?: unknown } }>;
+	results: Array<{ output?: string; success?: boolean; error?: string; model?: string; attemptedModels?: string[]; modelAttempts?: Array<{ success?: boolean; error?: string }>; structuredOutput?: unknown; acceptance?: { status?: string; childReport?: unknown } }>;
 	outputs?: Record<string, { text?: string; structured?: unknown }>;
 	workflowGraph?: { nodes?: Array<{ kind?: string; label?: string; phase?: string; status?: string; error?: string; outputName?: string; structured?: boolean; children?: Array<{ label?: string; outputName?: string; itemKey?: string; status?: string; error?: string }> }> };
 }
@@ -699,41 +699,6 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(payload.workflowGraph?.nodes?.[2]?.flatIndex, 3);
 	});
 
-	it("async dynamic fanout recomputes later child intercom targets by final flat index", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
-		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }, { path: "src/b.ts" }] } });
-		mockPi.onCall({ output: "review-a", structuredOutput: { ok: "a" } });
-		mockPi.onCall({ output: "review-b", structuredOutput: { ok: "b" } });
-		mockPi.onCall({ echoEnv: ["PI_SUBAGENT_INTERCOM_SESSION_NAME"] });
-		const id = `async-dynamic-targets-${Date.now().toString(36)}`;
-		const result = executeAsyncChain(id, {
-			chain: [
-				{ agent: "producer", task: "Produce targets", as: "targets", outputSchema: { type: "object" } },
-				{
-					expand: { from: { output: "targets", path: "/items" }, item: "target", key: "/path", maxItems: 4 },
-					parallel: { agent: "reviewer", task: "Review {target.path}", outputSchema: { type: "object" } },
-					collect: { as: "reviews" },
-					concurrency: 1,
-				},
-				{ agent: "consumer", task: "Use {outputs.reviews}" },
-			],
-			agents: [makeAgent("producer"), makeAgent("reviewer"), makeAgent("consumer")],
-			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-dynamic-targets" },
-			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
-			shareEnabled: false,
-			maxSubagentDepth: 2,
-			controlIntercomTarget: "subagent-orchestrator-test",
-			childIntercomTarget: (agent: string, index: number) => `subagent-${agent}-${id}-${index + 1}`,
-		});
-
-		assert.ok(!result.isError);
-		const resultPath = await waitForAsyncResultFile(id, 10_000);
-		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
-		const expectedConsumerTarget = `subagent-consumer-${id}-4`;
-		assert.equal(payload.success, true);
-		assert.equal(payload.results[3]?.intercomTarget, expectedConsumerTarget);
-		assert.deepEqual(JSON.parse(payload.results[3]?.output ?? "{}"), { PI_SUBAGENT_INTERCOM_SESSION_NAME: expectedConsumerTarget });
-	});
-
 	it("async dynamic pre-spawn failures persist failed graph status and error", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
 		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }, { path: "src/b.ts" }] } });
 		const id = `async-dynamic-prespawn-fail-${Date.now().toString(36)}`;
@@ -1246,6 +1211,78 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(payload.success, false);
 		assert.equal(payload.exitCode, 1);
 		assert.equal(payload.results[0].success, false);
+	});
+
+	it("background runs preserve blocker output and do not try fallback models", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		const blocked = "BLOCKED: need approval to rotate the api key\nDone: inspected secret store\nRemaining: deploy";
+		mockPi.onCall({ output: blocked });
+		const id = `async-blocked-${Date.now().toString(36)}`;
+
+		executeAsyncSingle(id, {
+			agent: "worker",
+			task: "Implement deployment",
+			agentConfig: makeAgent("worker", { model: "openai/gpt-5-mini", fallbackModels: ["anthropic/claude-sonnet-4"] }),
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
+			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+			shareEnabled: false,
+			sessionRoot: path.join(tempDir, "sessions"),
+			maxSubagentDepth: 2,
+		});
+
+		const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id, 10_000), "utf-8")) as AsyncResultPayload;
+		assert.equal(payload.success, false);
+		assert.equal(payload.exitCode, 1);
+		assert.equal(payload.results[0]?.error, blocked);
+		assert.equal(payload.results[0]?.output, blocked);
+		assert.equal(payload.results[0]?.modelAttempts?.length, 1);
+		assert.doesNotMatch(payload.results[0]?.error ?? "", /fallback/i);
+		assert.equal(mockPi.callCount(), 1);
+	});
+
+	it("background structured runs preserve blocker output", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		const blocked = "BLOCKED: need approval\nDone: inspected\nRemaining: rotate key";
+		mockPi.onCall({ output: blocked });
+		const id = `async-blocked-structured-${Date.now().toString(36)}`;
+		executeAsyncChain(id, {
+			chain: [{ agent: "worker", task: "Implement key rotation", outputSchema: { type: "object" } }], agents: [makeAgent("worker")],
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" }, artifactConfig: { enabled: false }, shareEnabled: false, sessionRoot: path.join(tempDir, "sessions"), maxSubagentDepth: 2,
+		});
+		const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id, 10_000), "utf-8")) as AsyncResultPayload;
+		assert.equal(payload.success, false);
+		assert.equal(payload.results[0]?.error, blocked);
+		assert.doesNotMatch(payload.results[0]?.error ?? "", /structured output missing/);
+	});
+
+	it("background sequential chains stop after a blocked step", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		const blocked = "BLOCKED: need approval to rotate the api key\nDone: traced callers\nRemaining: rotation";
+		mockPi.onCall({ output: blocked });
+		mockPi.onCall({ output: "Rotation completed" });
+		const id = `async-sequential-blocked-${Date.now().toString(36)}`;
+		executeAsyncChain(id, {
+			chain: [{ agent: "worker", task: "Trace callers" }, { agent: "reviewer", task: "Rotate key" }], agents: [makeAgent("worker"), makeAgent("reviewer")],
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" }, artifactConfig: { enabled: false }, shareEnabled: false, sessionRoot: path.join(tempDir, "sessions"), maxSubagentDepth: 2,
+		});
+		const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id, 10_000), "utf-8")) as AsyncResultPayload;
+		assert.equal(payload.success, false);
+		assert.equal(payload.results[0]?.error, blocked);
+		assert.equal(payload.results.length, 1);
+		assert.equal(mockPi.callCount(), 1);
+	});
+
+	it("background parallel runs retain blocked and successful results", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		const blocked = "BLOCKED: need approval\nDone: inspected\nRemaining: rotate key";
+		mockPi.onCall({ output: blocked });
+		mockPi.onCall({ output: "Sibling completed" });
+		const id = `async-parallel-blocked-${Date.now().toString(36)}`;
+		executeAsyncChain(id, {
+			chain: [{ parallel: [{ agent: "blocked", task: "Implement" }, { agent: "sibling", task: "Review" }] }], resultMode: "parallel", agents: [makeAgent("blocked"), makeAgent("sibling")],
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" }, artifactConfig: { enabled: false }, shareEnabled: false, sessionRoot: path.join(tempDir, "sessions"), maxSubagentDepth: 2,
+		});
+		const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id, 10_000), "utf-8")) as AsyncResultPayload;
+		assert.equal(payload.success, false);
+		assert.equal(payload.results.length, 2);
+		assert.ok(payload.results.some((item) => item.error === blocked));
+		assert.ok(payload.results.some((item) => item.output === "Sibling completed"));
 	});
 
 	it("background implementation runs fail when no mutation attempt occurred", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
@@ -1875,7 +1912,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 				activeNoticeAfterTokens: 999_999,
 				failedToolAttemptsBeforeAttention: 3,
 				notifyOn: ["active_long_running", "needs_attention"],
-				notifyChannels: ["event", "async", "intercom"],
+				notifyChannels: ["event", "async"],
 			},
 		});
 
@@ -1945,7 +1982,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 				activeNoticeAfterTokens: 999_999,
 				failedToolAttemptsBeforeAttention: 3,
 				notifyOn: ["active_long_running", "needs_attention"],
-				notifyChannels: ["event", "async", "intercom"],
+				notifyChannels: ["event", "async"],
 			},
 		});
 

@@ -130,8 +130,6 @@ interface AsyncChainParams {
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;
 	controlConfig?: ResolvedControlConfig;
-	controlIntercomTarget?: string;
-	childIntercomTarget?: (agent: string, index: number) => string | undefined;
 	nestedRoute?: NestedRouteInfo;
 	forwardedFlags?: string[];
 	acceptance?: AcceptanceInput;
@@ -158,8 +156,6 @@ interface AsyncSingleParams {
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;
 	controlConfig?: ResolvedControlConfig;
-	controlIntercomTarget?: string;
-	childIntercomTarget?: (agent: string, index: number) => string | undefined;
 	nestedRoute?: NestedRouteInfo;
 	forwardedFlags?: string[];
 	acceptance?: AcceptanceInput;
@@ -175,7 +171,7 @@ export function formatAsyncStartedMessage(headline: string): string {
 	return [
 		headline,
 		"",
-		"The async run is detached. Do not run sleep timers or polling loops just to wait for it.",
+		"The async run is running in the background. Do not run sleep timers or polling loops just to wait for it.",
 		"If you have independent work, continue that work. If you have nothing else to do until the async result arrives, end your turn now; Pi will deliver the completion when the run finishes.",
 		"Use subagent({ action: \"status\", id: \"...\" }) when you need the current status/result, or to inspect a blocked/stale run. Do not poll just to wait.",
 	].join("\n");
@@ -189,7 +185,7 @@ export function isAsyncAvailable(): boolean {
 }
 
 /**
- * Spawn a detached process with stderr/stdout captured to <asyncDir>/runner.log.
+ * Spawn a background process with stderr/stdout captured to <asyncDir>/runner.log.
  * Falls back to ignored stdio if the log file cannot be opened; the parent always
  * closes its copy of the fd, on every exit path.
  */
@@ -303,8 +299,6 @@ export function executeAsyncChain(
 		worktreeSetupHook,
 		worktreeSetupHookTimeoutMs,
 		controlConfig,
-		controlIntercomTarget,
-		childIntercomTarget,
 		nestedRoute,
 		forwardedFlags,
 	} = params;
@@ -525,17 +519,6 @@ export function executeAsyncChain(
 		if (error instanceof UnavailableSubagentSkillError || error instanceof AsyncStartValidationError) return formatAsyncStartError(resultMode, error.message);
 		throw error;
 	}
-	let childTargetIndex = 0;
-	const childIntercomTargets = childIntercomTarget ? steps.flatMap((step) => {
-		if ("parallel" in step) {
-			if (!Array.isArray(step.parallel)) {
-				childTargetIndex++;
-				return [undefined];
-			}
-			return step.parallel.map((task) => childIntercomTarget(task.agent, childTargetIndex++));
-		}
-		return [childIntercomTarget(step.agent, childTargetIndex++)];
-	}) : undefined;
 
 	let spawnResult: { pid?: number; error?: string } = {};
 	try {
@@ -559,8 +542,6 @@ export function executeAsyncChain(
 				worktreeSetupHook,
 				worktreeSetupHookTimeoutMs,
 				controlConfig,
-				controlIntercomTarget,
-				childIntercomTargets,
 				resultMode,
 				dynamicFanoutMaxItems: params.dynamicFanoutMaxItems,
 				workflowGraph,
@@ -626,9 +607,6 @@ export function executeAsyncChain(
 						path: nestedAddress.path,
 						asyncDir,
 						pid: spawnResult.pid,
-						ownerIntercomTarget: process.env.PI_SUBAGENT_INTERCOM_SESSION_NAME,
-						leafIntercomTarget: childIntercomTargets?.[0],
-						intercomTarget: childIntercomTargets?.[0],
 						ownerState: "live",
 						mode: resultMode,
 						state: "running",
@@ -702,8 +680,6 @@ export function executeAsyncSingle(
 		worktreeSetupHook,
 		worktreeSetupHookTimeoutMs,
 		controlConfig,
-		controlIntercomTarget,
-		childIntercomTarget,
 		nestedRoute,
 		forwardedFlags,
 	} = params;
@@ -797,8 +773,6 @@ export function executeAsyncSingle(
 				worktreeSetupHook,
 				worktreeSetupHookTimeoutMs,
 				controlConfig,
-				controlIntercomTarget,
-				childIntercomTargets: childIntercomTarget ? [childIntercomTarget(agent, 0)] : undefined,
 				resultMode: "single",
 				nestedRoute: nestedRoute ?? inheritedNestedRoute,
 				nestedSelf: inheritedNestedRoute && nestedAddress ? {
@@ -838,9 +812,6 @@ export function executeAsyncSingle(
 						path: nestedAddress.path,
 						asyncDir,
 						pid: spawnResult.pid,
-						ownerIntercomTarget: process.env.PI_SUBAGENT_INTERCOM_SESSION_NAME,
-						leafIntercomTarget: childIntercomTarget?.(agent, 0),
-						intercomTarget: childIntercomTarget?.(agent, 0),
 						ownerState: "live",
 						mode: "single",
 						state: "running",

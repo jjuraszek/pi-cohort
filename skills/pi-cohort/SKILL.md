@@ -2,7 +2,7 @@
 name: pi-cohort
 description: |
   Delegate work to builtin or custom subagents with single-agent, chain,
-  parallel, async, forked-context, and intercom-coordinated workflows. Use
+  parallel, async, and forked-context workflows. Use
   for advisory review, implementation handoffs, and multi-step tasks where a
   single agent should stay in control while other agents contribute context,
   planning, or execution.
@@ -33,7 +33,7 @@ Humans often use the slash-command layer instead:
 - `/chain` — launch a chain of steps
 - `/parallel` — launch top-level parallel tasks
 - `/run-chain` — launch a saved `.chain.md` or `.chain.json` workflow
-- `/cohort-doctor` — diagnose setup, discovery, async paths, and intercom bridge state
+- `/cohort-doctor` — diagnose setup, discovery, and async paths
 
 Prefer the tool when you are writing agent logic. Prefer the slash commands when
 you are guiding a human through an interactive flow.
@@ -147,11 +147,11 @@ and user/project agents override builtins with the same name.
 |-------|---------|-------|------------------------|
 | `scout` | Fast codebase recon | inherits default | Writes `context.md` handoff material |
 | `planner` | Creates implementation plans | inherits default | Writes `plan.md` |
-| `worker` | Implementation and approved oracle handoffs | inherits default | Single-writer implementation with decision escalation |
+| `worker` | Implementation and approved oracle handoffs | inherits default | Single-writer implementation |
 | `reviewer` | Review-and-fix specialist | inherits default | Can edit/fix reviewed code |
 | `context-builder` | Requirements/codebase handoff builder | inherits default | Writes structured context files |
 | `delegate` | Lightweight generic delegate | inherits default | No fixed output; generic delegated work |
-| `oracle` | Decision-consistency advisory review | inherits default | Advisory review, intercom coordination |
+| `oracle` | Decision-consistency advisory review | inherits default | Advisory review |
 
 Builtin agents inherit the current Pi default model unless a run, user setting, or project setting overrides `model`. Override builtin defaults before copying full agent files when a small tweak is enough.
 
@@ -171,14 +171,14 @@ A strong subagent prompt usually includes:
 - **Goal**: the concrete outcome the child should produce.
 - **Context/evidence**: relevant plan paths, files, diffs, decisions, or user constraints already approved.
 - **Success criteria**: what must be true before the child can finish.
-- **Hard constraints**: true invariants only, such as no edits for review-only tasks, one writer thread, child must not run subagents unless it is an explicitly assigned `tools: subagent` fanout child, or escalation for unapproved decisions.
+- **Hard constraints**: true invariants only, such as no edits for review-only tasks, one writer thread, or child must not run subagents unless it is an explicitly assigned `tools: subagent` fanout child.
 - **Validation**: targeted checks to run, or the next-best check when validation is impossible.
 - **Output**: the expected summary shape, artifact path, or finding format.
-- **Stop rules**: when to ask via `intercom`, when to stop after enough evidence, and when not to keep searching.
+- **Stop rules**: when to stop after enough evidence, when not to keep searching, and when to report an unapproved decision.
 
 Avoid carrying over old prompt habits that over-specify every step. Use `must`, `always`, and `never` for real invariants; for judgment calls, give decision rules. For example, tell a reviewer to inspect the staged diff directly and report only evidence-backed findings, rather than prescribing every file or command. Tell a `context-builder` the retrieval budget: fetch the referenced sources, extract the strongest evidence, fetch again only when a required fact is missing, then stop.
 
-For implementation handoffs, name the approved scope and success criteria more clearly than the process. Good prompts say what to change, what not to change, where the evidence lives, how to validate, and when to escalate. They should not ask the child to create another subagent plan or continue the parent conversation.
+For implementation handoffs, name the approved scope and success criteria more clearly than the process. Good prompts say what to change, what not to change, where the evidence lives, how to validate, and which decisions are already approved. They should not ask the child to create another subagent plan or continue the parent conversation.
 
 Settings locations:
 - User scope: `~/.pi/agent/settings.json`
@@ -335,11 +335,11 @@ subagent({ action: "resume", id: "nested-run-id", message: "Continue this nested
 ```
 
 Resume behavior:
-- If an async child is still running and reachable, `resume` sends the follow-up to that live child over intercom.
-- If an async child has completed, `resume` revives it by starting a new async child from the persisted child session file.
-- Multi-child async runs require `index` unless only one running child is selectable.
+- A running child cannot be resumed: `Selected child is still active; wait for completion, then resume.`
+- A finished, failed, or paused child is revived by starting a new async child from its persisted child session file.
+- Multi-child async runs require `index` unless only one child is selectable. A finished sibling can be revived while another sibling is running.
 - Completed foreground single, parallel, and chain runs can also be revived by `index` while their run metadata remains in extension state.
-- Nested runs can be resumed by nested id when a live route or persisted nested session metadata is available.
+- Nested runs can be resumed by nested id when persisted nested session metadata is available; a running nested child errors with `Nested run <id> is still active; wait for completion, then resume.`
 - Revive starts a new child process from the old session context; it does not restart the same OS process.
 - If the chosen child has no persisted `.jsonl` session file, resume fails and reports that directly.
 
@@ -349,7 +349,7 @@ Use diagnostics when setup or child startup looks wrong:
 subagent({ action: "doctor" })
 ```
 
-Humans can use `/cohort-doctor` for the same read-only report. It checks runtime paths, discovery counts, async support, current session context, and intercom bridge state.
+Humans can use `/cohort-doctor` for the same read-only report. It checks runtime paths, discovery counts, async support, and current session context.
 
 Long-running job hygiene:
 
@@ -362,13 +362,12 @@ subagent({ agent: "worker", async: true, task: "<long job - emit progress lines 
 subagent({ agent: "monitor", async: true, task: "Watch async run R at <D>. Report every 15m. Stop when it ends." })
 ```
 
-- Live 15m reports require the pi-intercom bridge; without it the monitor's trail and final summary are post-hoc records.
 
 ### Subagent control
 
 Subagent control is the runtime visibility and intervention layer for delegated runs. It is separate from lifecycle status. Lifecycle status says whether a child is `queued`, `running`, `paused`, `complete`, or `failed`. Activity reporting is factual: it tracks the last observed activity time and the current tool when known. It does not pretend to know that a child is truly stuck.
 
-Default behavior is intentionally conservative. When no activity has been observed past the configured threshold, the run emits a `needs_attention` control event. Foreground runs can push this as a `subagent:control-event` event, and async runs persist it to `events.jsonl` so the parent tracker can surface it without constant manual polling. Notification-worthy control events are also inserted into the visible transcript so both the user and the parent agent can see them, with a proactive hint plus concrete `nudge`, `status`, and `interrupt` options. Visible notifications fire once per child run and attention state.
+Default behavior is intentionally conservative. When no activity has been observed past the configured threshold, the run emits a `needs_attention` control event. Foreground runs can push this as a `subagent:control-event` event, and async runs persist it to `events.jsonl` so the parent tracker can surface it without constant manual polling. Notification-worthy control events are also inserted into the visible transcript so both the user and the parent agent can see them, with a proactive hint plus concrete `status` and `interrupt` options. Visible notifications fire once per child run and attention state.
 
 Use soft interrupt when a child is clearly blocked or drifting and the parent needs to regain control:
 
@@ -397,8 +396,6 @@ subagent({
   }
 })
 ```
-
-If the run already has an active intercom bridge target, needs-attention notifications can also prepare a compact intercom ping for the orchestrator. When a child route is available, the ping tells the orchestrator which agent needs attention and includes the exact `intercom({ action: "send", to: "..." })` target for a nudge. Do not invent a target or ask the child to self-report when no bridge exists.
 
 ## Clarify TUI
 
@@ -442,9 +439,8 @@ prefer a single-writer pattern instead.
 The intended oracle loop is:
 1. the main agent forks to `oracle`
 2. `oracle` reviews direction, drift, assumptions, and risks
-3. `oracle` can coordinate back through `contact_supervisor` when the bridge injects it
-4. the main agent decides what direction to approve
-5. only then should `worker` implement
+3. the main agent decides what direction to approve
+4. only then should `worker` implement
 
 ```typescript
 // Advisory review in a branched thread. Oracle defaults to forked context.
@@ -465,52 +461,6 @@ a forked advisory thread that inherits the parent session history and uses that
 history as a baseline contract.
 
 Use `oracle` as a smart-friend escalation when the parent needs help with trajectory rather than diff inspection: architectural boundaries, model capability routing, merge conflicts, reviewer disagreement, context drift after long work, a worker about to invent a pattern, or fixes that require product/scope tradeoffs. Ask broad questions when the right concern is unclear, and let `oracle` point out missing context or files the parent should inspect before asking again. Keep `oracle` advisory unless it has been explicitly assigned the single writer role.
-
-## Subagent + Intercom Coordination
-
-`pi-cohort` works without `pi-intercom`. When `pi-intercom` is installed and enabled, the intercom bridge can automatically give child agents a private coordination channel back to the parent session.
-
-Most agents should not call generic `intercom` directly unless bridge instructions provide a target and `contact_supervisor` is unavailable. Do not invent a target. Prefer the tool from the injected bridge instructions.
-
-Use `contact_supervisor` with `reason: "need_decision"` when:
-- a subagent is blocked on a decision
-- a child needs clarification instead of guessing
-- an approval, product, API, or scope choice is required before continuing safely
-
-Do not use `contact_supervisor` just to resolve review-only/no-project-edit versus progress-writing or output-artifact instructions. The child must not modify project/source files, but returning findings through its normal response or configured output artifact is allowed unless the parent explicitly set `output: false`.
-
-Use `contact_supervisor` with `reason: "progress_update"` when:
-- a child is explicitly asked for progress
-- a meaningful discovery changes the plan
-- a long-running child needs to report a blocked/progress checkpoint without waiting for normal tool return flow
-
-Message conventions:
-- `reason: "need_decision"` waits for the parent reply and returns it to the child.
-- `reason: "progress_update"` is non-blocking and should stay concise.
-- Child-side routine completion handoffs are not expected. With the intercom bridge active, parent-side `pi-cohort` sends grouped completion results through `pi-intercom`: one grouped message per foreground parent run and one per completed async result file. Acknowledged foreground delivery returns a compact receipt with artifact/session paths; if unacknowledged, the normal full output is preserved. Grouped messages include child intercom targets, full child summaries, and compact nested summaries under the parent child that launched them.
-
-If bridge instructions provide the child-facing tool, a child can ask:
-
-```typescript
-contact_supervisor({
-  reason: "need_decision",
-  message: "Should I optimize for readability or performance here?"
-})
-```
-
-The parent replies with:
-
-```typescript
-intercom({ action: "reply", message: "Optimize for readability." })
-```
-
-Or inspects unresolved asks first:
-
-```typescript
-intercom({ action: "pending" })
-```
-
-If intercom messages do not show up, run `subagent({ action: "doctor" })` or `/cohort-doctor`.
 
 ## Management Mode
 
@@ -622,8 +572,6 @@ particular agent or with forked context.
 - **Default subagent nesting depth is 2.** Deeper recursive delegation is blocked
   unless configured otherwise.
 - **Attention signals are not lifecycle state.** `needs_attention` means no activity has been observed past the configured threshold. `paused` means the child turn was intentionally interrupted or is awaiting direction; it is not the same as `failed`.
-- **Intercom asks are blocking.** A session can only maintain one pending outbound
-  ask wait state at a time.
 - **Keep conversational authority clear.** Advisory subagents should not silently
   become second decision-makers.
 
@@ -650,18 +598,13 @@ user explicitly requests forked context.
 Give subagents specific tasks rather than vague mandates.
 `Review auth.ts for null-check gaps` works better than `Review everything`.
 
-### Escalate decisions upward
+### Stop on unapproved decisions
 
-If a subagent encounters an unapproved product, architecture, or scope choice,
-it should coordinate back via `intercom` instead of deciding alone.
+If a subagent encounters an unapproved product, architecture, or scope choice, it must stop with `BLOCKED: <decision needed>` as the first line, followed by `Done: <complete>` and `Remaining: <left>`. The parent receives an ordinary failed result, sequential chains stop at that step, and follow-up is a fresh dispatch after the parent or human decides.
 
 ### Intervene only on clear control signals
 
 Use subagent control proactively when a delegated run emits `needs_attention`, or when a human asks you to regain control. Do not interrupt just because a child has briefly produced no output. Silence can be normal during long tool calls, test runs, or model reasoning.
-
-### Name sessions meaningfully
-
-Use `/name` so intercom targeting stays stable.
 
 ## Common Workflows
 
@@ -796,10 +739,10 @@ subagent({ action: "list" })
 // Check available agents and chains, then confirm scope/precedence.
 ```
 
-**Setup, discovery, or intercom confusion**
+**Setup or discovery confusion**
 ```typescript
 subagent({ action: "doctor" })
-// Check runtime paths, async support, discovery counts, current session, and intercom bridge state.
+// Check runtime paths, async support, discovery counts, and current session.
 ```
 
 **"Max subagent depth exceeded"**
@@ -810,11 +753,6 @@ subagent({ action: "doctor" })
 **"Session manager did not return a session file"**
 ```typescript
 // Persist the current session before using context: "fork".
-```
-
-**Intercom "Already waiting for a reply"**
-```typescript
-// Resolve the current outbound ask before starting another one.
 ```
 
 **Parallel output-path conflict**

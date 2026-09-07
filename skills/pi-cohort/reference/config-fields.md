@@ -65,4 +65,4 @@ Per-call attention-tracking overrides: `subagent({ ..., control: {...} })`. Run-
 | `activeNoticeAfterTokens` | integer >= 1 | Notice by total tokens. | off |
 | `failedToolAttemptsBeforeAttention` | integer >= 1 | Mutating-tool failures before `needs_attention`. | `3` |
 | `notifyOn` | array of `"active_long_running"` \| `"needs_attention"` | Which events notify the parent. | both |
-| `notifyChannels` | array of `"event"` \| `"async"` \| `"intercom"` | Delivery channels. | all three |
+| `notifyChannels` | array of `"event"` \| `"async"` | Delivery channels. | both |

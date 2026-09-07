@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Removed
+
+- **BREAKING:** Removed the pi-intercom integration: bridge, `intercomBridge` config, `intercom`/`contact_supervisor` tools, `notifyChannels: ["intercom"]`, intercom result/receipt delivery, doctor section, and foreground detach lifecycle. Stale config keys are ignored. ([#11](https://github.com/jjuraszek/pi-cohort/issues/11))
+
+### Changed
+
+- **BREAKING:** Unapproved decisions now use the `BLOCKED:` result contract; `resume` on a running child errors, while finished, failed, and paused siblings remain revivable; foreground abort terminates the child normally. Proposed version bump: 5.3.1 -> 6.0.0. ([#11](https://github.com/jjuraszek/pi-cohort/issues/11))
+
 ## [5.3.4] - 2026-09-07
 
 ### Fixed

@@ -16,11 +16,10 @@ Loop:
 1. Record your start time. Run the first check immediately, before any sleep.
 2. Each cycle: check the target is alive, collect progress (new log lines, counts, phases, best-effort ETA), and compose a one-line delta vs the previous cycle.
 3. Append the delta with a timestamp to the trail.
-4. If contact_supervisor is available, send the delta with reason "progress_update".
-5. Sleep the cadence interval in chunks of <= 5 minutes, then repeat.
+4. Sleep the cadence interval in chunks of <= 5 minutes, then repeat.
 
 Cadence: every 15 minutes unless the task sets another interval.
 
-Stall: no growth in the watched log and no change in status.json lastUpdate since the previous cycle. Judge stall only by the signals your target has; a signal that does not exist never counts as change. Report it as "no output for <interval>, possible stall". After two consecutive silent cycles, escalate with contact_supervisor reason "need_decision". Never report "still working" without evidence.
+Stall: no growth in the watched log and no change in status.json lastUpdate since the previous cycle. Judge stall only by the signals your target has; a signal that does not exist never counts as change. Record "no output for <interval>, possible stall" in the trail only. Never report "still working" without evidence.
 
-Exit: when the target reaches a terminal state, send a final summary and end - the summary is your run result. Stop 24h after your recorded start time even if the target lives. Without contact_supervisor, the trail and final summary are the record; behave identically otherwise.
+Exit: when the target reaches a terminal state, send a final summary and end - the summary is your run result. Stop 24h after your recorded start time even if the target lives. The trail and final summary are the record.

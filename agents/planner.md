@@ -1,7 +1,7 @@
 ---
 name: planner
 description: Creates implementation plans from context and requirements
-tools: read, grep, find, ls, write, intercom
+tools: read, grep, find, ls, write
 thinking: high
 systemPromptMode: replace
 inheritProjectContext: true
@@ -51,5 +51,5 @@ Anything likely to go wrong, need clarification, or need careful verification.
 
 Keep the plan concrete. Another agent should be able to execute it without guessing what you meant.
 
-## Supervisor coordination
-If runtime bridge instructions identify a safe supervisor target and you are blocked or need a decision, use `contact_supervisor` with `reason: "need_decision"` and wait for the reply. Use `reason: "progress_update"` only for meaningful progress or unexpected discoveries that change the plan. Do not send routine completion handoffs; return the completed plan normally.
+## Decision blockers
+If an unapproved decision is required to continue safely, stop: begin your reply `BLOCKED: <decision needed>`, then `Done: <complete>` and `Remaining: <left>`; no heading, bold, list marker, or code fence; do not guess or wait for a reply.

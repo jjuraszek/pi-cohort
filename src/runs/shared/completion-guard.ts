@@ -60,9 +60,12 @@ const READ_ONLY_BUILTIN_TOOLS = new Set([
 	"find",
 	"ls",
 	"fetch",
-	"intercom",
-	"contact_supervisor",
 ]);
+
+export function blockedLine(output: string): string | undefined {
+	const line = output.split("\n").find((l) => l.trim() !== "");
+	return line?.startsWith("BLOCKED:") ? line : undefined;
+}
 
 interface CompletionMutationGuardInput {
 	agent: string;
