@@ -34,6 +34,9 @@ const execution = await tryImport<any>("./src/runs/foreground/execution.ts");
 const executorMod = await tryImport<any>("./src/runs/foreground/subagent-executor.ts");
 const typesMod = await tryImport<any>("./src/shared/types.ts");
 const piAvailable = !!(execution && utils);
+const hookScriptSkip = process.platform === "win32"
+	? "Hook script execution differs on Windows CI environments."
+	: undefined;
 
 const runSync = execution?.runSync;
 const mapConcurrent = utils?.mapConcurrent;
@@ -683,7 +686,7 @@ describe("parallel worktree artifact scoping", { skip: !piAvailable || !createSu
 		}
 	});
 
-	it("keeps the redirected report file out of the captured worktree patch", async () => {
+	it("keeps the redirected report file out of the captured worktree patch", { skip: hookScriptSkip }, async () => {
 		const repoDir = createParallelRepo("pi-parallel-worktree-purity-");
 		const hookPath = createTrackedFileMutatingSetupHook();
 		try {

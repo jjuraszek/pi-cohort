@@ -6,7 +6,7 @@ import { describe, it } from "node:test";
 const repoRoot = path.join(import.meta.dirname, "..", "..");
 
 function splitFrontmatter(content: string): { frontmatter: string; body: string; bodyLines: string[] } {
-	const lines = content.split("\n");
+	const lines = content.split(/\r?\n/);
 	assert.equal(lines[0], "---", "file must start with frontmatter fence");
 	const closeIndex = lines.indexOf("---", 1);
 	assert.ok(closeIndex > 0, "frontmatter must have a closing fence");
@@ -17,6 +17,15 @@ function splitFrontmatter(content: string): { frontmatter: string; body: string;
 	const body = bodyLines.join("\n");
 	return { frontmatter, body, bodyLines };
 }
+
+describe("splitFrontmatter", () => {
+	it("parses synthetic LF and CRLF frontmatter identically", () => {
+		const lf = "---\nname: monitor\n---\n\nPersona body\n";
+		const crlf = lf.replace(/\n/g, "\r\n");
+
+		assert.deepEqual(splitFrontmatter(crlf), splitFrontmatter(lf));
+	});
+});
 
 describe("builtin monitor persona", () => {
 	const personaPath = path.join(repoRoot, "agents", "monitor.md");
@@ -65,7 +74,7 @@ describe("builtin monitor persona", () => {
 	});
 
 	it("stays within the persona length budget", () => {
-		assert.ok(personaContent.split("\n").length <= 40);
+		assert.ok(personaContent.split(/\r?\n/).length <= 40);
 	});
 });
 
