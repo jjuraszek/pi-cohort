@@ -8,7 +8,7 @@ function assistantContent(content: unknown[]): Message {
 }
 
 describe("getFinalOutput", () => {
-	it("uses the last non-empty text part in the latest assistant message", () => {
+	it("skips empty text parts in the latest assistant message", () => {
 		const messages = [assistantContent([
 			{ type: "text", text: "" },
 			{ type: "text", text: "Summary" },
@@ -17,14 +17,42 @@ describe("getFinalOutput", () => {
 		assert.equal(getFinalOutput(messages), "Summary");
 	});
 
-	it("prefers final text over progress text in a multi-part assistant message", () => {
+	it("joins all non-empty text parts in a multi-part assistant message", () => {
 		const messages = [assistantContent([
 			{ type: "text", text: "Working on the fix..." },
 			{ type: "thinking", thinking: "Cursor shell: shell $ npm test" },
 			{ type: "text", text: "Implemented: patch applied." },
 		])];
 
-		assert.equal(getFinalOutput(messages), "Implemented: patch applied.");
+		assert.equal(getFinalOutput(messages), "Working on the fix...\nImplemented: patch applied.");
+	});
+
+	it("joins two text blocks with a newline", () => {
+		const messages = [assistantContent([
+			{ type: "text", text: "BLOCKED: need approval to rotate key" },
+			{ type: "text", text: "Done: inspected\nRemaining: rotate" },
+		])];
+
+		assert.equal(
+			getFinalOutput(messages),
+			"BLOCKED: need approval to rotate key\nDone: inspected\nRemaining: rotate",
+		);
+	});
+
+	it("leaves a single text block unchanged", () => {
+		const messages = [assistantContent([{ type: "text", text: "Summary" }])];
+
+		assert.equal(getFinalOutput(messages), "Summary");
+	});
+
+	it("skips tool-call parts between text blocks", () => {
+		const messages = [assistantContent([
+			{ type: "text", text: "First" },
+			{ type: "toolCall", name: "read", arguments: { path: "README.md" } },
+			{ type: "text", text: "Second" },
+		])];
+
+		assert.equal(getFinalOutput(messages), "First\nSecond");
 	});
 
 	it("falls back to an older assistant message when the latest text is whitespace-only", () => {

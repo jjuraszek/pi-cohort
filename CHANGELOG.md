@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- `getFinalOutput` no longer truncates a multi-block assistant reply to its last text block; it now joins all non-empty text blocks with `\n`. Previously a `BLOCKED:` line in an earlier block was dropped, so the `BLOCKED:` classifier misread a blocked reply as successful (or a completed reply whose trailing block happened to start with `BLOCKED:` as failed).
+
 ## [6.0.0] - 2026-09-07
 
 ### Removed

@@ -209,6 +209,42 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.equal(mockPi.callCount(), 1);
 	});
 
+	it("classifies a blocker split across multiple text blocks as a failed result", async () => {
+		const blockedLine = "BLOCKED: need approval to rotate the api key";
+		const restLine = "Done: inspected config\nRemaining: deploy";
+		mockPi.onCall({
+			jsonl: [{
+				type: "message_end",
+				message: {
+					role: "assistant",
+					content: [
+						{ type: "text", text: blockedLine },
+						{ type: "text", text: restLine },
+					],
+					model: "mock/test-model",
+					stopReason: "stop",
+					usage: { input: 10, output: 50, cacheRead: 0, cacheWrite: 0 },
+				},
+			}],
+		});
+		const agents = [makeAgent("worker", {
+			model: "openai/gpt-5-mini",
+			fallbackModels: ["anthropic/claude-sonnet-4"],
+		})];
+
+		const result = await runSync(tempDir, agents, "worker", "Implement the approved deployment", {
+			runId: "blocked-multipart-run",
+			acceptance: { level: "none", reason: "test: acceptance unrelated to this regression" },
+		});
+
+		assert.equal(result.exitCode, 1);
+		assert.equal(result.error, `${blockedLine}\n${restLine}`);
+		assert.equal(result.progress.status, "failed");
+		assert.equal(result.modelAttempts?.length, 1);
+		assert.doesNotMatch(result.error ?? "", /fallback/i);
+		assert.equal(mockPi.callCount(), 1);
+	});
+
 	it("completes a fresh foreground follow-up after a blocker decision", async () => {
 		const blocked = "BLOCKED: need approval to rotate the api key\nDone: inspected config\nRemaining: deploy";
 		mockPi.onCall({ output: blocked });
