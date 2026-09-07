@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Extension startup now retries transient `EPERM` failures while creating completed-result and async-run temporary directories, with a strict limit of three attempts and two one-second waits. ([#10](https://github.com/jjuraszek/pi-cohort/issues/10))
+
 ## [5.3.1] - 2026-09-01
 
 ### Fixed

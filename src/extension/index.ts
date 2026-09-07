@@ -24,6 +24,7 @@ import { resolveCurrentSessionId } from "../shared/session-identity.ts";
 import { cleanupOldChainDirs } from "../shared/settings.ts";
 import { clearLegacyResultAnimationTimer, renderWidget, renderSubagentResult } from "../tui/render.ts";
 import { SubagentParams } from "./schemas.ts";
+import { mkdirWithEpermRetry } from "./mkdir-with-retry.ts";
 import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
 import { createAsyncJobTracker } from "../runs/background/async-job-tracker.ts";
 import { createResultWatcher } from "../runs/background/result-watcher.ts";
@@ -82,15 +83,9 @@ function expandTilde(p: string): string {
 	return p.startsWith("~/") ? path.join(os.homedir(), p.slice(2)) : p;
 }
 
-/**
- * Create a directory and verify it is actually accessible.
- * On Windows with Azure AD/Entra ID, directories created shortly after
- * wake-from-sleep can end up with broken NTFS ACLs (null DACL) when the
- * cloud SID cannot be resolved without network connectivity. This leaves
- * the directory completely inaccessible to the creating user.
- */
+/** Create a directory and verify it is actually accessible. */
 function ensureAccessibleDir(dirPath: string): void {
-	fs.mkdirSync(dirPath, { recursive: true });
+	mkdirWithEpermRetry(dirPath);
 	try {
 		fs.accessSync(dirPath, fs.constants.R_OK | fs.constants.W_OK);
 	} catch {
@@ -99,7 +94,7 @@ function ensureAccessibleDir(dirPath: string): void {
 		} catch {
 			// Best effort: retry mkdir/access even if cleanup fails.
 		}
-		fs.mkdirSync(dirPath, { recursive: true });
+		mkdirWithEpermRetry(dirPath);
 		fs.accessSync(dirPath, fs.constants.R_OK | fs.constants.W_OK);
 	}
 }
