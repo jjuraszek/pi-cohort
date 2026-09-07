@@ -41,7 +41,39 @@ That is the only required step.
 
 ## Execution backend extension API
 
-`pi-cohort/execution-backend` requires Pi >=0.85.0 and is an API for Pi extensions loaded by Pi's TypeScript-aware runtime. Bare Node is not a supported execution path; consumers outside Pi must supply a TypeScript-aware loader such as [jiti](https://github.com/unjs/jiti).
+External execution backends are currently unsupported on Windows, for both foreground and background runs. Native execution remains supported.
+
+`pi-cohort/execution-backend` requires Pi >=0.85.0 and is the public API for Pi extensions that add child execution surfaces. Pi's TypeScript-aware runtime loads the API; bare Node is not a supported execution path. Consumers outside Pi must supply a TypeScript-aware loader such as [jiti](https://github.com/unjs/jiti).
+
+An adapter registers its backend in extension load order. To make that backend available to background runs, registration also supplies an optional reload descriptor:
+
+```ts
+import {
+  EXECUTION_BACKEND_PROTOCOL_VERSION,
+  registerExecutionBackend,
+  type ExecutionBackendFactory,
+} from "pi-cohort/execution-backend";
+import { createBackend } from "./adapter.ts";
+
+export const createExampleBackend: ExecutionBackendFactory = createBackend;
+
+// src/execution-backend.ts, exported as "./execution-backend".
+// Pi invokes the default extension; the coordinator invokes only the factory.
+export default async function () {
+  registerExecutionBackend(await createExampleBackend(), {
+    reload: {
+      protocolVersion: EXECUTION_BACKEND_PROTOCOL_VERSION,
+      packageJsonUrl: new URL("../package.json", import.meta.url).href,
+      publicSubpath: "./execution-backend",
+      factoryExport: "createExampleBackend",
+    },
+  });
+}
+```
+
+The descriptor has exactly four fields. `packageJsonUrl` must be an absolute `file:` URL for the adapter package's real `package.json`. `publicSubpath` must be `"."` or an explicit non-pattern `"./..."` entry in that package's `exports`. `factoryExport` names a public, zero-argument export from that subpath; it may return the backend or a promise of it. The reconstructed backend must have the same `name` and protocol version as the original registration.
+
+Cohort serializes only backend names and validated reload descriptors into its detached coordinator - never live backend objects or an environment capsule. The coordinator reloads registrations in their original order before selecting a backend, and every child launch receives its exact resolved `cwd`. Selecting `native` bypasses reload entirely. An explicit backend selection reports that backend's reload failure; `auto` reports any registered reload failure rather than silently changing policy. Once reload succeeds, normal auto-detection still falls back to native when no registered backend is available. Backends registered without `reload` remain usable in the foreground but cannot be reconstructed for a background run.
 
 ## Mental model
 
