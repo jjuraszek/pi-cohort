@@ -28,6 +28,16 @@ describe("deriveForwardedFlags", () => {
     assert.deepEqual(deriveForwardedFlags(argv("--system-prompt", "--literal-prompt", "--no-autofix"), {}), ["--no-autofix"]);
     assert.deepEqual(deriveForwardedFlags(argv("--model", "openai/gpt", "--no-autofix"), {}), ["--no-autofix"]);
   });
+  it("drops Pi 0.85 core value flags and their values", () => {
+    assert.deepEqual(deriveForwardedFlags(argv("--use-theme", "dark", "--no-autofix"), {}), ["--no-autofix"]);
+    assert.deepEqual(deriveForwardedFlags(argv("--tui-mode", "fullscreen", "--no-autofix"), {}), ["--no-autofix"]);
+  });
+  it("forwards --no-autofix when --tui-mode is malformed (missing value)", () => {
+    // Real pi's --tui-mode is value-guarded: it does NOT consume a dash-prefixed
+    // next token. So `pi --tui-mode --no-autofix ...` leaves --no-autofix alone.
+    // This test regresses the case where we incorrectly consumed it as tui-mode's value.
+    assert.deepEqual(deriveForwardedFlags(argv("--tui-mode", "--no-autofix"), {}), ["--no-autofix"]);
+  });
   it("handles guarded core flags (--print consumes only non-dash next)", () => {
     assert.deepEqual(deriveForwardedFlags(argv("--print", "--no-autofix"), {}), ["--no-autofix"]);
   });

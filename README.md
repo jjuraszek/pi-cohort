@@ -41,7 +41,7 @@ That is the only required step.
 
 ## Execution backend extension API
 
-`pi-cohort/execution-backend` is an API for Pi extensions loaded by Pi's TypeScript-aware runtime. Bare Node is not a supported execution path; consumers outside Pi must supply a TypeScript-aware loader such as [jiti](https://github.com/unjs/jiti).
+`pi-cohort/execution-backend` requires Pi >=0.85.0 and is an API for Pi extensions loaded by Pi's TypeScript-aware runtime. Bare Node is not a supported execution path; consumers outside Pi must supply a TypeScript-aware loader such as [jiti](https://github.com/unjs/jiti).
 
 ## Mental model
 
