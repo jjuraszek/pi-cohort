@@ -167,19 +167,20 @@ describe("formatSavedOutputReference", () => {
 
 describe("resolveParallelTaskOutputPath", () => {
 	const base = { ctxCwd: "/ctx", taskCwd: "/wt/task", index: 0 };
+	const runDir = path.resolve("/runs/abc");
 
 	it("redirects a relative output into the per-task leaf when isolated", () => {
-		const result = resolveParallelTaskOutputPath({ ...base, output: "report.md", isolated: true, runDir: "/runs/abc" });
-		assert.deepEqual(result, { path: path.join("/runs/abc", "task-0", "report.md") });
+		const result = resolveParallelTaskOutputPath({ ...base, output: "report.md", isolated: true, runDir });
+		assert.deepEqual(result, { path: path.join(runDir, "task-0", "report.md") });
 	});
 
 	it("appends exactly one task segment for a nested relative output", () => {
-		const result = resolveParallelTaskOutputPath({ ...base, index: 2, output: "out/report.md", isolated: true, runDir: "/runs/abc" });
-		assert.deepEqual(result, { path: path.join("/runs/abc", "task-2", "out", "report.md") });
+		const result = resolveParallelTaskOutputPath({ ...base, index: 2, output: "out/report.md", isolated: true, runDir });
+		assert.deepEqual(result, { path: path.join(runDir, "task-2", "out", "report.md") });
 	});
 
 	it("passes an absolute output through untouched", () => {
-		const result = resolveParallelTaskOutputPath({ ...base, output: "/tmp/fixed.md", isolated: true, runDir: "/runs/abc" });
+		const result = resolveParallelTaskOutputPath({ ...base, output: "/tmp/fixed.md", isolated: true, runDir });
 		assert.deepEqual(result, { path: "/tmp/fixed.md" });
 	});
 
@@ -189,33 +190,33 @@ describe("resolveParallelTaskOutputPath", () => {
 	});
 
 	it("returns undefined path for disabled output", () => {
-		assert.deepEqual(resolveParallelTaskOutputPath({ ...base, output: false, isolated: true, runDir: "/runs/abc" }), { path: undefined });
-		assert.deepEqual(resolveParallelTaskOutputPath({ ...base, output: "false", isolated: true, runDir: "/runs/abc" }), { path: undefined });
+		assert.deepEqual(resolveParallelTaskOutputPath({ ...base, output: false, isolated: true, runDir }), { path: undefined });
+		assert.deepEqual(resolveParallelTaskOutputPath({ ...base, output: "false", isolated: true, runDir }), { path: undefined });
 	});
 
 	it("rejects an output escaping the per-task leaf", () => {
-		const result = resolveParallelTaskOutputPath({ ...base, index: 1, output: "../report.md", isolated: true, runDir: "/runs/abc" });
+		const result = resolveParallelTaskOutputPath({ ...base, index: 1, output: "../report.md", isolated: true, runDir });
 		assert.ok("error" in result);
 		assert.match(result.error, /^Parallel task 2 output '\.\.\/report\.md' resolves outside its per-task directory/);
 	});
 
 	it("rejects an output normalizing to the leaf itself", () => {
 		for (const output of [".", "dir/.."]) {
-			const result = resolveParallelTaskOutputPath({ ...base, output, isolated: true, runDir: "/runs/abc" });
+			const result = resolveParallelTaskOutputPath({ ...base, output, isolated: true, runDir });
 			assert.ok("error" in result, `expected ${output} to be rejected`);
 		}
 	});
 
 	it("accepts in-leaf names that merely begin with two dots", () => {
 		for (const output of ["..foo/report.md", "..hidden.md"]) {
-			const result = resolveParallelTaskOutputPath({ ...base, output, isolated: true, runDir: "/runs/abc" });
-			assert.deepEqual(result, { path: path.join("/runs/abc", "task-0", output) }, `expected ${output} to resolve inside the leaf`);
+			const result = resolveParallelTaskOutputPath({ ...base, output, isolated: true, runDir });
+			assert.deepEqual(result, { path: path.join(runDir, "task-0", output) }, `expected ${output} to resolve inside the leaf`);
 		}
 	});
 
 	it("still rejects real parent segments regardless of depth", () => {
 		for (const output of ["../report.md", "../../report.md"]) {
-			const result = resolveParallelTaskOutputPath({ ...base, output, isolated: true, runDir: "/runs/abc" });
+			const result = resolveParallelTaskOutputPath({ ...base, output, isolated: true, runDir });
 			assert.ok("error" in result, `expected ${output} to be rejected`);
 		}
 	});
