@@ -13,6 +13,7 @@ import { SubagentParams } from "./schemas.ts";
 import { loadConfig } from "./config.ts";
 import { deriveForwardedFlags } from "../runs/shared/forward-flags.ts";
 import type { Details, SubagentState } from "../shared/types.ts";
+import { emptyGrandTotal } from "./grand-total.ts";
 
 function getSubagentSessionRoot(parentSessionFile: string | null): string {
 	if (parentSessionFile) {
@@ -32,6 +33,7 @@ function createChildSafeState(): SubagentState {
 		baseCwd: "",
 		currentSessionId: null,
 		asyncJobs: new Map(),
+		grandTotal: emptyGrandTotal(),
 		foregroundRuns: new Map(),
 		foregroundControls: new Map(),
 		lastForegroundControlId: null,
