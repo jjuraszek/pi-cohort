@@ -60,9 +60,19 @@ describe("execution session replay", () => {
 		assert.throws(() => replay([...lifecycle(), report("settled", 4)]), /out of order/);
 	});
 
-	it("allows valid control reports after the terminal result", () => {
+	it("exposes validated control reports after the terminal result", () => {
 		const value = replay([...lifecycle(), report("control", 4, { action: "abort", state: "requested" })]);
-		assert.equal(value.result?.finalOutput, "done"); assert.equal(value.reports.length, 4);
+		assert.equal(value.result?.finalOutput, "done");
+		assert.equal(value.reports.length, 4);
+		assert.deepEqual(value.controls, [{
+			protocolVersion: 1,
+			...identity,
+			kind: "control",
+			sequence: 4,
+			timestamp: "2026-09-06T00:00:00.000Z",
+			action: "abort",
+			state: "requested",
+		}]);
 	});
 
 	it("reports a settled stream without result as pending", () => {

@@ -366,7 +366,7 @@ describe("async run status inspection", () => {
 			assert.match(text, /Resume: subagent\(\{ action: "resume", id: "nested-exact-child", message: "\.\.\." \}\)/);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
-			fs.rmSync(path.dirname(route.eventSink), { recursive: true, force: true });
+			fs.rmSync(path.dirname(route.eventSink), { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
 		}
 	});
 

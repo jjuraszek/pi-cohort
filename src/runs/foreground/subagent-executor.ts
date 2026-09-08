@@ -1225,6 +1225,7 @@ interface ForegroundParallelRunInput {
 	onControlEvent?: (event: ControlEvent) => void;
 	foregroundControl?: SubagentState["foregroundControls"] extends Map<string, infer T> ? T : never;
 	concurrencyLimit: number;
+	executionBackend?: string;
 	liveResults: (SingleResult | undefined)[];
 	liveProgress: (AgentProgress | undefined)[];
 	onUpdate?: (r: AgentToolResult<Details>) => void;
@@ -1411,6 +1412,7 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 			signal: input.signal,
 			interruptSignal: interruptController.signal,
 			runId: input.runId,
+			executionBackend: input.executionBackend,
 			index,
 			sessionDir: input.sessionDirForIndex(index),
 			sessionFile: input.sessionFileForIndex(index),
@@ -1733,6 +1735,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 			onUpdate: onUpdateWithCost,
 			worktreeSetup,
 			forwardedFlags: deps.forwardedFlags,
+			executionBackend: deps.config.executionBackend,
 		});
 		if (foregroundControl) updateForegroundNestedProjection(foregroundControl);
 		recordSyncCost(deps.state.grandTotal, runId, results.reduce((sum, r) => sum + r.usage.cost, 0) + sumNestedCost(foregroundControl?.nestedChildren));
@@ -1989,6 +1992,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		acceptance: params.acceptance,
 		acceptanceContext: { mode: "single" },
 		forwardedFlags: deps.forwardedFlags,
+		executionBackend: deps.config.executionBackend,
 	});
 	if (foregroundControl?.currentIndex === 0) {
 		foregroundControl.interrupt = undefined;

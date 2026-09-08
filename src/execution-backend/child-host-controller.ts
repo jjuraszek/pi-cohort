@@ -11,7 +11,7 @@ import type { ExecutionBackend, ExecutionBackendLease } from "./types.ts";
 export interface ChildHostAttempt { readonly attemptId: string; readonly command: string; readonly args: readonly string[]; readonly cwd: string; readonly environment: Readonly<Record<string, string>>; }
 export interface ChildHostExit { readonly status: number | null; readonly signal: string | null; }
 export interface ChildHostController { readonly lease: ExecutionBackendLease; readonly ready: Promise<void>; startAttempt(attempt: ChildHostAttempt): Promise<ChildHostExit>; shutdown(): Promise<void>; releaseObserver(): Promise<void>; }
-export interface ChildHostControllerOptions { readonly backend: ExecutionBackend; readonly runId: string; readonly childId: string; readonly cwd: string; readonly signal: AbortSignal; }
+export interface ChildHostControllerOptions { readonly backend: ExecutionBackend; readonly runId: string; readonly childId: string; readonly cwd: string; readonly title?: string; readonly signal: AbortSignal; }
 export interface ChildHostControllerDependencies { readonly fs?: typeof fs; readonly ensureJiti?: () => string | undefined; readonly childHostCommand?: () => { command: string; args: readonly string[] }; readonly platform?: NodeJS.Platform; readonly createServer?: typeof net.createServer; }
 
 const HOST_ENVIRONMENT_KEYS = ["PATH", "HOME", "TMPDIR", "SystemRoot"] as const;
@@ -118,7 +118,16 @@ export async function createChildHostController(options: ChildHostControllerOpti
 		const host = dependencies.childHostCommand?.() ?? childHostCommand(dependencies.ensureJiti ?? ensureJitiCliPath);
 		const environment: Record<string, string> = { [PI_COHORT_CHILD_HOST_CONFIG]: configPath };
 		for (const key of HOST_ENVIRONMENT_KEYS) if (process.env[key]) environment[key] = process.env[key]!;
-		lease = await options.backend.launch({ command: host.command, args: host.args, cwd: options.cwd, environment, runId: options.runId, childId: options.childId, signal: options.signal });
+		lease = await options.backend.launch({
+			command: host.command,
+			args: host.args,
+			cwd: options.cwd,
+			environment,
+			runId: options.runId,
+			childId: options.childId,
+			signal: options.signal,
+			...(options.title === undefined ? {} : { awareness: { title: options.title } }),
+		});
 		return {
 			get lease() { return lease!; },
 			ready: readyPromise,

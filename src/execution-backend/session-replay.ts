@@ -5,6 +5,7 @@ import { EXECUTION_REPORT_TYPE, type ExecutionReport, type ExecutionReportIdenti
 
 export interface ReplayedSession {
 	readonly reports: readonly ExecutionReport[];
+	readonly controls: readonly (ExecutionReport & { readonly kind: "control" })[];
 	readonly messages: readonly SessionMessageEntry["message"][];
 	readonly result?: ExecutionReport & { readonly kind: "result" };
 	readonly pendingResult: boolean;
@@ -120,7 +121,9 @@ export function replayExecutionSession(content: string, identity: ExecutionRepor
 		resultEntry = entry;
 	}
 	const messages = result && resultEntry ? reconstructBranch(byId, resultEntry) : [];
-	return { reports: reportedEntries.map(({ report }) => report), messages, result, pendingResult: settled && !result, incompleteTrailingLine: trailing.length > 0 };
+	const reports = reportedEntries.map(({ report }) => report);
+	const controls = reports.filter((report): report is ExecutionReport & { kind: "control" } => report.kind === "control");
+	return { reports, controls, messages, result, pendingResult: settled && !result, incompleteTrailingLine: trailing.length > 0 };
 }
 
 function reconstructBranch(byId: ReadonlyMap<string, SessionEntry>, result: SessionEntry): readonly SessionMessageEntry["message"][] {
