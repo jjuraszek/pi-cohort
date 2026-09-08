@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { describe, it } from "node:test";
 import type { AgentConfig } from "../../src/agents/agents.ts";
 import type { ExecutionBackendSelectionResult } from "../../src/execution-backend/selection.ts";
 import type { ExecutionBackend, ExecutionSurfaceHandle } from "../../src/execution-backend/types.ts";
 import { runSync, type RunSyncDependencies } from "../../src/runs/foreground/execution.ts";
-import type { ExternalForegroundExecution, ExternalForegroundExecutionOptions } from "../../src/runs/foreground/external-execution.ts";
+import type { ExternalAttemptResult, ExternalExecution, ExternalExecutionOptions } from "../../src/runs/shared/external-execution.ts";
 import type { RunExternalSingleAttemptInput } from "../../src/runs/foreground/external-single-attempt.ts";
 import { snapshotResult } from "../../src/runs/foreground/attempt-finalization.ts";
 import type { SingleResult } from "../../src/shared/types.ts";
@@ -41,11 +44,11 @@ function result(agent: AgentConfig, task: string, overrides: Partial<SingleResul
 
 function dependencies(selection: ExecutionBackendSelectionResult) {
 	const selected: Array<{ cwd: string; userConfig: { executionBackend?: string } }> = [];
-	const ownerOptions: ExternalForegroundExecutionOptions[] = [];
+	const ownerOptions: ExternalExecutionOptions[] = [];
 	const attempts: RunExternalSingleAttemptInput[] = [];
 	const finishes: string[] = [];
 	let nativeCalls = 0;
-	const owner: ExternalForegroundExecution = {
+	const owner: ExternalExecution = {
 		surface: handle,
 		ready: Promise.resolve(),
 		async runAttempt() { throw new Error("unused"); },
@@ -167,5 +170,127 @@ describe("runSync execution backend routing", () => {
 		const snapshot = snapshotResult(value, progress);
 		assert.deepEqual(snapshot.executionSurface, { handle, retained: true });
 		assert.deepEqual(JSON.parse(JSON.stringify(snapshot)).executionSurface, { handle, retained: true });
+	});
+});
+
+function successAttemptResult(): ExternalAttemptResult {
+	return {
+		attemptId: "child-0-attempt-0",
+		sessionFile: "",
+		messages: [],
+		outcome: "success",
+		finalOutput: "done",
+		usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
+		model: "mock",
+		turns: 1,
+		exit: { code: 0, signal: null },
+		interrupted: false,
+	};
+}
+
+describe("runSync external path exceptional lifecycle", () => {
+	/**
+	 * Exercises the ACTUAL runExternalSingleAttempt allocating path:
+	 * - owner.runAttempt throws (proves tempDir finally cleanup)
+	 * - post-loop output artifact write also fails (EISDIR)
+	 * Both together: finish("retained") must be called (requires the fix).
+	 * Pre-fix: post-loop EISDIR propagates out of runSync without calling finish.
+	 */
+	it("actual runExternalSingleAttempt: thrown attempt + post-loop artifact failure both handled - finish retained", async () => {
+		const finishes: string[] = [];
+		const attemptCalls: number[] = [];
+		const owner: ExternalExecution = {
+			surface: handle,
+			ready: Promise.resolve(),
+			async runAttempt() {
+				attemptCalls.push(1);
+				throw new Error("secret infra error - must not appear in result");
+			},
+			async finish(disposition) {
+				finishes.push(disposition);
+				return { handle, retained: disposition === "retained" };
+			},
+		};
+
+		const artifactsDir = fs.mkdtempSync(path.join(os.tmpdir(), "test-routing-"));
+		const runId = "run-actual";
+		// Pre-create the output artifact path as a directory so writeArtifact throws EISDIR.
+		fs.mkdirSync(path.join(artifactsDir, `${runId}_worker_output.md`));
+
+		try {
+			const output = await runSync("/runtime", [makeAgent("worker", { completionGuard: false })], "worker", "Task", {
+				runId,
+				sessionFile: path.join(artifactsDir, "session.jsonl"),
+				artifactsDir,
+				acceptance: noAcceptance,
+			}, {
+				selectBackend: async () => externalSelection,
+				createExternalOwner: async () => owner,
+				// No runExternalAttempt injection: uses real runExternalSingleAttempt
+			});
+
+			assert.equal(attemptCalls.length, 1, "real runExternalSingleAttempt must have run");
+			assert.deepEqual(finishes, ["retained"], "owner.finish must be called retained even after both failures");
+			assert.equal(output.exitCode, 1);
+			assert.ok(output.error, "must have an error");
+			// attempt failure preserved (safe message)
+			assert.ok(output.error.includes("External execution attempt failed"), `attempt error must be in result, got: ${output.error}`);
+			// cleanup failure appended (safe message)
+			assert.ok(output.error.includes("External execution cleanup failed"), `cleanup error must be in result, got: ${output.error}`);
+			// no raw infrastructure details leaked
+			assert.ok(!output.error.includes("secret"), `must not leak raw errors, got: ${output.error}`);
+			assert.ok(!output.error.includes("EISDIR"), `must not leak FS error details, got: ${output.error}`);
+			assert.equal(output.executionSurface?.retained, true);
+		} finally {
+			fs.rmSync(artifactsDir, { recursive: true, force: true });
+		}
+	});
+
+	/**
+	 * Simpler variant: attempt succeeds (real runExternalSingleAttempt, tempDir cleaned by finally),
+	 * but post-loop artifact write fails. finish("retained") must still be called.
+	 * Pre-fix: EISDIR propagates out of runSync without calling finish.
+	 */
+	it("actual runExternalSingleAttempt: succeeding attempt + post-loop artifact failure: finish retained", async () => {
+		const finishes: string[] = [];
+		const attemptCalls: number[] = [];
+		const owner: ExternalExecution = {
+			surface: handle,
+			ready: Promise.resolve(),
+			async runAttempt() {
+				attemptCalls.push(1);
+				return successAttemptResult();
+			},
+			async finish(disposition) {
+				finishes.push(disposition);
+				return { handle, retained: disposition === "retained" };
+			},
+		};
+
+		const artifactsDir = fs.mkdtempSync(path.join(os.tmpdir(), "test-routing-"));
+		const runId = "run-success-postloop";
+		fs.mkdirSync(path.join(artifactsDir, `${runId}_worker_output.md`));
+
+		try {
+			const output = await runSync("/runtime", [makeAgent("worker", { completionGuard: false })], "worker", "Task", {
+				runId,
+				sessionFile: path.join(artifactsDir, "session.jsonl"),
+				artifactsDir,
+				acceptance: noAcceptance,
+			}, {
+				selectBackend: async () => externalSelection,
+				createExternalOwner: async () => owner,
+				// No runExternalAttempt injection: uses real runExternalSingleAttempt
+			});
+
+			assert.equal(attemptCalls.length, 1, "real runExternalSingleAttempt must have run");
+			assert.deepEqual(finishes, ["retained"], "owner.finish must be called retained on post-loop failure");
+			assert.equal(output.exitCode, 1);
+			assert.ok(output.error, "must have an error");
+			assert.ok(!output.error.includes("EISDIR"), `must not leak FS error details, got: ${output.error}`);
+			assert.equal(output.executionSurface?.retained, true);
+		} finally {
+			fs.rmSync(artifactsDir, { recursive: true, force: true });
+		}
 	});
 });

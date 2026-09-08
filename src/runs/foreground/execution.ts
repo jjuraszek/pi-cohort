@@ -74,10 +74,10 @@ import {
 	type AttemptSharedInit,
 } from "./attempt-finalization.ts";
 import {
-	createExternalForegroundExecution,
-	type ExternalForegroundExecution,
-	type ExternalForegroundExecutionOptions,
-} from "./external-execution.ts";
+	createExternalExecution,
+	type ExternalExecution,
+	type ExternalExecutionOptions,
+} from "../shared/external-execution.ts";
 import {
 	runExternalSingleAttempt,
 	type RunExternalSingleAttemptInput,
@@ -87,7 +87,7 @@ export { acceptanceOutputByResult, artifactOutputByResult };
 
 export interface RunSyncDependencies {
 	selectBackend?: (input: ConfiguredSelectionInput) => Promise<ExecutionBackendSelectionResult>;
-	createExternalOwner?: (options: ExternalForegroundExecutionOptions) => Promise<ExternalForegroundExecution>;
+	createExternalOwner?: (options: ExternalExecutionOptions) => Promise<ExternalExecution>;
 	runNativeAttempt?: typeof runSingleAttempt;
 	runExternalAttempt?: (input: RunExternalSingleAttemptInput) => Promise<SingleResult>;
 }
@@ -710,11 +710,11 @@ export async function runSync(
 	}
 
 	let lastResult: SingleResult | undefined;
-	let externalOwner: ExternalForegroundExecution | undefined;
+	let externalOwner: ExternalExecution | undefined;
 	const childId = `child-${options.index ?? 0}`;
 	if (backendSelection.selection.kind === "external") {
 		try {
-			externalOwner = await (dependencies.createExternalOwner ?? createExternalForegroundExecution)({
+			externalOwner = await (dependencies.createExternalOwner ?? createExternalExecution)({
 				backend: backendSelection.selection.backend,
 				runId: options.runId,
 				childId,
@@ -796,81 +796,86 @@ export async function runSync(
 		error: "Subagent did not produce a result.",
 	} satisfies SingleResult;
 
-	result.usage = aggregateUsage;
-	result.attemptedModels = attemptedModels.length > 0 ? attemptedModels : undefined;
-	result.modelAttempts = modelAttempts.length > 0 ? modelAttempts : undefined;
-	result.progressSummary = {
-		toolCount: totalToolCount,
-		tokens: aggregateUsage.input + aggregateUsage.output,
-		durationMs: totalDurationMs,
-	};
-	if (attemptNotes.length > 0 && result.progress) {
-		result.progress.recentOutput = [...attemptNotes, ...result.progress.recentOutput];
-		if (result.progress.recentOutput.length > 50) {
-			result.progress.recentOutput.splice(50);
-		}
-	}
-
-	if (artifactPathsResult && options.artifactConfig?.enabled !== false) {
-		result.artifactPaths = artifactPathsResult;
-		if (options.artifactConfig?.includeOutput !== false) {
-			writeArtifact(artifactPathsResult.outputPath, artifactOutputByResult.get(result) ?? result.finalOutput ?? "");
-		}
-		if (options.artifactConfig?.includeMetadata !== false) {
-			writeMetadata(artifactPathsResult.metadataPath, {
-				runId: options.runId,
-				agent: agentName,
-				task,
-				exitCode: result.exitCode,
-				usage: result.usage,
-				model: result.model,
-				attemptedModels: result.attemptedModels,
-				modelAttempts: result.modelAttempts,
-				durationMs: result.progressSummary?.durationMs,
-				toolCount: result.progressSummary?.toolCount,
-				error: result.error,
-				skills: result.skills,
-				skillsWarning: result.skillsWarning,
-				timestamp: Date.now(),
-			});
+	let postLoopError: unknown;
+	try {
+		result.usage = aggregateUsage;
+		result.attemptedModels = attemptedModels.length > 0 ? attemptedModels : undefined;
+		result.modelAttempts = modelAttempts.length > 0 ? modelAttempts : undefined;
+		result.progressSummary = {
+			toolCount: totalToolCount,
+			tokens: aggregateUsage.input + aggregateUsage.output,
+			durationMs: totalDurationMs,
+		};
+		if (attemptNotes.length > 0 && result.progress) {
+			result.progress.recentOutput = [...attemptNotes, ...result.progress.recentOutput];
+			if (result.progress.recentOutput.length > 50) {
+				result.progress.recentOutput.splice(50);
+			}
 		}
 
-		if (options.maxOutput) {
+		if (artifactPathsResult && options.artifactConfig?.enabled !== false) {
+			result.artifactPaths = artifactPathsResult;
+			if (options.artifactConfig?.includeOutput !== false) {
+				writeArtifact(artifactPathsResult.outputPath, artifactOutputByResult.get(result) ?? result.finalOutput ?? "");
+			}
+			if (options.artifactConfig?.includeMetadata !== false) {
+				writeMetadata(artifactPathsResult.metadataPath, {
+					runId: options.runId,
+					agent: agentName,
+					task,
+					exitCode: result.exitCode,
+					usage: result.usage,
+					model: result.model,
+					attemptedModels: result.attemptedModels,
+					modelAttempts: result.modelAttempts,
+					durationMs: result.progressSummary?.durationMs,
+					toolCount: result.progressSummary?.toolCount,
+					error: result.error,
+					skills: result.skills,
+					skillsWarning: result.skillsWarning,
+					timestamp: Date.now(),
+				});
+			}
+
+			if (options.maxOutput) {
+				const config = { ...DEFAULT_MAX_OUTPUT, ...options.maxOutput };
+				const truncationResult = truncateOutput(result.finalOutput ?? "", config, artifactPathsResult.outputPath);
+				if (truncationResult.truncated) result.truncation = truncationResult;
+			}
+		} else if (options.maxOutput) {
 			const config = { ...DEFAULT_MAX_OUTPUT, ...options.maxOutput };
-			const truncationResult = truncateOutput(result.finalOutput ?? "", config, artifactPathsResult.outputPath);
+			const truncationResult = truncateOutput(result.finalOutput ?? "", config);
 			if (truncationResult.truncated) result.truncation = truncationResult;
 		}
-	} else if (options.maxOutput) {
-		const config = { ...DEFAULT_MAX_OUTPUT, ...options.maxOutput };
-		const truncationResult = truncateOutput(result.finalOutput ?? "", config);
-		if (truncationResult.truncated) result.truncation = truncationResult;
-	}
 
-	if (options.sessionFile && (existsSync(options.sessionFile) || result.messages?.length)) {
-		result.sessionFile = options.sessionFile;
-	} else if (shareEnabled && options.sessionDir) {
-		const sessionFile = findLatestSessionFile(options.sessionDir);
-		if (sessionFile) result.sessionFile = sessionFile;
-	}
-
-	result.acceptance = await evaluateAcceptance({
-		acceptance: effectiveAcceptance,
-		output: acceptanceOutputByResult.get(result) ?? result.finalOutput ?? "",
-		cwd: options.cwd ?? runtimeCwd,
-	});
-	const acceptanceFailure = acceptanceFailureMessage(result.acceptance);
-	stripAcceptanceReportsFromMessages(result.messages);
-	if (acceptanceFailure && result.acceptance.explicit && result.exitCode === 0 && !result.interrupted) {
-		result.exitCode = 1;
-		result.error = result.error ? `${result.error}\n${acceptanceFailure}` : acceptanceFailure;
-		if (result.progress) {
-			result.progress.status = "failed";
-			result.progress.error = result.error;
+		if (options.sessionFile && (existsSync(options.sessionFile) || result.messages?.length)) {
+			result.sessionFile = options.sessionFile;
+		} else if (shareEnabled && options.sessionDir) {
+			const sessionFile = findLatestSessionFile(options.sessionDir);
+			if (sessionFile) result.sessionFile = sessionFile;
 		}
+
+		result.acceptance = await evaluateAcceptance({
+			acceptance: effectiveAcceptance,
+			output: acceptanceOutputByResult.get(result) ?? result.finalOutput ?? "",
+			cwd: options.cwd ?? runtimeCwd,
+		});
+		const acceptanceFailure = acceptanceFailureMessage(result.acceptance);
+		stripAcceptanceReportsFromMessages(result.messages);
+		if (acceptanceFailure && result.acceptance.explicit && result.exitCode === 0 && !result.interrupted) {
+			result.exitCode = 1;
+			result.error = result.error ? `${result.error}\n${acceptanceFailure}` : acceptanceFailure;
+			if (result.progress) {
+				result.progress.status = "failed";
+				result.progress.error = result.error;
+			}
+		}
+	} catch (error) {
+		postLoopError = error;
 	}
 
 	if (externalOwner) {
-		const delivered = result.exitCode === 0 && !result.error && !result.interrupted;
+		const delivered = !postLoopError && result.exitCode === 0 && !result.error && !result.interrupted;
 		try {
 			const surface = await externalOwner.finish(delivered ? "delivered" : "retained");
 			result.executionSurface = surface;
@@ -881,6 +886,16 @@ export async function runSync(
 				: safeExternalFailure("finish");
 			result.executionSurface = { handle: externalOwner.surface, retained: true };
 		}
+		if (postLoopError) {
+			result.exitCode = 1;
+			const safeMessage = safeExternalFailure("cleanup");
+			result.error = result.error
+				? `${result.error}\n${safeMessage}`
+				: safeMessage;
+			result.executionSurface ??= { handle: externalOwner.surface, retained: true };
+		}
+	} else if (postLoopError) {
+		throw postLoopError;
 	}
 
 	return result;

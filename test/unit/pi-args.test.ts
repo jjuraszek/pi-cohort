@@ -385,6 +385,36 @@ describe("buildPiArgs system prompt mode wiring", () => {
 
 		assert.ok(args.includes("--system-prompt"));
 	});
+
+	it("removes its allocated temp directory when a prompt write fails", () => {
+		let allocatedDir: string | undefined;
+		let cleanupCalls = 0;
+		const fileSystem = {
+			mkdtempSync(prefix: string) {
+				allocatedDir = fs.mkdtempSync(prefix);
+				return allocatedDir;
+			},
+			writeFileSync() {
+				throw new Error("injected prompt write failure");
+			},
+			rmSync(target: fs.PathLike, options?: fs.RmDirOptions) {
+				cleanupCalls++;
+				fs.rmSync(target, options);
+			},
+		};
+
+		assert.throws(() => buildPiArgs({
+			baseArgs: ["-p"],
+			task: "hello",
+			sessionEnabled: false,
+			systemPrompt: "You are a worker",
+			inheritProjectContext: false,
+			inheritSkills: false,
+		}, fileSystem), /injected prompt write failure/);
+		assert.ok(allocatedDir, "the test must exercise the temp-directory allocation path");
+		assert.equal(cleanupCalls, 1);
+		assert.equal(fs.existsSync(allocatedDir), false);
+	});
 });
 
 describe("buildPiArgs forwarded flags", () => {

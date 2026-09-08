@@ -113,7 +113,15 @@ const createSubagentExecutor = executorMod?.createSubagentExecutor;
 const reconcileAsyncRun = reconcilerMod?.reconcileAsyncRun;
 
 function git(cwd: string, args: string[]): string {
-	const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf-8" });
+	const result = spawnSync("git", ["-C", cwd, ...args], {
+		encoding: "utf-8",
+		env: {
+			...process.env,
+			GIT_CONFIG_COUNT: "1",
+			GIT_CONFIG_KEY_0: "commit.gpgsign",
+			GIT_CONFIG_VALUE_0: "false",
+		},
+	});
 	if (result.status !== 0) {
 		throw new Error(result.stderr.trim() || result.stdout.trim() || `git ${args.join(" ")} failed`);
 	}

@@ -9,11 +9,11 @@ import { replayExecutionSession, type ReplayedSession } from "../../src/executio
 import type { SessionWatcher } from "../../src/execution-backend/session-watcher.ts";
 import type { ExecutionBackend, ExecutionSurfaceHandle } from "../../src/execution-backend/types.ts";
 import {
-	createExternalForegroundExecution,
+	createExternalExecution,
 	type ExternalAttemptRequest,
-	type ExternalForegroundExecutionOptions,
-	type ExternalForegroundExecutionDependencies,
-} from "../../src/runs/foreground/external-execution.ts";
+	type ExternalExecutionOptions,
+	type ExternalExecutionDependencies,
+} from "../../src/runs/shared/external-execution.ts";
 
 const identity = { runId: "run", childId: "child", attemptId: "attempt" };
 const handle: ExecutionSurfaceHandle = { protocolVersion: 1, backend: "fake", surface: { kind: "pane", id: "p1" }, display: { label: "fake pane", hint: "safe" }, data: "SUCCESS fake terminal text" };
@@ -105,7 +105,7 @@ function harness() {
 		async close() { calls.push("control-close"); },
 	};
 	const watcher: SessionWatcher = { terminal: terminal.promise, close() { calls.push("watcher-close"); } };
-	const dependencies: ExternalForegroundExecutionDependencies = {
+	const dependencies: ExternalExecutionDependencies = {
 		async createController() { calls.push("controller"); return controller; },
 		readyDeadline: promise => promise,
 		async createControl() { calls.push("control"); return control; },
@@ -121,8 +121,8 @@ function harness() {
 	};
 }
 
-async function ownerFrom(fake: ReturnType<typeof harness>, optionOverrides?: Partial<Pick<ExternalForegroundExecutionOptions, "controlTimeoutMs">>) {
-	return createExternalForegroundExecution({ backend: fake.backend, runId: "run", childId: "child", cwd: "/work", signal: new AbortController().signal, ...optionOverrides }, fake.dependencies);
+async function ownerFrom(fake: ReturnType<typeof harness>, optionOverrides?: Partial<Pick<ExternalExecutionOptions, "controlTimeoutMs">>) {
+	return createExternalExecution({ backend: fake.backend, runId: "run", childId: "child", cwd: "/work", signal: new AbortController().signal, ...optionOverrides }, fake.dependencies);
 }
 
 describe("external foreground execution owner", () => {
@@ -206,7 +206,7 @@ describe("external foreground execution owner", () => {
 		try {
 			const fake = harness();
 			const { ensureSessionFile: _ensure, ...dependencies } = fake.dependencies;
-			const owner = await createExternalForegroundExecution({ backend: fake.backend, runId: "run", childId: "child", cwd: "/work", signal: new AbortController().signal }, dependencies);
+			const owner = await createExternalExecution({ backend: fake.backend, runId: "run", childId: "child", cwd: "/work", signal: new AbortController().signal }, dependencies);
 			fake.ready.resolve();
 			const sessionFile = path.join(directory, "session.jsonl");
 			const pending = owner.runAttempt(request({ sessionFile }));
@@ -219,7 +219,7 @@ describe("external foreground execution owner", () => {
 
 			const second = harness();
 			const { ensureSessionFile: _secondEnsure, ...secondDependencies } = second.dependencies;
-			const secondOwner = await createExternalForegroundExecution({ backend: second.backend, runId: "run", childId: "child", cwd: "/work", signal: new AbortController().signal }, secondDependencies);
+			const secondOwner = await createExternalExecution({ backend: second.backend, runId: "run", childId: "child", cwd: "/work", signal: new AbortController().signal }, secondDependencies);
 			second.ready.resolve();
 			const link = path.join(directory, "link.jsonl");
 			fs.symlinkSync(sessionFile, link);
@@ -229,7 +229,7 @@ describe("external foreground execution owner", () => {
 			if (process.platform !== "win32") {
 				const third = harness();
 				const { ensureSessionFile: _thirdEnsure, ...thirdDependencies } = third.dependencies;
-				const thirdOwner = await createExternalForegroundExecution({ backend: third.backend, runId: "run", childId: "child", cwd: "/work", signal: new AbortController().signal }, thirdDependencies);
+				const thirdOwner = await createExternalExecution({ backend: third.backend, runId: "run", childId: "child", cwd: "/work", signal: new AbortController().signal }, thirdDependencies);
 				third.ready.resolve();
 				fs.chmodSync(sessionFile, 0o644);
 				await assert.rejects(thirdOwner.runAttempt(request({ sessionFile })), /owner-only/);
@@ -364,7 +364,7 @@ describe("external foreground execution owner", () => {
 		try {
 			const fake = harness();
 			delete fake.dependencies.readyDeadline;
-			const owner = await createExternalForegroundExecution({ backend: fake.backend, runId: "run", childId: "child", cwd: "/work", signal: new AbortController().signal, readyTimeoutMs: 100 }, fake.dependencies);
+			const owner = await createExternalExecution({ backend: fake.backend, runId: "run", childId: "child", cwd: "/work", signal: new AbortController().signal, readyTimeoutMs: 100 }, fake.dependencies);
 			let settled = false;
 			void owner.ready.catch(() => { settled = true; });
 			await new Promise(r => setTimeout(r, 10));

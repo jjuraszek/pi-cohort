@@ -12,10 +12,10 @@ import {
 } from "../../execution-backend/control-channel.ts";
 import { PI_COHORT_REPORT_CONFIG, createExclusiveSessionFile, type ExecutionReportIdentity } from "../../execution-backend/reporting-protocol.ts";
 import { replayExecutionSession, type ReplayedSession } from "../../execution-backend/session-replay.ts";
-import { createSessionWatcher, type SessionWatcher } from "../../execution-backend/session-watcher.ts";
+import { createSessionWatcher, type OnNewSessionMessage, type SessionWatcher } from "../../execution-backend/session-watcher.ts";
 import type { ExecutionBackend, ExecutionSurfaceHandle } from "../../execution-backend/types.ts";
 
-export interface ExternalForegroundExecutionOptions {
+export interface ExternalExecutionOptions {
 	readonly backend: ExecutionBackend;
 	readonly runId: string;
 	readonly childId: string;
@@ -35,6 +35,8 @@ export interface ExternalAttemptRequest {
 	readonly sessionFile: string;
 	readonly signal?: AbortSignal;
 	readonly interruptSignal?: AbortSignal;
+	/** Optional: called for each newly accepted session message as it arrives, before the terminal result. */
+	readonly onNewSessionMessage?: OnNewSessionMessage;
 }
 
 export interface ExternalAttemptUsage {
@@ -60,13 +62,28 @@ export interface ExternalAttemptResult {
 	readonly interrupted: boolean;
 }
 
+export type ExternalExecutionDiagnosticCode = "result_missing";
+
+class ExternalExecutionDiagnosticError extends Error {
+	readonly code: ExternalExecutionDiagnosticCode;
+
+	constructor(code: ExternalExecutionDiagnosticCode) {
+		super(code);
+		this.code = code;
+	}
+}
+
+export function externalExecutionDiagnosticCode(error: unknown): ExternalExecutionDiagnosticCode | undefined {
+	return error instanceof ExternalExecutionDiagnosticError ? error.code : undefined;
+}
+
 export type ExternalExecutionDisposition = "delivered" | "retained";
 export interface ExternalExecutionFinishResult {
 	readonly handle: ExecutionSurfaceHandle;
 	readonly retained: boolean;
 }
 
-export interface ExternalForegroundExecution {
+export interface ExternalExecution {
 	readonly surface: ExecutionSurfaceHandle;
 	readonly ready: Promise<void>;
 	runAttempt(request: ExternalAttemptRequest): Promise<ExternalAttemptResult>;
@@ -78,10 +95,10 @@ interface WatchDependencies {
 	readFile(sessionFile: string): Promise<string>;
 }
 
-export interface ExternalForegroundExecutionDependencies {
+export interface ExternalExecutionDependencies {
 	readonly createController?: (options: ChildHostControllerOptions) => Promise<ChildHostController>;
 	readonly createControl?: (identity: ExecutionReportIdentity) => Promise<ExecutionControlChannel>;
-	readonly createWatcher?: (sessionFile: string, identity: ExecutionReportIdentity) => SessionWatcher;
+	readonly createWatcher?: (sessionFile: string, identity: ExecutionReportIdentity, onNewMessage?: OnNewSessionMessage) => SessionWatcher;
 	readonly readSession?: (sessionFile: string) => Promise<string>;
 	readonly ensureSessionFile?: (sessionFile: string) => void;
 	readonly readyDeadline?: (ready: Promise<void>, timeoutMs: number, safeLabel: string) => Promise<void>;
@@ -150,7 +167,7 @@ function proveControl(replayed: ReplayedSession, action: "abort" | "shutdown"): 
 }
 
 function mapResult(request: ExternalAttemptRequest, replayed: ReplayedSession, exit: ChildHostExit): ExternalAttemptResult {
-	if (!replayed.result) throw new Error("result_missing");
+	if (!replayed.result) throw new ExternalExecutionDiagnosticError("result_missing");
 	if (replayed.result.outcome === "success" && (exit.status !== 0 || exit.signal !== null)) throw new Error("successful durable result conflicts with child exit");
 	const messages = replayed.messages.filter((message): message is Message => message.role === "user" || message.role === "assistant" || message.role === "toolResult");
 	const aggregate = usageFrom(messages);
@@ -213,10 +230,10 @@ async function finishWithCleanup(primary: () => Promise<void>, cleanup: () => Pr
 	if (primaryError) throw primaryError;
 }
 
-export async function createExternalForegroundExecution(
-	options: ExternalForegroundExecutionOptions,
-	dependencies: ExternalForegroundExecutionDependencies = {},
-): Promise<ExternalForegroundExecution> {
+export async function createExternalExecution(
+	options: ExternalExecutionOptions,
+	dependencies: ExternalExecutionDependencies = {},
+): Promise<ExternalExecution> {
 	const controller = await (dependencies.createController ?? createChildHostController)(options);
 	const deadline = dependencies.readyDeadline ?? withReadyDeadline;
 	const controlTimeoutMs = options.controlTimeoutMs ?? 30_000;
@@ -225,7 +242,7 @@ export async function createExternalForegroundExecution(
 	void ready.catch(() => {});
 	const watchDependencies = defaultWatchDependencies();
 	const createControl = dependencies.createControl ?? (identity => createExecutionControlChannel(identity));
-	const createWatcher = dependencies.createWatcher ?? ((sessionFile, identity) => createSessionWatcher(sessionFile, identity, watchDependencies));
+	const createWatcher = dependencies.createWatcher ?? ((sessionFile, identity, onNewMessage) => createSessionWatcher(sessionFile, identity, watchDependencies, onNewMessage));
 	const readSession = dependencies.readSession ?? (sessionFile => fs.promises.readFile(sessionFile, "utf8"));
 	const ensureSessionFile = dependencies.ensureSessionFile ?? ensureTrustedSessionFile;
 	const attemptedIds = new Set<string>();
@@ -251,7 +268,7 @@ export async function createExternalForegroundExecution(
 			ensureSessionFile(request.sessionFile);
 			const identity = { runId: options.runId, childId: options.childId, attemptId: request.attemptId };
 			control = await createControl(identity);
-			watcher = createWatcher(request.sessionFile, identity);
+			watcher = createWatcher(request.sessionFile, identity, request.onNewSessionMessage);
 			const environment = { ...request.environment, [PI_COHORT_REPORT_CONFIG]: control.configPath };
 			const exitPromise = controller.startAttempt({ attemptId: request.attemptId, command: request.command, args: [...request.args], cwd: request.cwd, environment });
 			const first = await Promise.race([
@@ -279,7 +296,7 @@ export async function createExternalForegroundExecution(
 			} else {
 				exit = first.exit;
 				replayed = replayExecutionSession(await readSession(request.sessionFile), identity);
-				if (!replayed.result) throw new Error("result_missing");
+				if (!replayed.result) throw new ExternalExecutionDiagnosticError("result_missing");
 			}
 			return mapResult(request, replayed, exit);
 		} finally {

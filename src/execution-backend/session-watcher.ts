@@ -17,6 +17,13 @@ export interface SessionWatcher {
 	close(): void;
 }
 
+/**
+ * Callback invoked for each newly accepted session message entry as it is observed
+ * during file reads. Fired at entry granularity, deduplicated across repeated reads
+ * and resumed history. Never called after the terminal result has settled.
+ */
+export type OnNewSessionMessage = (message: ReplayedSession["messages"][number]) => void;
+
 function asError(error: unknown): Error {
 	return error instanceof Error ? error : new Error(String(error));
 }
@@ -29,6 +36,7 @@ export function createSessionWatcher(
 	sessionFile: string,
 	identity: ExecutionReportIdentity,
 	dependencies: SessionWatcherDependencies,
+	onNewMessage?: OnNewSessionMessage,
 ): SessionWatcher {
 	let closed = false;
 	let settled = false;
@@ -42,6 +50,7 @@ export function createSessionWatcher(
 
 	let pending = false;
 	let dirty = false;
+	let seenMessageCount = 0;
 
 	const settleError = (error: Error): void => {
 		if (settled) return;
@@ -80,6 +89,12 @@ export function createSessionWatcher(
 				} catch (error) {
 					settleError(asError(error));
 					return;
+				}
+				if (onNewMessage) {
+					for (let i = seenMessageCount; i < replayed.pendingMessages.length; i++) {
+						onNewMessage(replayed.pendingMessages[i]);
+					}
+					seenMessageCount = replayed.pendingMessages.length;
 				}
 				if (replayed.result) {
 					settleResult(replayed as ReplayedSession & { result: NonNullable<ReplayedSession["result"]> });

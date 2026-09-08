@@ -1,6 +1,6 @@
 /**
  * Bridges one external foreground attempt (an already-created
- * `ExternalForegroundExecution` owner) into the same `SingleResult` shape
+ * `ExternalExecution` owner) into the same `SingleResult` shape
  * native attempts produce, reusing the shared init/finalize helpers from
  * `execution.ts`.
  */
@@ -13,7 +13,7 @@ import { getSubagentDepthEnv } from "../../shared/types.ts";
 import { buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
 import { getPiSpawnCommand } from "../shared/pi-spawn.ts";
 import { isMutatingTool } from "../shared/long-running-guard.ts";
-import type { ExternalAttemptResult, ExternalForegroundExecution } from "./external-execution.ts";
+import type { ExternalAttemptResult, ExternalExecution } from "../shared/external-execution.ts";
 import { type AttemptSharedInit, finalizeSingleAttempt, initializeAttempt } from "./attempt-finalization.ts";
 
 const REPORTING_EXTENSION_PATH = path.join(
@@ -27,7 +27,7 @@ const REPORTING_EXTENSION_PATH = path.join(
 export type ExternalSingleAttemptShared = AttemptSharedInit;
 
 export interface RunExternalSingleAttemptInput {
-	owner: ExternalForegroundExecution;
+	owner: ExternalExecution;
 	attemptId: string;
 	runtimeCwd: string;
 	agent: AgentConfig;

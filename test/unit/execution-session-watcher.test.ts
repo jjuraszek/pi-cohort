@@ -80,6 +80,24 @@ function createFakeFileSystem(initialContent = "") {
 	};
 }
 
+function makeAssistantMessage(overrides: Record<string, unknown> = {}) {
+	return {
+		role: "assistant" as const,
+		content: [{ type: "text" as const, text: "ok" }],
+		api: "anthropic",
+		provider: "anthropic",
+		model: "claude-3-5-sonnet",
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		stopReason: "stop" as const,
+		timestamp: 1700000000000,
+		...overrides,
+	};
+}
+
+function makeMessageLine(id: string, message: unknown) {
+	return `${JSON.stringify({ type: "message", id, parentId: null, message })}\n`;
+}
+
 describe("execution session watcher", () => {
 	it("arms the watcher before the initial replay", () => {
 		const fake = createFakeFileSystem("");
@@ -203,6 +221,67 @@ describe("execution session watcher", () => {
 		const watcher = createSessionWatcher("/session.jsonl", identity, fake.dependencies);
 		watcher.close();
 		await assert.rejects(watcher.terminal, /session watcher closed/);
+	});
+
+	it("calls onNewMessage for each newly observed session message, deduplicated across reads", async () => {
+		const assistantMsg = makeAssistantMessage();
+		const msgLine = makeMessageLine("m1", assistantMsg);
+		// Session with just ready and a message (no result yet).
+		const fake = createFakeFileSystem(readyLine(1) + msgLine);
+		const observed: unknown[] = [];
+		const watcher = createSessionWatcher("/session.jsonl", identity, fake.dependencies, (msg) => observed.push(msg));
+		// Trigger reads without new entries (coalesce/dedup check).
+		fake.fire();
+		fake.fire();
+		// Add settled + result to complete the session (sequences must be consecutive).
+		fake.setContent(readyLine(1) + msgLine + settledLine(2) + resultLine(3));
+		fake.fire();
+		await watcher.terminal;
+		watcher.close();
+		// Message should appear exactly once despite multiple reads.
+		assert.equal(observed.length, 1);
+		assert.deepEqual(observed[0], assistantMsg);
+	});
+
+	it("forwards each message in order and does not replay old entries after a new read", async () => {
+		const msg1 = makeAssistantMessage({ content: [{ type: "text" as const, text: "first" }] });
+		const msg2 = { role: "user" as const, content: "second", timestamp: 1700000001000 };
+		const line1 = makeMessageLine("m1", msg1);
+		const line2 = makeMessageLine("m2", msg2);
+		const fake = createFakeFileSystem(readyLine(1));
+		const observed: unknown[] = [];
+		const watcher = createSessionWatcher("/session.jsonl", identity, fake.dependencies, (msg) => observed.push(msg));
+		const pending = watcher.terminal;
+		// Append first message only -- no result yet.
+		fake.setContent(readyLine(1) + line1);
+		fake.fire();
+		await new Promise(resolve => setTimeout(resolve, 10));
+		assert.equal(observed.length, 1);
+		// Append second message plus settled+result to complete the session.
+		fake.setContent(readyLine(1) + line1 + line2 + settledLine(2) + resultLine(3));
+		fake.fire();
+		await pending;
+		watcher.close();
+		assert.equal(observed.length, 2);
+		assert.deepEqual(observed[0], msg1);
+		assert.deepEqual(observed[1], msg2);
+	});
+
+	it("does not call onNewMessage after terminal settles", async () => {
+		const msg = makeAssistantMessage();
+		const msgLine = makeMessageLine("m1", msg);
+		// Complete session from the start.
+		const fake = createFakeFileSystem(readyLine(1) + msgLine + settledLine(2) + resultLine(3));
+		const observed: unknown[] = [];
+		const watcher = createSessionWatcher("/session.jsonl", identity, fake.dependencies, (msg) => observed.push(msg));
+		await watcher.terminal;
+		const countAfterTerminal = observed.length;
+		// A late fire should not emit again.
+		fake.setContent(readyLine(1) + msgLine + settledLine(2) + resultLine(3));
+		fake.fire();
+		await new Promise(resolve => setTimeout(resolve, 10));
+		watcher.close();
+		assert.equal(observed.length, countAfterTerminal);
 	});
 
 	it("never registers a timer", () => {

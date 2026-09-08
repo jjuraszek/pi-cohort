@@ -6,7 +6,14 @@ import { EXECUTION_REPORT_TYPE, type ExecutionReport, type ExecutionReportIdenti
 export interface ReplayedSession {
 	readonly reports: readonly ExecutionReport[];
 	readonly controls: readonly (ExecutionReport & { readonly kind: "control" })[];
+	/** Messages reconstructed from the terminal branch (only present when `result` is set). */
 	readonly messages: readonly SessionMessageEntry["message"][];
+	/**
+	 * All parsed message entries observed so far, in document order.
+	 * Available even before the terminal result arrives.
+	 * Used for incremental observation/forwarding of session activity.
+	 */
+	readonly pendingMessages: readonly SessionMessageEntry["message"][];
 	readonly result?: ExecutionReport & { readonly kind: "result" };
 	readonly pendingResult: boolean;
 	readonly incompleteTrailingLine: boolean;
@@ -121,9 +128,12 @@ export function replayExecutionSession(content: string, identity: ExecutionRepor
 		resultEntry = entry;
 	}
 	const messages = result && resultEntry ? reconstructBranch(byId, resultEntry) : [];
+	const pendingMessages = entries
+		.filter((e): e is SessionEntry & { message: NonNullable<SessionEntry["message"]> } => e.type === "message" && e.message !== undefined)
+		.map((e) => e.message);
 	const reports = reportedEntries.map(({ report }) => report);
 	const controls = reports.filter((report): report is ExecutionReport & { kind: "control" } => report.kind === "control");
-	return { reports, controls, messages, result, pendingResult: settled && !result, incompleteTrailingLine: trailing.length > 0 };
+	return { reports, controls, messages, pendingMessages, result, pendingResult: settled && !result, incompleteTrailingLine: trailing.length > 0 };
 }
 
 function reconstructBranch(byId: ReadonlyMap<string, SessionEntry>, result: SessionEntry): readonly SessionMessageEntry["message"][] {
