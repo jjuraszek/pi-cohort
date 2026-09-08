@@ -77,6 +77,9 @@ import {
 import { resolveEffectiveThinking } from "../../shared/model-info.ts";
 import { writeInitialProgressFile } from "../../shared/settings.ts";
 import { acceptanceFailureMessage, aggregateAcceptanceReport, evaluateAcceptance, formatAcceptancePrompt, stripAcceptanceReport } from "../shared/acceptance.ts";
+import { selectConfiguredExecutionBackend } from "../../execution-backend/configured-selection.ts";
+import { createDetachedExecutionBackendCoordinator, decodeDetachedExecutionBackendConfig, ExecutionBackendReloadError, type DetachedExecutionBackendCoordinator } from "../../execution-backend/reload.ts";
+import type { DetachedExecutionBackendConfig } from "../../execution-backend/types.ts";
 
 interface SubagentRunConfig {
 	id: string;
@@ -104,6 +107,7 @@ interface SubagentRunConfig {
 	workflowGraph?: WorkflowGraphSnapshot;
 	nestedRoute?: NestedRouteInfo;
 	nestedSelf?: { parentRunId: string; parentStepIndex?: number; depth: number; path?: Array<{ runId: string; stepIndex?: number; agent?: string }> };
+	executionBackends?: DetachedExecutionBackendConfig;
 }
 
 interface StepResult {
@@ -575,6 +579,8 @@ interface SingleStepContext {
 	nestedRoute?: NestedRouteInfo;
 	onAttemptStart?: (attempt: { model?: string; thinking?: string }) => void;
 	onChildEvent?: (event: ChildEvent) => void;
+	executionBackendCoordinator?: DetachedExecutionBackendCoordinator;
+	executionBackendConfig?: DetachedExecutionBackendConfig;
 }
 
 /** Run a single pi agent step, returning output and metadata */
@@ -598,6 +604,24 @@ async function runSingleStep(
 	structuredOutputSchemaPath?: string;
 	acceptance?: import("../../shared/types.ts").AcceptanceLedger;
 }> {
+	try {
+		await selectConfiguredExecutionBackend({
+			cwd: step.cwd ?? ctx.cwd,
+			userConfig: { executionBackend: ctx.executionBackendConfig?.userPreference },
+			preparation: ctx.executionBackendCoordinator,
+		});
+	} catch (error) {
+		const message = error instanceof ExecutionBackendReloadError
+			? error.message
+			: "Execution backend selection failed.";
+		return {
+			agent: step.agent,
+			output: message,
+			exitCode: 1,
+			error: message,
+		};
+	}
+
 	const effectiveStructuredOutput = step.structuredOutput ?? (step.structuredOutputSchema
 		? createStructuredOutputRuntime(step.structuredOutputSchema, path.join(path.dirname(ctx.outputFile), "structured-output"))
 		: undefined);
@@ -961,6 +985,11 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	const overallStartTime = Date.now();
 	const shareEnabled = config.share === true;
 	const asyncDir = config.asyncDir;
+	const executionBackendConfig = config.executionBackends ?? {
+		protocolVersion: 1 as const,
+		registrations: [],
+	};
+	const executionBackendCoordinator = createDetachedExecutionBackendCoordinator(executionBackendConfig);
 	Object.assign(process.env, runDirEnv(asyncDir));
 	const statusPath = path.join(asyncDir, "status.json");
 	const eventsPath = path.join(asyncDir, "events.jsonl");
@@ -1596,6 +1625,8 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					piPackageRoot: config.piPackageRoot,
 					piArgv1: config.piArgv1,
 					forwardedFlags: config.forwardedFlags,
+					executionBackendCoordinator,
+					executionBackendConfig,
 					nestedRoute: config.nestedRoute,
 					registerInterrupt: (interrupt) => {
 						activeChildInterrupt = interrupt;
@@ -1841,6 +1872,8 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 							piPackageRoot: config.piPackageRoot,
 							piArgv1: config.piArgv1,
 							forwardedFlags: config.forwardedFlags,
+							executionBackendCoordinator,
+							executionBackendConfig,
 							nestedRoute: config.nestedRoute,
 							registerInterrupt: (interrupt) => {
 								activeChildInterrupt = interrupt;
@@ -2006,6 +2039,8 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				piPackageRoot: config.piPackageRoot,
 				piArgv1: config.piArgv1,
 				forwardedFlags: config.forwardedFlags,
+				executionBackendCoordinator,
+				executionBackendConfig,
 				nestedRoute: config.nestedRoute,
 				registerInterrupt: (interrupt) => {
 					activeChildInterrupt = interrupt;
@@ -2269,6 +2304,7 @@ if (configArg) {
 	try {
 		const configJson = fs.readFileSync(configArg, "utf-8");
 		const config = JSON.parse(configJson) as SubagentRunConfig;
+		config.executionBackends = decodeDetachedExecutionBackendConfig(config.executionBackends);
 		try {
 			fs.unlinkSync(configArg);
 		} catch {
@@ -2291,6 +2327,7 @@ if (configArg) {
 	process.stdin.on("end", () => {
 		try {
 			const config = JSON.parse(input) as SubagentRunConfig;
+			config.executionBackends = decodeDetachedExecutionBackendConfig(config.executionBackends);
 			runSubagent(config).catch((runErr) => {
 				console.error("Subagent runner error:", runErr);
 				process.exit(1);

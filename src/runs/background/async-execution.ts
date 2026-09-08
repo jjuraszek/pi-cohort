@@ -25,6 +25,8 @@ import { buildWorkflowGraphSnapshot } from "../shared/workflow-graph.ts";
 import { ChainOutputValidationError, validateChainOutputBindings } from "../shared/chain-outputs.ts";
 import { createStructuredOutputRuntime } from "../shared/structured-output.ts";
 import { resolveEffectiveAcceptance } from "../shared/acceptance.ts";
+import { executionBackendRegistrations } from "../../execution-backend/registry.ts";
+import type { DetachedExecutionBackendConfig } from "../../execution-backend/types.ts";
 import {
 	type AcceptanceInput,
 	type ArtifactConfig,
@@ -49,6 +51,7 @@ interface AsyncExecutionContext {
 	cwd: string;
 	currentSessionId: string;
 	currentModelProvider?: string;
+	executionBackend?: string;
 }
 
 interface AsyncChainParams {
@@ -74,6 +77,14 @@ interface AsyncChainParams {
 	nestedRoute?: NestedRouteInfo;
 	forwardedFlags?: string[];
 	acceptance?: AcceptanceInput;
+}
+
+function detachedExecutionBackends(userPreference: string | undefined): DetachedExecutionBackendConfig {
+	return {
+		protocolVersion: 1,
+		...(userPreference === undefined ? {} : { userPreference }),
+		registrations: executionBackendRegistrations(),
+	};
 }
 
 interface AsyncSingleParams {
@@ -484,6 +495,7 @@ export function executeAsyncChain(
 				worktreeSetupHookTimeoutMs,
 				controlConfig,
 				resultMode,
+				executionBackends: detachedExecutionBackends(ctx.executionBackend),
 				dynamicFanoutMaxItems: params.dynamicFanoutMaxItems,
 				workflowGraph,
 				nestedRoute: nestedRoute ?? inheritedNestedRoute,
@@ -715,6 +727,7 @@ export function executeAsyncSingle(
 				worktreeSetupHookTimeoutMs,
 				controlConfig,
 				resultMode: "single",
+				executionBackends: detachedExecutionBackends(ctx.executionBackend),
 				nestedRoute: nestedRoute ?? inheritedNestedRoute,
 				nestedSelf: inheritedNestedRoute && nestedAddress ? {
 					parentRunId: nestedAddress.parentRunId,

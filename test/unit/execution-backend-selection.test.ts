@@ -24,6 +24,21 @@ function createFakeBackend(
 }
 
 describe("execution backend selection", () => {
+	it("prepares detached registrations after non-native preference normalization", async () => {
+		let prepared: string | undefined;
+		const preparation = {
+			async prepare(preference: string) {
+				prepared = preference;
+			},
+		};
+
+		await selectExecutionBackend(" native ", preparation);
+		assert.equal(prepared, undefined);
+
+		await selectExecutionBackend(" auto ", preparation);
+		assert.equal(prepared, "auto");
+	});
+
 	const disposers: Array<() => void> = [];
 
 	afterEach(() => {

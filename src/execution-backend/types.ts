@@ -82,3 +82,34 @@ export interface ExecutionBackend {
 	reattach(handle: ExecutionSurfaceHandle): Promise<ReattachResult>;
 	close(handle: ExecutionSurfaceHandle, reason: ExecutionBackendCloseReason): Promise<void>;
 }
+
+/**
+ * A serializable, package-anchored recipe for recreating a backend in a fresh
+ * coordinator process. It intentionally carries module identity only.
+ */
+export interface ExecutionBackendReloadDescriptor {
+	readonly protocolVersion: typeof EXECUTION_BACKEND_PROTOCOL_VERSION;
+	readonly packageJsonUrl: string;
+	readonly publicSubpath: "." | `./${string}`;
+	readonly factoryExport: string;
+}
+
+export type ExecutionBackendFactory =
+	() => ExecutionBackend | Promise<ExecutionBackend>;
+
+export interface ExecutionBackendRegistrationOptions {
+	readonly reload?: ExecutionBackendReloadDescriptor;
+}
+
+/** @internal Serialized only by the detached-runner boundary. */
+export interface ExecutionBackendRegistration {
+	readonly name: string;
+	readonly reload?: ExecutionBackendReloadDescriptor;
+}
+
+/** @internal Detached coordinator configuration transferred across the process boundary. */
+export interface DetachedExecutionBackendConfig {
+	readonly protocolVersion: typeof EXECUTION_BACKEND_PROTOCOL_VERSION;
+	readonly userPreference?: string;
+	readonly registrations: readonly ExecutionBackendRegistration[];
+}

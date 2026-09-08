@@ -15,8 +15,14 @@ export interface ExecutionBackendSelectionResult {
 	readonly diagnostics: readonly ExecutionBackendDiagnostic[];
 }
 
+/** @internal Supplies detached-process registrations before backend detection. */
+export interface ExecutionBackendPreparation {
+	prepare(preference: string): Promise<void>;
+}
+
 export async function selectExecutionBackend(
 	preference: unknown = "auto",
+	preparation?: ExecutionBackendPreparation,
 ): Promise<ExecutionBackendSelectionResult> {
 	if (typeof preference !== "string") {
 		throw new Error("Execution backend preference must be a string");
@@ -32,6 +38,7 @@ export async function selectExecutionBackend(
 		return { selection: { kind: "native" }, diagnostics: [] };
 	}
 
+	await preparation?.prepare(normalized);
 	const registered = executionBackends();
 	const diagnostics: ExecutionBackendDiagnostic[] = [];
 
