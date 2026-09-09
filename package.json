@@ -6,7 +6,8 @@
   "license": "MIT",
   "type": "module",
   "exports": {
-    "./execution-backend": "./src/execution-backend/index.ts"
+    "./execution-backend": "./src/execution-backend/index.ts",
+    "./execution-backend-testkit": "./src/execution-backend/testkit.ts"
   },
   "repository": {
     "type": "git",
