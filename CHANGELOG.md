@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- `release.sh <level>` now promotes the `## [Unreleased]` CHANGELOG section to the versioned heading and commits it with `package.json` in the single `Release X.Y.Z` commit; a missing or empty section fails the run. New CONFIG field `CHANGELOG_HEADING`.
+- Release skill: a user instruction naming the level is the approval - no proposal step or re-confirmation; bundled follow-ups (ticket close, preset sync) run after `verify`.
+- AGENTS.md rewritten to always-on essentials plus routing; shared core bumped to v3 (north-star communication regimes, authorization rule, docs-as-current-contract, third-party API lookup). Discovery implementation notes moved to `doc/agents-and-chains.md`.
+- Added `.pi/gauntlet-overrides.md` (`tracker: github`, release path, write-gate carve-out for user-named writes).
+
 ## [6.0.1] - 2026-09-07
 
 ### Fixed

@@ -62,7 +62,7 @@ Agent locations, lowest to highest priority:
 
 \* Project roots are discovered at every level from cwd up to the git root, not just the repo root - see the walk description below.
 
-Discovery reads each root **flat** (top-level `*.md` only), the two user roots are ordered `~/.agents < <PI_CODING_AGENT_DIR>/agents`, and `SKILL.md` is never loaded as an agent. See [AGENTS.md](../AGENTS.md).
+Discovery reads each root **flat** (top-level `*.md` only), the two user roots are ordered `~/.agents < <PI_CODING_AGENT_DIR>/agents`, and `SKILL.md` is never loaded as an agent.
 
 `<PI_CODING_AGENT_DIR>` defaults to `~/.pi/agent` when the env var is unset (see [`PI_CODING_AGENT_DIR`](configuration.md#pi_coding_agent_dir)). Setting it relocates the pi profile root but does **not** sandbox discovery - `~/.agents` is always scanned as the lowest-priority user layer regardless.
 
@@ -77,6 +77,8 @@ Discovery rules:
 - **Settings merge:** project `.pi/settings.json` `agentOverrides` and `disableBuiltins` merge across all walked levels, nearest wins. Override and create writes target the nearest project root.
 
 Use `agentScope: "user" | "project" | "both"` to control discovery; `both` is the default and project definitions win runtime-name collisions.
+
+Implementation (`src/agents/agents.ts`): `resolveUserAgentDirs()` / `preferredUserAgentDir()` order the user roots; `listFilesFlat` / `isAgentFileName` / `isChainFileName` do the flat read; `findGitRoot` (a `.git` file or directory, no subprocess) / `enumerateProjectLevels` / `dedupeByRealPath` / `readMergedProjectSubagentSettings` do the walk. `dedupeByRealPath` collapses symlinked `.pi` levels on the expanded read-dir list - a nearest `.pi` symlinked to a farther real `.pi` yields distinct level dirs but identical `<level>/.pi/agents` paths. `agentOverrides` merge is whole-object replacement per agent name across levels (disjoint fields do not compose). A builtin override's displayed `override.path` always points at the nearest project settings file even when the winning value came from a farther level - attribution is nearest-by-design.
 
 Builtin agents load at the lowest priority, so a user or project agent with the same name overrides them. They do not pin a provider model; they inherit your current Pi default model unless you set `subagents.agentOverrides.<name>.model`. `oracle` is an advisory reviewer that critiques direction and proposes an execution prompt without editing files. `worker` is the implementation agent for normal tasks and approved oracle handoffs.
 

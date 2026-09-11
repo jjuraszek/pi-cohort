@@ -1,168 +1,82 @@
-# pi-cohort (jjuraszek fork)
+# pi-cohort
 
-Pi extension. Lets Pi delegate work to focused child agents: code review, scouting, implementation, parallel audits, saved chains, and background/async jobs.
+Pi extension that lets Pi delegate work to focused child agents: code review, scouting, implementation, parallel audits, saved chains, and background/async jobs. Published to npm as `pi-cohort` (`pi install npm:pi-cohort`), plain semver.
 
-This repo **originated as a fork of [`nicobailon/pi-subagents`](https://github.com/nicobailon/pi-subagents)** but **no longer tracks upstream** - it is a standalone semver project with no upstream remote. It is published to npm and installed with `pi install npm:pi-cohort`. See [Release model](#release-model).
+<!-- agents-core:begin v3 - shared across pi-quiver/pi-cohort/pi-gauntlet/pi-condense. Edit AGENTS.core.md, then: node scripts/check-agents-core.mjs --fix -->
+## Ground Truth Before Reasoning
 
-<!-- agents-core:begin v2 - shared across pi-quiver/pi-cohort/pi-gauntlet/pi-condense. Edit AGENTS.core.md, then: node scripts/check-agents-core.mjs --fix -->
+User instructions outrank skill and AGENTS.md guidance; on conflict, follow the user. Configured gates (design approval, ship verification) still run; a user instruction that already names the gated action satisfies its confirmation.
+
+Never guess Pi's API, message shapes, config, or values - read the source. The pi runtime is the **`@earendil-works`** namespace (matches the host pi install), not `@mariozechner`; its shipped `.d.ts` is API truth. Third-party APIs: never state a signature, config key, flag, or version-specific behavior from memory - verify in current docs (Context7 `resolve-library-id` then `query-docs`). If the source contradicts your assumption, the source wins; if it is missing, say so and ask - do not fabricate. Check the request's premise before acting: if the source contradicts it, say so once with evidence, then follow the user's decision.
+
+The same rule applies to state you set up yourself. Before asserting that a job, publish, CI run, or process is in some state, run the command that shows it in this turn (`gh run view`, `npm view`, `git status`). A summary of what you started is a plan, not an observation.
+
+## Authorization
+
+An instruction that names an action and its parameters is the approval for that action ("release patch", "close #12 with a comment") - do it, then report. Ask only when a parameter is ambiguous or a safety check fails; say what failed, don't fix it silently. Once the design is settled, finish the authorized work before asking - the user approves a concrete result. Reversible, read-only, and already-authorized actions need no permission. Agent-initiated writes to a tracker or to files outside the repo keep their gate.
+
 ## Communication Style
 
-Applies to chat, commit messages, PR/issue comments, code review, and any artifact authored in this repo.
+**North star: sharp, human-readable, example-driven, condense.** Sharp = exact, no hedging (name the file/SHA/value). Human-readable = written like a person, not a report. Example-driven = a small before/after beats a paragraph. Condense = every sentence earns its place. One term per concept: name a thing once, reuse that name. A reply carries its substance inline - never point at tool outputs, finding numbers, or earlier turns the reader didn't see; restate in one sentence.
 
-- **Human, terse, but sharp and precise.** Applies everywhere: interactive session, issue/PR comments, `.md` files. Terse is not vague - keep it exact.
-- **Suppress process narration.** No intent classification, phase announcements, tool/subagent preamble, status updates, pleasantries. Start with substance.
-- **Output instead:** outcomes, decisions needing input, verification results, blockers.
-- **Bullets over prose. Short paragraphs.** No wall-of-text, no tutorial tone unless asked.
-- **Show an example when it clarifies a complex point** - a small before/after or a concrete ref beats a paragraph. Examples disambiguate, they don't pad.
-- **End on the ask, not a summary.** Diffs/outputs speak for themselves.
-- **Match the recipient's register** in human-facing artifacts (issues, PRs, chat).
-- **Prefer ASCII.** `-` not em/en-dashes, `...` not the ellipsis glyph, straight quotes. Non-ASCII only for a justified visual mark.
+| Regime | Surfaces | Format |
+|---|---|---|
+| Human-facing comms | chat, commit messages, PR/issue bodies and comments, review feedback | no scaffolding (no Options/TL;DR templates, no headings on short comments); bullets over prose; end on the ask, not a summary |
+| LLM-readable artifacts | AGENTS.md, README, CHANGELOG, specs, plans, skill/agent/prompt files, non-obvious-why code comments | tables, headings, explicit field references, code blocks; density still binds; optimize for unambiguous retrieval |
 
-LLM-readable artifacts (`AGENTS.md`, `README.md`, `CHANGELOG.md`, skill bodies, agent personas, spec docs, code comments where the *why* is non-obvious) stay structured: tables, headings, explicit field references, code blocks. Optimize for retrieval over readability.
+**Suppress process narration.** No intent classification, phase/routing announcements, tool/subagent preamble, status narration, pleasantries. **Output instead:** outcomes, decisions needing input, verification results, blockers. Start with the substance.
+
+ASCII punctuation everywhere (chat, comments, commits, docs, code): `-` not em-dash, `...` not the ellipsis glyph, straight quotes; non-ASCII only for a justified visual mark. State what you did or will do; don't pad with what you won't do, what stays unchanged, or alternatives nobody asked about. No closing summaries.
 
 ## Code & Documentation Discipline
 
 - **Code is a liability.** Add only what the task requires. No premature abstractions, no helpers for hypothetical reuse, no fallbacks for branches that can't happen, no commented-out alternatives.
 - **No new machinery if not essential.** Reuse an existing field, channel, or code path (plus a small discriminant if needed) over a new sibling construct; new machinery must earn its place by being impossible or misleading to express with what exists.
-- **Docs are a contract.** Dense, current, no preamble. If a sentence doesn't help a future reader act, cut it - this applies to documentation as much as code.
-- **No belt-and-suspenders.** Don't validate / null-check / guard the same thing at multiple layers - validate at the boundary once.
-- **Delete dead code, don't comment it out.** Branch from the deletion commit if reversibility matters.
-- **Comments only when the *why* is non-obvious.** No docstrings on self-evident params/returns. No banner/separator comments. Don't reference the current task or PR - that belongs in the commit message.
-- **Markdown tables use compact `|---|` separators.** Never padded columns.
+- **No belt-and-suspenders.** Validate a thing once, at the boundary that owns it - not at every layer.
+- **Delete dead code, don't comment it out.** When a change supersedes code, remove the old path in the same commit. Branch from the deletion commit if reversibility matters.
+- **Comments are stock, not flow.** Record the durable why, never task context, tickets, or callers. Good: `// output is never empty for a real dispatch`. Bad: `// #12: gate on this so the classifier doesn't no-op`. No docstrings on self-evident params/returns, no banner comments.
 - **Surface, don't auto-fix.** A bug fix doesn't drag in surrounding cleanup; mention adjacent issues separately.
+- **Docs are a current contract, present tense.** No "upcoming"/"pending" in a current-state guide - planned work lives in `doc/specs/`, `doc/plans/`, or the ticket; history lives in `CHANGELOG.md` and commit bodies, never in AGENTS.md or a guide. Doc updates ride with the commit that makes them stale. Editing a doc puts the smallest unit you touch - bullet, row, heading block - in scope: its paths resolve, its commands match the source, its framing is present tense; stale content outside that unit: flag, don't fix.
+- **AGENTS.md is always-on essentials plus routing, not the manual.** Route detail to `doc/` or `README.md` and link it; add an inline pointer only when critical or high-frequency. README and AGENTS.md stay in sync where they overlap.
+- **Markdown tables use compact `|---|` separators.** Never padded columns.
 
 ## Ticket convention
 
-Creating a ticket or repairing its title/body/metadata happens only via `/skill:shape-ticket` (pi-gauntlet >= the release that ships it) - it enforces the Context -> Problem -> Idea -> Acceptance Criteria template, an AC integrity gate, and a cheap council roast applied to the body before the single human-gated write (no roast comments). Status transitions and comments are exempt - plain tracker CLI.
+Creating a ticket or repairing its title/body/metadata happens only via `/skill:shape-ticket` - it enforces the Context -> Problem -> Idea -> Acceptance Criteria template, an AC integrity gate, and a cheap council roast applied to the body before the single human-gated write (no roast comments); a user instruction naming the ticket's body counts as that gate. Status transitions and comments are exempt - plain tracker CLI.
 
-## Ground Truth Before Reasoning
+<!-- agents-core:end v3 -->
 
-Never guess Pi's API, message shapes, config, or values - read the source; the source wins; if it is missing, say so and ask, don't fabricate. The pi runtime is the **`@earendil-works`** namespace (matches the host pi install), not `@mariozechner` - treat its shipped `.d.ts` as API truth. Repo-specific source pointers, if any, follow.
+## Part of one platform
 
-<!-- agents-core:end v2 -->
+One of four sibling pi extensions - **pi-quiver** (capabilities), **pi-cohort** (coordination), **pi-condense** (context economy), **pi-gauntlet** (process). They ship and version independently; a concept is explained in its owning repo and linked from the others, never duplicated.
 
-## Part of one platform (cross-repo synergy)
+- Only hard runtime dependency: pi-gauntlet -> pi-cohort (`subagent()`). Not an npm/peer dependency - pinned in pi-gauntlet's README and its consumers' `settings.json#packages`.
+- Runtime coupling: pi-condense emits `cost:external`; pi-cohort aggregates it into `Σ$` ([`doc/observability.md`](doc/observability.md)). pi-condense names pi-cohort's channel; pi-cohort names no producer.
+- pi-quiver: no code coupling.
 
-This repo is one of four sibling pi extensions - **pi-quiver** (capabilities),
-**pi-cohort** (coordination), **pi-condense** (context economy), **pi-gauntlet**
-(process) - that compose into one governed agent workflow. They ship and version
-independently, but documentation is deliberately cross-referential: a concept is
-explained in its owning repo and *linked* from the others, never duplicated.
+A change that alters a cross-repo contract (dispatch shape, cost channel, settings keys) updates the sibling's docs in the same logical change and lands in both CHANGELOGs.
 
-- Only hard runtime dependency: pi-gauntlet -> pi-cohort (`subagent()`). Not an
-  npm/peer dependency - pinned in pi-gauntlet's README and its consumers'
-  `settings.json#packages`.
-- Real runtime coupling: pi-condense emits `cost:external`; pi-cohort aggregates
-  it into `Σ$` (see `doc/observability.md`). Naming is one-directional -
-  pi-condense names pi-cohort's channel; pi-cohort names no producer.
-- pi-quiver is an independent toolbox; no code coupling.
+## Discovery and precedence
 
-When editing docs here, if a claim belongs to a sibling's concern, link the
-sibling's doc rather than restating it. When a change alters a cross-repo
-contract (dispatch shape, cost channel, settings keys), update the sibling's
-docs in the same logical change and note it in both CHANGELOGs.
-
-## Release model
-
-Published to **npm** as `pi-cohort`; installed with `pi install npm:pi-cohort`.
-The `pi-package` keyword lists it on the pi.dev packages gallery automatically.
-Plain semver, no upstream remote.
-
-Release is **tag-triggered and CI-executed**:
-
-1. The `release` skill (driven by `release.sh`) proposes the semver level, bumps
-   `package.json`, commits `Release <version>`, runs `npm run test:all` as a
-   pre-flight, creates the annotated `v<version>` tag, pushes `main` + tag, then
-   monitors CI and verifies npm + pi.dev. **No local `npm publish`.**
-2. Pushing a `v[0-9]+.[0-9]+.[0-9]+` tag triggers
-   `.github/workflows/release.yml`, which installs, verifies the tag matches
-   `package.json`, runs `npm run test:all`, and runs
-   `npm publish --provenance --access public` via npm OIDC trusted publishing.
-   `.github/workflows/test.yml` runs the suite on every push + PR.
-
-The release machinery (`release.sh`, `test.yml`, `release.yml`) is intentionally
-kept near-identical to pi-gauntlet's; `release.sh` differs only in its CONFIG
-header (package name, repo slug, former name, test command).
-
-### Tag scheme
-
-`v<major>.<minor>.<patch>` - plain semver. `package.json` `version` mirrors the
-tag without the leading `v`.
-
-### Running a release
-
-Use the `release` skill (`.agents/skills/release/scripts/release.sh`):
-
-```bash
-bash .agents/skills/release/scripts/release.sh propose     # advisory bump level from git log
-bash .agents/skills/release/scripts/release.sh minor       # X.Y.Z -> X.Y+1.0, bump+test+tag+push+verify
-bash .agents/skills/release/scripts/release.sh patch       # X.Y.Z -> X.Y.Z+1
-bash .agents/skills/release/scripts/release.sh major       # X.Y.Z -> X+1.0.0
-bash .agents/skills/release/scripts/release.sh current     # tag package.json as-is
-bash .agents/skills/release/scripts/release.sh --dry-run minor
-bash .agents/skills/release/scripts/release.sh verify       # monitor CI, poll npm + pi.dev
-bash .agents/skills/release/scripts/release.sh sync-presets # report ~/.pi + parent-tree pins (--apply to rewrite)
-```
-
-### One-off npm setup
-
-OIDC trusted publishing must be registered once on npmjs.com for the `pi-cohort`
-package (Settings -> Trusted Publishing -> GitHub Actions publisher for repo
-`jjuraszek/pi-cohort`, workflow `release.yml`). Until it exists, the publish
-step cannot authenticate.
-
-## Behaviors we own
-
-Divergences from the fork origin that are now part of this codebase:
-
-| Behavior | Where |
-|---|---|
-| `agentOverrides` applied to user/project custom agents | `src/agents/agents.ts` |
-| flat discovery + explicit precedence + skip `SKILL.md` | `src/agents/agents.ts` |
-| `toolsPrepend` / `toolsAppend` additive override fields | `src/agents/agents.ts` |
-| git-root-bounded walk + multi-level aggregation for personas/chains/settings | `src/agents/agents.ts` |
-
-Flat discovery is the single source of truth for persona precedence. It lives in `resolveUserAgentDirs()` / `preferredUserAgentDir()` (`src/agents/agents.ts`) plus the `listFilesFlat` / `isAgentFileName` / `isChainFileName` helpers, and the multi-level walk helpers `findGitRoot` / `enumerateProjectLevels` / `dedupeByRealPath` / `readMergedProjectSubagentSettings`.
-
-Project persona/chain discovery walks from cwd up to the git root (detected by a `.git` file or directory; no subprocess) and aggregates every level via `enumerateProjectLevels()`. The marker predicate is `.pi` OR `.agents` - the same as `findNearestProjectRoot` - so a level carrying only `.pi/settings.json` or only `.pi/chains` still participates. `dedupeByRealPath` collapses symlinked `.pi` levels on the expanded read-dir list, catching symlinks that survive the per-level realpath dedup in `enumerateProjectLevels` (a nearest `.pi` symlinked to a farther real `.pi` yields distinct level dirs but identical `<level>/.pi/agents` paths). When no git root is found, discovery falls back to the single nearest project root.
-
-Precedence (lowest->highest):
-
-```
-builtin
-  < ~/.agents
-  < <PI_CODING_AGENT_DIR>/agents
-  < [farthest project level]/.agents
-  < [farthest project level]/.pi/agents
-  < ...
-  < [nearest project level]/.agents
-  < [nearest project level]/.pi/agents   (highest)
-```
-
-Any project level outranks all user levels. Among project levels, nearest wins. Within one level, `.pi/agents` beats `.agents`. Chains aggregate `<level>/.pi/chains` across the same walk with the same nearest-wins rule.
-
-Project `.pi/settings.json` `agentOverrides` and `disableBuiltins` merge across all walked levels via `readMergedProjectSubagentSettings` (farthest-first, nearest overwrites). `agentOverrides` merge is whole-object replacement per agent name - disjoint fields do not compose across levels. Override/create **writes** target the nearest project root's `.pi/settings.json` (intentional read-merge / nearest-write asymmetry). Note: a builtin override's displayed source path (`override.path`) always points at the nearest project settings file even when the winning value came from a farther level - attribution is nearest-by-design; there is no per-override provenance tracking.
-
-Reads are flat (top-level only); `SKILL.md` and `*.chain.md` are never agents. `PI_CODING_AGENT_DIR` relocates the pi profile root but is **not** a discovery sandbox.
+Flat discovery in `src/agents/agents.ts` is the single source of truth for persona and chain precedence: builtin < `~/.agents` < `<PI_CODING_AGENT_DIR>/agents` < project levels walked from the git root down to cwd, nearest level wins, `.pi/agents` beats `.agents` within a level. `SKILL.md` and `*.chain.md` are never agents. Full rules, override fields, settings merge: [`doc/agents-and-chains.md`](doc/agents-and-chains.md#agents-and-chains-discovery-and-precedence).
 
 ## Testing
 
-- `npm run test:unit` (node `--test` with type-stripping), `npm run test:integration`, `npm run test:all`.
-- **Unit tests that exercise user-scope discovery set `HOME`/`USERPROFILE` to a temp dir.** A configured `PI_CODING_AGENT_DIR` (present in any real pi harness shell) overrides `HOME` and makes ~17 user-scope tests fail spuriously. Run with it cleared:
+- `npm run test:unit` (node `--test` with type-stripping), `npm run test:integration`, `npm run test:all`. No `tsc` ships here; type-stripping at test time is the typecheck. CI (`.github/workflows/test.yml`) runs `test:all` on every push and PR.
+- Unit tests that exercise user-scope discovery set `HOME`/`USERPROFILE` to a temp dir. A configured `PI_CODING_AGENT_DIR` (present in any real pi harness shell) overrides `HOME` and fails ~17 of them spuriously: `env -u PI_CODING_AGENT_DIR npm run test:unit`.
 
-  ```bash
-  env -u PI_CODING_AGENT_DIR npm run test:unit
-  ```
+## Release
 
-- No `tsc` ships in this repo; type-stripping at test time is the typecheck.
+`/skill:release` owns the flow: `release.sh <level>` promotes `## [Unreleased]` in `CHANGELOG.md`, bumps `package.json`, commits `Release X.Y.Z`, tests, tags `vX.Y.Z`, pushes; CI publishes via OIDC. A user instruction naming the level is the approval. Mechanics and safety checks: [`.agents/skills/release/SKILL.md`](.agents/skills/release/SKILL.md).
 
 ## Routing
 
-| Want to … | Read |
+| Want to ... | Read |
 |---|---|
 | Install, configure, slash commands, agent/chain authoring | [`README.md`](README.md) |
 | What changed across versions | [`CHANGELOG.md`](CHANGELOG.md) |
-| Agent/chain discovery, overrides, scopes | `src/agents/agents.ts` |
-| Run a release | `.agents/skills/release/SKILL.md` |
-| Implementation of a runtime behavior | the matching `src/**/*.ts` directly |
-| Change the shared AGENTS core (style / discipline / ticket / ground-truth) | edit [`AGENTS.core.md`](AGENTS.core.md), run `node scripts/check-agents-core.mjs --fix`, copy both files to sibling repos |
+| Agent/chain discovery, overrides, scopes | [`doc/agents-and-chains.md`](doc/agents-and-chains.md) |
+| Cost aggregation, `cost:external` | [`doc/observability.md`](doc/observability.md) |
+| pi-gauntlet skill overrides for this repo | [`.pi/gauntlet-overrides.md`](.pi/gauntlet-overrides.md) |
+| Run a release | [`.agents/skills/release/SKILL.md`](.agents/skills/release/SKILL.md) |
+| Change the shared AGENTS core | edit [`AGENTS.core.md`](AGENTS.core.md), `node scripts/check-agents-core.mjs --fix`, copy both files to the siblings, `--fix` there |
