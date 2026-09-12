@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [6.1.0] - 2026-09-12
 
 External execution backends currently require a non-Windows host. Native execution remains supported on Windows.
 
