@@ -40,6 +40,7 @@ interface AsyncStatusPayload {
 	currentTool?: string;
 	currentPath?: string;
 	state?: string;
+	error?: string;
 	totalTokens?: { total: number };
 	parallelGroups?: Array<{ start: number; count: number; stepIndex: number }>;
 	steps?: Array<{
@@ -50,6 +51,7 @@ interface AsyncStatusPayload {
 		skills?: string[];
 		activityState?: string;
 		currentTool?: string;
+		currentPath?: string;
 		status?: string;
 		exitCode?: number;
 		error?: string;
@@ -111,7 +113,15 @@ const createSubagentExecutor = executorMod?.createSubagentExecutor;
 const reconcileAsyncRun = reconcilerMod?.reconcileAsyncRun;
 
 function git(cwd: string, args: string[]): string {
-	const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf-8" });
+	const result = spawnSync("git", ["-C", cwd, ...args], {
+		encoding: "utf-8",
+		env: {
+			...process.env,
+			GIT_CONFIG_COUNT: "1",
+			GIT_CONFIG_KEY_0: "commit.gpgsign",
+			GIT_CONFIG_VALUE_0: "false",
+		},
+	});
 	if (result.status !== 0) {
 		throw new Error(result.stderr.trim() || result.stdout.trim() || `git ${args.join(" ")} failed`);
 	}
@@ -152,6 +162,80 @@ async function waitForAsyncResultFile(id: string, timeoutMs = 30_000): Promise<s
 		await new Promise((resolve) => setTimeout(resolve, 100));
 	}
 	return resultPath;
+}
+
+const TIMEOUT_DIAGNOSTIC_MAX_BYTES = 4_096;
+
+function readBoundedDiagnosticFile(filePath: string): { text?: string; truncated?: boolean; error?: string } {
+	let fd: number | undefined;
+	try {
+		const size = fs.statSync(filePath).size;
+		const buffer = Buffer.alloc(Math.min(size, TIMEOUT_DIAGNOSTIC_MAX_BYTES));
+		fd = fs.openSync(filePath, "r");
+		const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, 0);
+		return { text: buffer.subarray(0, bytesRead).toString("utf-8"), truncated: size > buffer.length };
+	} catch (error) {
+		return { error: error instanceof Error ? error.message : String(error) };
+	} finally {
+		if (fd !== undefined) fs.closeSync(fd);
+	}
+}
+
+function formatAsyncTimeoutDiagnostics(asyncDir: string, configPath: string, resultPath: string): string {
+	try {
+		const statusPath = path.join(asyncDir, "status.json");
+		const runnerLogPath = path.join(asyncDir, "runner.log");
+		const outputLogPaths = [
+			path.join(asyncDir, "output-0.log"),
+			path.join(asyncDir, "output-1.log"),
+		];
+		const files = [
+			["status.json", statusPath],
+			["runner.log", runnerLogPath],
+			["events.jsonl", path.join(asyncDir, "events.jsonl")],
+			["config", configPath],
+			["result", resultPath],
+		].map(([name, filePath]) => `${name}=${fs.existsSync(filePath) ? "present" : "missing"}`);
+		const statusFile = readBoundedDiagnosticFile(statusPath);
+		let status = "(missing status.json)";
+		if (statusFile.text !== undefined && !statusFile.truncated) {
+			try {
+				const payload = JSON.parse(statusFile.text) as AsyncStatusPayload;
+				status = JSON.stringify({
+					state: payload.state ?? null,
+					error: payload.error ?? null,
+					currentTool: payload.currentTool ?? null,
+					currentPath: payload.currentPath ?? null,
+					steps: payload.steps?.map((step) => ({
+						status: step.status ?? null,
+						error: step.error ?? null,
+						currentTool: step.currentTool ?? null,
+						currentPath: step.currentPath ?? null,
+					})),
+				});
+			} catch (error) {
+				status = `(unavailable: ${error instanceof Error ? error.message : String(error)})`;
+			}
+		} else if (statusFile.truncated) {
+			status = `(unavailable: status.json exceeds ${TIMEOUT_DIAGNOSTIC_MAX_BYTES} bytes)`;
+		} else if (statusFile.error) {
+			status = `(unavailable: ${statusFile.error})`;
+		}
+		const formatLog = (filePath: string): string => {
+			const file = readBoundedDiagnosticFile(filePath);
+			if (file.text === undefined) return `(unavailable: ${file.error})`;
+			return `${file.text}${file.truncated ? `\n[truncated after ${TIMEOUT_DIAGNOSTIC_MAX_BYTES} bytes]` : ""}`;
+		};
+		return [
+			"Async timeout diagnostics:",
+			`Files: ${files.join(", ")}`,
+			`Status: ${status}`,
+			`Runner log:\n${formatLog(runnerLogPath)}`,
+			...outputLogPaths.map((outputLogPath) => `Output log ${path.basename(outputLogPath)}:\n${formatLog(outputLogPath)}`),
+		].join("\n");
+	} catch (error) {
+		return `Async timeout diagnostics unavailable: ${error instanceof Error ? error.message : String(error)}`;
+	}
 }
 
 function readLastMockPiArgs(mockPi: MockPi): string[] {
@@ -1578,6 +1662,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		const id = `async-parallel-tool-sync-${Date.now().toString(36)}`;
 		const asyncDir = path.join(ASYNC_DIR, id);
 		const resultPath = path.join(RESULTS_DIR, `${id}.json`);
+		const configPath = path.join(TEMP_ROOT_DIR, `async-cfg-${id}.json`);
 
 		executeAsyncChain(id, {
 			chain: [{ parallel: [{ agent: "reader", task: "Read" }, { agent: "editor", task: "Edit" }] }],
@@ -1611,7 +1696,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			await new Promise((resolve) => setTimeout(resolve, 50));
 		}
 		if (!fs.existsSync(resultPath)) {
-			assert.fail(`Timed out waiting for async result file: ${resultPath}`);
+			assert.fail(`Timed out waiting for async result file: ${resultPath}\n${formatAsyncTimeoutDiagnostics(asyncDir, configPath, resultPath)}`);
 		}
 		assert.equal(sawRunningTool, true, "expected at least one polling interval with a running step tool");
 		assert.equal(invariantViolated, false, "top-level currentTool drifted from running step tools");

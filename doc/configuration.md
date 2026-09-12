@@ -78,6 +78,23 @@ Parent extension CLI flags are forwarded into spawned children by default: whate
 
 Caveat: if a child runs with a `cwd` in a different project whose *project-scoped* extension owns a forwarded flag, the child can fail to start on the unknown flag. User-scoped extensions (e.g. pi-lens) load regardless of `cwd` and are unaffected; set `forwardParentFlags: false` if the cross-project case bites.
 
+## `executionBackend`
+
+```json
+{ "executionBackend": "auto" }
+```
+
+Determines backend selection policy for spawned subagent processes. Current direct native runners do not consume this setting; it takes effect only through the backend-neutral execution path.
+
+Accepts:
+- `"auto"` (default): select the first available registered execution backend in insertion order; fall back to native execution if none are available. Registration order is policy: companion adapters (e.g. `pi-cohort-mux`) register higher-level/more opinionated transports first (cmux, then tmux).
+- `"native"`: always select native execution, bypassing all registered backends.
+- A registered backend name (e.g. `"cmux"`, `"tmux"`): select that specific backend; fail loudly if unavailable or if detection throws.
+
+Project `.pi/settings.json#subagents.executionBackend` wins over user config, then `auto`. Blank, whitespace-only, and invalid-type values fail loudly. Unknown backend names fail at selection time. Diagnostics never echo adapter-provided error text or detection reasons.
+
+**Inspiration:** backend selection adapts vim-dispatch's ordered first-match handler pattern ([`plugin/dispatch.vim#L84-L97`](https://github.com/tpope/vim-dispatch/blob/a2ff28abdb2d89725192db5b8562977d392a4d3f/plugin/dispatch.vim#L84-L97) defines ordered handlers; [`autoload/dispatch.vim#L408-L421`](https://github.com/tpope/vim-dispatch/blob/a2ff28abdb2d89725192db5b8562977d392a4d3f/autoload/dispatch.vim#L408-L421) iterates first-match-wins) without editor-specific lifecycle coupling.
+
 ## `worktreeSetupHook`
 
 ```json

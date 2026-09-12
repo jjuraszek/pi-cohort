@@ -35,7 +35,7 @@ interface FanoutChildModule {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const fanoutChild = await tryImport<FanoutChildModule>("./src/extension/fanout-child.ts");
-const realPiBinDir = path.resolve(__dirname, "..", "..", "node_modules", ".bin");
+const realPiBinDir = process.env.PI_TEST_PI_BIN_DIR ?? path.resolve(__dirname, "..", "..", "node_modules", ".bin");
 const available = !!fanoutChild;
 
 interface FixtureLogRow {
@@ -89,11 +89,11 @@ describe("fanout child retains its own delegation history across a real pi run",
 		fs.mkdirSync(path.join(tempDir, ".pi", "agents"), { recursive: true });
 		fs.writeFileSync(
 			path.join(tempDir, ".pi", "agents", "lead.md"),
-			"---\nname: lead\ndescription: Fanout lead fixture\ntools: subagent\nmodel: fanout-fixture/scripted\n---\nDelegate to the grandchild, then report done.\n",
+			"---\nname: lead\ndescription: Fanout lead fixture\ntools: subagent\nextensions: ./.pi/extensions/fanout-fixture-provider.ts\nmodel: fanout-fixture/scripted\n---\nDelegate to the grandchild, then report done.\n",
 		);
 		fs.writeFileSync(
 			path.join(tempDir, ".pi", "agents", "grandchild.md"),
-			"---\nname: grandchild\ndescription: Fanout grandchild fixture\ntools: []\nmodel: fanout-fixture/scripted\n---\nReturn the fixture response.\n",
+			"---\nname: grandchild\ndescription: Fanout grandchild fixture\ntools: []\nextensions: ./.pi/extensions/fanout-fixture-provider.ts\nmodel: fanout-fixture/scripted\n---\nReturn the fixture response.\n",
 		);
 	});
 

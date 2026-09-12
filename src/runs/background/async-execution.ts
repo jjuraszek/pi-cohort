@@ -7,7 +7,6 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../../agents/agents.ts";
 import { applyThinkingSuffix } from "../shared/pi-args.ts";
@@ -15,6 +14,8 @@ import { injectSingleOutputInstruction, normalizeSingleOutputOverride, resolvePa
 import { buildChainInstructions, isDynamicParallelStep, isParallelStep, resolveStepBehavior, suppressProgressForReadOnlyTask, writeInitialProgressFile, type ChainStep, type ResolvedStepBehavior, type SequentialStep, type StepOverrides } from "../../shared/settings.ts";
 import type { RunnerStep } from "../shared/parallel-utils.ts";
 import { resolvePiPackageRoot } from "../shared/pi-spawn.ts";
+import { ensureJitiCliPath } from "../shared/jiti-cli.ts";
+export { createJitiCliResolver } from "../shared/jiti-cli.ts";
 import { buildSkillInjection, normalizeSkillInput, resolveSkillsWithFallback } from "../../agents/skills.ts";
 import { resolveChildCwd } from "../../shared/utils.ts";
 import { buildModelCandidates, resolveModelCandidate, type AvailableModelInfo } from "../shared/model-fallback.ts";
@@ -24,6 +25,8 @@ import { buildWorkflowGraphSnapshot } from "../shared/workflow-graph.ts";
 import { ChainOutputValidationError, validateChainOutputBindings } from "../shared/chain-outputs.ts";
 import { createStructuredOutputRuntime } from "../shared/structured-output.ts";
 import { resolveEffectiveAcceptance } from "../shared/acceptance.ts";
+import { executionBackendRegistrations } from "../../execution-backend/registry.ts";
+import type { DetachedExecutionBackendConfig } from "../../execution-backend/types.ts";
 import {
 	type AcceptanceInput,
 	type ArtifactConfig,
@@ -41,73 +44,14 @@ import {
 } from "../../shared/types.ts";
 import { nestedResultsPath, resolveInheritedNestedRouteFromEnv, resolveNestedParentAddressFromEnv, writeNestedEvent } from "../shared/nested-events.ts";
 
-const require = createRequire(import.meta.url);
 const piPackageRoot = resolvePiPackageRoot();
-
-function resolveJitiCliFromPackageJson(packageJsonPath: string): string | undefined {
-	if (!fs.existsSync(packageJsonPath)) return undefined;
-	const packageRoot = path.dirname(packageJsonPath);
-	const pkg = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8")) as {
-		bin?: string | Record<string, string>;
-	};
-	const binField = pkg.bin;
-	const binPath = typeof binField === "string"
-		? binField
-		: binField?.jiti ?? Object.values(binField ?? {})[0];
-	const candidates = [binPath, "lib/jiti-cli.mjs"].filter((candidate): candidate is string => Boolean(candidate));
-	for (const candidate of candidates) {
-		const cliPath = path.resolve(packageRoot, candidate);
-		if (fs.existsSync(cliPath)) return cliPath;
-	}
-	return undefined;
-}
-
-function resolveJitiCliPath(): string | undefined {
-	const candidates: Array<() => string | undefined> = [
-		() => require.resolve("jiti/package.json"),
-		() => piPackageRoot
-			? createRequire(path.join(piPackageRoot, "package.json")).resolve("jiti/package.json")
-			: undefined,
-		() => {
-			if (!process.argv[1]) return undefined;
-			const piEntry = fs.realpathSync(process.argv[1]);
-			return createRequire(piEntry).resolve("jiti/package.json");
-		},
-		() => piPackageRoot ? path.join(piPackageRoot, "node_modules", "jiti", "package.json") : undefined,
-	];
-	for (const candidate of candidates) {
-		try {
-			const packageJsonPath = candidate();
-			if (!packageJsonPath) continue;
-			const cliPath = resolveJitiCliFromPackageJson(packageJsonPath);
-			if (cliPath) return cliPath;
-		} catch {
-			// Candidate not available in this install, continue probing.
-		}
-	}
-	return undefined;
-}
-
-export function createJitiCliResolver(deps: { resolve?: () => string | undefined; exists?: (p: string) => boolean } = {}): () => string | undefined {
-	const resolve = deps.resolve ?? resolveJitiCliPath;
-	const exists = deps.exists ?? ((p: string) => fs.existsSync(p));
-	let cached = resolve();
-	return () => {
-		if (cached && exists(cached)) return cached;
-		cached = resolve();
-		if (cached && exists(cached)) return cached;
-		cached = undefined;
-		return undefined;
-	};
-}
-
-const ensureJitiCliPath = createJitiCliResolver();
 
 interface AsyncExecutionContext {
 	pi: ExtensionAPI;
 	cwd: string;
 	currentSessionId: string;
 	currentModelProvider?: string;
+	executionBackend?: string;
 }
 
 interface AsyncChainParams {
@@ -133,6 +77,14 @@ interface AsyncChainParams {
 	nestedRoute?: NestedRouteInfo;
 	forwardedFlags?: string[];
 	acceptance?: AcceptanceInput;
+}
+
+function detachedExecutionBackends(userPreference: string | undefined): DetachedExecutionBackendConfig {
+	return {
+		protocolVersion: 1,
+		...(userPreference === undefined ? {} : { userPreference }),
+		registrations: executionBackendRegistrations(),
+	};
 }
 
 interface AsyncSingleParams {
@@ -543,6 +495,7 @@ export function executeAsyncChain(
 				worktreeSetupHookTimeoutMs,
 				controlConfig,
 				resultMode,
+				executionBackends: detachedExecutionBackends(ctx.executionBackend),
 				dynamicFanoutMaxItems: params.dynamicFanoutMaxItems,
 				workflowGraph,
 				nestedRoute: nestedRoute ?? inheritedNestedRoute,
@@ -774,6 +727,7 @@ export function executeAsyncSingle(
 				worktreeSetupHookTimeoutMs,
 				controlConfig,
 				resultMode: "single",
+				executionBackends: detachedExecutionBackends(ctx.executionBackend),
 				nestedRoute: nestedRoute ?? inheritedNestedRoute,
 				nestedSelf: inheritedNestedRoute && nestedAddress ? {
 					parentRunId: nestedAddress.parentRunId,

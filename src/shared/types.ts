@@ -370,6 +370,11 @@ export interface AcceptanceLedger {
 	};
 }
 
+export interface ExecutionSurfaceResult {
+	handle: import("../execution-backend/types.ts").ExecutionSurfaceHandle;
+	retained: boolean;
+}
+
 export interface SingleResult {
 	agent: string;
 	task: string;
@@ -399,6 +404,7 @@ export interface SingleResult {
 	structuredOutputPath?: string;
 	structuredOutputSchemaPath?: string;
 	acceptance?: AcceptanceLedger;
+	executionSurface?: ExecutionSurfaceResult;
 }
 
 export interface Details {
@@ -784,6 +790,8 @@ export interface RunSyncOptions {
 		dynamic?: boolean;
 		dynamicGroup?: boolean;
 	};
+	/** User-config execution backend preference; project settings at `cwd` take precedence over this. */
+	executionBackend?: string;
 }
 
 interface TopLevelParallelConfig {
@@ -811,6 +819,8 @@ export interface ExtensionConfig {
 	showRosterOnStart?: boolean;
 	/** Forward the parent pi's extension CLI flags (e.g. --no-autofix) into spawned children. Default: true. */
 	forwardParentFlags?: boolean;
+	/** Execution backend to use: 'auto' (default, select first available), 'native' (bypass adapters), or a registered backend name. */
+	executionBackend?: string;
 }
 
 // ============================================================================

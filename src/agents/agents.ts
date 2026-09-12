@@ -18,6 +18,13 @@ export { buildRuntimeName, frontmatterNameForConfig, parsePackageName } from "./
 export type AgentScope = "user" | "project" | "both";
 
 export type AgentSource = "builtin" | "user" | "project";
+
+class InvalidExecutionBackendSettingError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "InvalidExecutionBackendSettingError";
+	}
+}
 type SystemPromptMode = "append" | "replace";
 export type AgentDefaultContext = "fresh" | "fork";
 
@@ -110,6 +117,7 @@ export interface AgentConfig {
 interface SubagentSettings {
 	overrides: Record<string, BuiltinAgentOverrideConfig>;
 	disableBuiltins?: boolean;
+	executionBackend?: string;
 }
 
 const EMPTY_SUBAGENT_SETTINGS: SubagentSettings = { overrides: {} };
@@ -453,16 +461,29 @@ function readSubagentSettings(filePath: string | null): SubagentSettings {
 		}
 	}
 
+	let executionBackend: string | undefined;
+	if ("executionBackend" in subagentsObject) {
+		const value = subagentsObject.executionBackend;
+		if (typeof value !== "string") {
+			throw new InvalidExecutionBackendSettingError(`Subagent settings in '${filePath}' have invalid 'executionBackend'; expected a string.`);
+		}
+		const trimmed = value.trim();
+		if (trimmed === "") {
+			throw new InvalidExecutionBackendSettingError(`Subagent settings in '${filePath}' have invalid 'executionBackend'; must not be blank.`);
+		}
+		executionBackend = trimmed;
+	}
+
 	const parsed: Record<string, BuiltinAgentOverrideConfig> = {};
 	const agentOverrides = subagentsObject.agentOverrides;
 	if (!agentOverrides || typeof agentOverrides !== "object" || Array.isArray(agentOverrides)) {
-		return { overrides: parsed, disableBuiltins };
+		return { overrides: parsed, disableBuiltins, executionBackend };
 	}
 	for (const [name, value] of Object.entries(agentOverrides)) {
 		const override = parseBuiltinOverrideEntry(name, value, filePath);
 		if (override) parsed[name] = override;
 	}
-	return { overrides: parsed, disableBuiltins };
+	return { overrides: parsed, disableBuiltins, executionBackend };
 }
 
 // Merge project .pi/settings.json across every enumerated level, farthest-first
@@ -476,12 +497,17 @@ function readMergedProjectSubagentSettings(cwd: string): SubagentSettings {
 
 	const overrides: Record<string, BuiltinAgentOverrideConfig> = {};
 	let disableBuiltins: boolean | undefined;
+	let executionBackend: string | undefined;
 	for (const level of levels) {
 		const settingsPath = path.join(level, ".pi", "settings.json");
 		let levelSettings: SubagentSettings;
 		try {
 			levelSettings = readSubagentSettings(settingsPath);
 		} catch (error) {
+			// Invalid backend policy must not silently fall back to native execution.
+			if (error instanceof InvalidExecutionBackendSettingError) {
+				throw error;
+			}
 			const message = error instanceof Error ? error.message : String(error);
 			console.warn(`Skipping malformed subagent settings at '${settingsPath}': ${message}`);
 			continue;
@@ -492,8 +518,16 @@ function readMergedProjectSubagentSettings(cwd: string): SubagentSettings {
 		if (levelSettings.disableBuiltins !== undefined) {
 			disableBuiltins = levelSettings.disableBuiltins;
 		}
+		if (levelSettings.executionBackend !== undefined) {
+			executionBackend = levelSettings.executionBackend;
+		}
 	}
-	return { overrides, disableBuiltins };
+	return { overrides, disableBuiltins, executionBackend };
+}
+
+export function readProjectExecutionBackend(cwd: string): string | undefined {
+	const merged = readMergedProjectSubagentSettings(cwd);
+	return merged.executionBackend;
 }
 
 function composeOverrideTools(

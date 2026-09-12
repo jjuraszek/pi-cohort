@@ -2,7 +2,7 @@
  * Deterministic local model provider for the fanout-child-own-subagent-history
  * regression (test/integration/fanout-child-own-subagent-history.test.ts).
  *
- * Loaded by the real pi extension loader (project-local `.pi/extensions/`) from
+ * Passed explicitly through each fixture agent's `extensions` allowlist from
  * a disposable pi home: no credentials, no network. Registers provider
  * `fanout-fixture` with one model, `scripted`, served entirely from streamSimple.
  *

@@ -2,12 +2,21 @@
 
 ## [Unreleased]
 
+External execution backends currently require a non-Windows host. Native execution remains supported on Windows.
+
+### Added
+
+- `pi-cohort/execution-backend` registrations may include a validated, package-anchored reload descriptor (`protocolVersion`, `packageJsonUrl`, `publicSubpath`, and `factoryExport`). Detached coordinators reconstruct those public named factories in registration order without serializing live backend objects or environment state.
+- Background child attempts now use the same external execution backend contract as foreground attempts while leaving the detached runner as the durable coordinator. Native selection bypasses backend reload, exact child working directories are preserved, successful delivered surfaces close, and failed or interrupted surfaces remain available for inspection.
+
 ### Changed
 
 - `release.sh <level>` now promotes the `## [Unreleased]` CHANGELOG section to the versioned heading and commits it with `package.json` in the single `Release X.Y.Z` commit; a missing or empty section fails the run. New CONFIG field `CHANGELOG_HEADING`.
 - Release skill: a user instruction naming the level is the approval - no proposal step or re-confirmation; bundled follow-ups (ticket close, preset sync) run after `verify`.
 - AGENTS.md rewritten to always-on essentials plus routing; shared core bumped to v3 (north-star communication regimes, authorization rule, docs-as-current-contract, third-party API lookup). Discovery implementation notes moved to `doc/agents-and-chains.md`.
 - Added `.pi/gauntlet-overrides.md` (`tracker: github`, release path, write-gate carve-out for user-named writes).
+- The `@earendil-works/pi-coding-agent` peer dependency now requires Pi >=0.85.0 for interactive execution reporting and control.
+- Background selection fails loudly when an explicitly selected backend cannot reload. `auto` also reports registration/reload failures instead of silently changing configured policy; after successful reload, ordinary unavailable detection still falls back to native.
 
 ## [6.0.1] - 2026-09-07
 

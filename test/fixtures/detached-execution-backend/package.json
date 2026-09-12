@@ -1,0 +1,8 @@
+{
+  "name": "detached-execution-backend",
+  "type": "module",
+  "exports": {
+    ".": "./scripted-pi.mjs",
+    "./backend": "./src/backend.ts"
+  }
+}

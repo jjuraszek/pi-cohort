@@ -59,6 +59,21 @@ test("Pi package resolution stays export-map safe", () => {
 	}
 });
 
+test("execution reporting requires Pi 0.85", () => {
+	const packageJson = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf-8"));
+	const piPackages = [
+		"@earendil-works/pi-agent-core",
+		"@earendil-works/pi-ai",
+		"@earendil-works/pi-coding-agent",
+		"@earendil-works/pi-tui",
+	];
+
+	assert.equal(packageJson.peerDependencies?.["@earendil-works/pi-coding-agent"], ">=0.85.0");
+	for (const packageName of piPackages) {
+		assert.equal(packageJson.devDependencies?.[packageName], "^0.85.0");
+	}
+});
+
 test("typebox is a real runtime dependency for the detached async runner", () => {
 	const packageJson = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf-8"));
 	assert.equal(packageJson.dependencies?.typebox, "^1.3.11");

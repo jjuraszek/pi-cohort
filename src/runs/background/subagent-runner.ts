@@ -77,6 +77,23 @@ import {
 import { resolveEffectiveThinking } from "../../shared/model-info.ts";
 import { writeInitialProgressFile } from "../../shared/settings.ts";
 import { acceptanceFailureMessage, aggregateAcceptanceReport, evaluateAcceptance, formatAcceptancePrompt, stripAcceptanceReport } from "../shared/acceptance.ts";
+import { selectConfiguredExecutionBackend } from "../../execution-backend/configured-selection.ts";
+import { createDetachedExecutionBackendCoordinator, decodeDetachedExecutionBackendConfig, ExecutionBackendReloadError, type DetachedExecutionBackendCoordinator } from "../../execution-backend/reload.ts";
+import type { DetachedExecutionBackendConfig } from "../../execution-backend/types.ts";
+import {
+	createExternalExecution,
+	externalExecutionDiagnosticCode,
+	type ExternalExecution,
+} from "../shared/external-execution.ts";
+import { runExternalBackgroundAttempt } from "./external-attempt.ts";
+import type { ExecutionSurfaceResult } from "../../shared/types.ts";
+
+type ExternalFailurePhase = "startup" | "attempt" | "output persistence" | "finish";
+
+function safeExternalFailure(phase: ExternalFailurePhase, error: unknown): string {
+	const code = externalExecutionDiagnosticCode(error);
+	return `External execution ${phase} failed${code ? ` (${code})` : ""}`;
+}
 
 interface SubagentRunConfig {
 	id: string;
@@ -104,6 +121,7 @@ interface SubagentRunConfig {
 	workflowGraph?: WorkflowGraphSnapshot;
 	nestedRoute?: NestedRouteInfo;
 	nestedSelf?: { parentRunId: string; parentStepIndex?: number; depth: number; path?: Array<{ runId: string; stepIndex?: number; agent?: string }> };
+	executionBackends?: DetachedExecutionBackendConfig;
 }
 
 interface StepResult {
@@ -123,6 +141,7 @@ interface StepResult {
 	structuredOutputPath?: string;
 	structuredOutputSchemaPath?: string;
 	acceptance?: import("../../shared/types.ts").AcceptanceLedger;
+	executionSurface?: ExecutionSurfaceResult;
 }
 
 const ASYNC_INTERRUPT_SIGNAL: NodeJS.Signals = process.platform === "win32" ? "SIGBREAK" : "SIGUSR2";
@@ -554,8 +573,8 @@ function writeRunLog(
 	fs.writeFileSync(logPath, lines.join("\n"), "utf-8");
 }
 
-/** Context for running a single step */
-interface SingleStepContext {
+/** Internal context for one detached-runner leaf. */
+export interface SingleStepContext {
 	previousOutput: string;
 	outputs?: ChainOutputMap;
 	placeholder: string;
@@ -575,10 +594,12 @@ interface SingleStepContext {
 	nestedRoute?: NestedRouteInfo;
 	onAttemptStart?: (attempt: { model?: string; thinking?: string }) => void;
 	onChildEvent?: (event: ChildEvent) => void;
+	executionBackendCoordinator?: DetachedExecutionBackendCoordinator;
+	executionBackendConfig?: DetachedExecutionBackendConfig;
 }
 
-/** Run a single pi agent step, returning output and metadata */
-async function runSingleStep(
+/** Execute one detached-runner leaf. */
+export async function runSingleStep(
 	step: SubagentStep,
 	ctx: SingleStepContext,
 ): Promise<{
@@ -597,7 +618,27 @@ async function runSingleStep(
 	structuredOutputPath?: string;
 	structuredOutputSchemaPath?: string;
 	acceptance?: import("../../shared/types.ts").AcceptanceLedger;
+	executionSurface?: ExecutionSurfaceResult;
 }> {
+	let backendSelection: import("../../execution-backend/selection.ts").ExecutionBackendSelectionResult;
+	try {
+		backendSelection = await selectConfiguredExecutionBackend({
+			cwd: step.cwd ?? ctx.cwd,
+			userConfig: { executionBackend: ctx.executionBackendConfig?.userPreference },
+			preparation: ctx.executionBackendCoordinator,
+		});
+	} catch (error) {
+		const message = error instanceof ExecutionBackendReloadError
+			? error.message
+			: "Execution backend selection failed.";
+		return {
+			agent: step.agent,
+			output: message,
+			exitCode: 1,
+			error: message,
+		};
+	}
+
 	const effectiveStructuredOutput = step.structuredOutput ?? (step.structuredOutputSchema
 		? createStructuredOutputRuntime(step.structuredOutputSchema, path.join(path.dirname(ctx.outputFile), "structured-output"))
 		: undefined);
@@ -634,7 +675,186 @@ async function runSingleStep(
 	let finalResult: RunPiStreamingResult | undefined;
 	let finalOutputSnapshot: SingleOutputSnapshot | undefined;
 	let completionGuardTriggeredFinal = false;
+	let executionSurface: ExecutionSurfaceResult | undefined;
 
+	const asyncDir = path.dirname(ctx.outputFile);
+	let externalOwner: ExternalExecution | undefined;
+
+	if (backendSelection.selection.kind === "external") {
+		// External backend path: create one owner for this leaf, unique per candidate attempt.
+		const selection = backendSelection.selection;
+		// One AbortController per leaf for the external owner lifecycle.
+		const ownerController = new AbortController();
+		try {
+			externalOwner = await createExternalExecution({
+				runId: ctx.id,
+				childId: `${step.agent}-${ctx.flatIndex}`,
+				backend: selection.backend,
+				cwd: step.cwd ?? ctx.cwd,
+				title: step.agent,
+				signal: ownerController.signal,
+			});
+		} catch (startErr) {
+			const message = safeExternalFailure("startup", startErr);
+			return { agent: step.agent, output: message, exitCode: 1, error: message };
+		}
+
+		// Bridge registerInterrupt to an AbortController for the current external attempt.
+		const interruptController = new AbortController();
+		ctx.registerInterrupt?.(() => interruptController.abort());
+
+		try {
+			for (let index = 0; index < candidates.length; index++) {
+				const candidate = candidates[index];
+				ctx.onAttemptStart?.({ model: candidate, thinking: resolveEffectiveThinking(candidate, step.thinking) });
+				const outputSnapshot = captureSingleOutputSnapshot(step.outputPath);
+				if (effectiveStructuredOutput) {
+					try {
+						if (fs.existsSync(effectiveStructuredOutput.outputPath)) fs.unlinkSync(effectiveStructuredOutput.outputPath);
+					} catch {
+						// Missing/stale structured-output files are handled after the child exits.
+					}
+				}
+				// External background: baseArgs=[] (no --mode json or -p); task is the last arg.
+				// Core allocates a trusted session file for every external attempt regardless of sessionEnabled.
+				// Caller owns tempDir cleanup (F1): cleanupTempDir is in finally, not in the helper.
+				const attemptSessionFile = path.join(asyncDir, `session-${ctx.flatIndex}-attempt-${index}.jsonl`);
+				const { args, env, tempDir } = buildPiArgs({
+					baseArgs: [],
+					task,
+					sessionEnabled,
+					sessionDir,
+					// Always pass --session for external runs: the reporting protocol requires the session file path.
+					// Step.sessionFile takes precedence if explicitly set; otherwise use the per-attempt path.
+					sessionFile: step.sessionFile ?? attemptSessionFile,
+					model: candidate,
+					inheritProjectContext: step.inheritProjectContext,
+					inheritSkills: step.inheritSkills,
+					tools: step.tools,
+					extensions: step.extensions,
+					systemPrompt: step.systemPrompt,
+					systemPromptMode: step.systemPromptMode,
+					cwd: step.cwd ?? ctx.cwd,
+					promptFileStem: step.agent,
+					runId: ctx.id,
+					childAgentName: step.agent,
+					childIndex: ctx.flatIndex,
+					parentEventSink: ctx.nestedRoute?.eventSink,
+					parentControlInbox: ctx.nestedRoute?.controlInbox,
+					parentRootRunId: ctx.nestedRoute?.rootRunId,
+					parentCapabilityToken: ctx.nestedRoute?.capabilityToken,
+					structuredOutput: effectiveStructuredOutput,
+					forwardedFlags: ctx.forwardedFlags,
+				});
+				const mergedEnv: Record<string, string> = {};
+				for (const [k, v] of Object.entries({ ...process.env, ...env, ...getSubagentDepthEnv(step.maxSubagentDepth) })) {
+					if (v !== undefined) mergedEnv[k] = v;
+				}
+				let run: import("./external-attempt.ts").ExternalBackgroundAttemptResult;
+				try {
+					try {
+						run = await runExternalBackgroundAttempt({
+							owner: externalOwner,
+							attemptId: `${ctx.id}-${ctx.flatIndex}-attempt-${index}`,
+							args,
+							environment: mergedEnv,
+							cwd: step.cwd ?? ctx.cwd,
+							sessionFile: attemptSessionFile,
+							interruptSignal: interruptController.signal,
+							onChildEvent: ctx.onChildEvent,
+						});
+					} catch (error) {
+						run = {
+							stderr: "",
+							exitCode: 1,
+							messages: [],
+							usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+							error: safeExternalFailure("attempt", error),
+							finalOutput: "",
+							executionHandle: externalOwner.handle,
+						};
+					}
+				} finally {
+					cleanupTempDir(tempDir); // F1: caller (not helper) cleans up tempDir
+				}
+
+				const hiddenError = run.exitCode === 0 && !run.error ? detectSubagentError(run.messages) : null;
+				const blockedOutput = stripAcceptanceReport(getFinalOutput(run.messages));
+				const blockedError = run.exitCode === 0 && !run.interrupted && !run.error && !hiddenError?.hasError && blockedLine(blockedOutput)
+					? blockedOutput
+					: undefined;
+				let structuredOutput: unknown;
+				let structuredError: string | undefined;
+				if (effectiveStructuredOutput && run.exitCode === 0 && !run.error && !hiddenError?.hasError && !blockedError) {
+					const structured = readStructuredOutput({
+						schema: effectiveStructuredOutput.schema,
+						schemaPath: effectiveStructuredOutput.schemaPath,
+						outputPath: effectiveStructuredOutput.outputPath,
+					});
+					if (structured.error) structuredError = structured.error;
+					else structuredOutput = structured.value;
+				}
+				const completionGuard = run.exitCode === 0 && !run.error && !hiddenError?.hasError && !blockedError && step.completionGuard !== false
+					? evaluateCompletionMutationGuard({
+						agent: step.agent,
+						task: taskForCompletionGuard,
+						messages: run.messages,
+						tools: step.tools,
+					})
+					: undefined;
+				const completionGuardTriggered = completionGuard?.triggered === true && !run.observedMutationAttempt;
+				const completionGuardError = completionGuardTriggered
+					? "Subagent completed without making edits for an implementation task.\nIt appears to have returned planning or scratchpad output instead of applying changes."
+					: undefined;
+				const effectiveExitCode = blockedError || completionGuardTriggered
+					? 1
+					: structuredError
+						? 1
+						: hiddenError?.hasError
+						? (hiddenError.exitCode ?? 1)
+						: run.error && run.exitCode === 0
+							? 1
+							: run.exitCode;
+				const error = blockedError
+					?? completionGuardError
+					?? structuredError
+					?? (hiddenError?.hasError
+						? hiddenError.details
+							? `${hiddenError.errorType} failed (exit ${effectiveExitCode}): ${hiddenError.details}`
+							: `${hiddenError.errorType} failed with exit code ${effectiveExitCode}`
+						: run.error || (run.exitCode !== 0 && run.stderr.trim() ? run.stderr.trim() : undefined));
+				const attempt: ModelAttempt = {
+					model: candidate ?? run.model ?? step.model ?? "default",
+					success: effectiveExitCode === 0 && !error,
+					exitCode: effectiveExitCode,
+					error,
+					usage: run.usage,
+				};
+				modelAttempts.push(attempt);
+				if (candidate) attemptedModels.push(candidate);
+				completionGuardTriggeredFinal = completionGuardTriggered;
+				finalOutputSnapshot = outputSnapshot;
+				finalResult = { ...run, exitCode: effectiveExitCode, model: candidate ?? run.model, error, structuredOutput } as RunPiStreamingResult & { structuredOutput?: unknown };
+				if (attempt.success || completionGuardTriggered || blockedError) break;
+				if (!isRetryableModelFailure(error) || index === candidates.length - 1) break;
+				attemptNotes.push(formatModelAttemptNote(attempt, candidates[index + 1]));
+			}
+		} catch (error) {
+			const message = safeExternalFailure("attempt", error);
+			finalResult = {
+				stderr: "",
+				exitCode: 1,
+				messages: [],
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+				error: finalResult?.error ? `${finalResult.error}\n${message}` : message,
+				finalOutput: finalResult?.finalOutput ?? "",
+			};
+		} finally {
+			// Clear the interrupt registration once the attempt loop exits.
+			ctx.registerInterrupt?.(undefined);
+		}
+	} else {
+		// Native path: unchanged, uses runPiStreaming.
 	for (let index = 0; index < candidates.length; index++) {
 		const candidate = candidates[index];
 		ctx.onAttemptStart?.({ model: candidate, thinking: resolveEffectiveThinking(candidate, step.thinking) });
@@ -671,19 +891,23 @@ async function runSingleStep(
 			structuredOutput: effectiveStructuredOutput,
 			forwardedFlags: ctx.forwardedFlags,
 		});
-		const run = await runPiStreaming(
-			args,
-			step.cwd ?? ctx.cwd,
-			ctx.outputFile,
-			env,
-			ctx.piPackageRoot,
-			ctx.piArgv1,
-			step.maxSubagentDepth,
-			{ eventsPath, runId: ctx.id, stepIndex: ctx.flatIndex, agent: step.agent },
-			ctx.registerInterrupt,
-			ctx.onChildEvent,
-		);
-		cleanupTempDir(tempDir);
+		let run: RunPiStreamingResult;
+		try {
+			run = await runPiStreaming(
+				args,
+				step.cwd ?? ctx.cwd,
+				ctx.outputFile,
+				env,
+				ctx.piPackageRoot,
+				ctx.piArgv1,
+				step.maxSubagentDepth,
+				{ eventsPath, runId: ctx.id, stepIndex: ctx.flatIndex, agent: step.agent },
+				ctx.registerInterrupt,
+				ctx.onChildEvent,
+			);
+		} finally {
+			cleanupTempDir(tempDir); // F1: ensure no prompt-dir leak on throw
+		}
 
 		const hiddenError = run.exitCode === 0 && !run.error ? detectSubagentError(run.messages) : null;
 		const blockedOutput = stripAcceptanceReport(getFinalOutput(run.messages));
@@ -746,6 +970,7 @@ async function runSingleStep(
 		if (!isRetryableModelFailure(error) || index === candidates.length - 1) break;
 		attemptNotes.push(formatModelAttemptNote(attempt, candidates[index + 1]));
 	}
+	} // end native else block
 
 	const rawOutput = finalResult?.finalOutput ?? "";
 	const outputForPersistence = stripAcceptanceReport(rawOutput);
@@ -769,19 +994,37 @@ async function runSingleStep(
 		saveError: resolvedOutput.saveError,
 	});
 	outputForSummary = finalizedOutput.displayOutput;
-	const acceptance = step.effectiveAcceptance
+	let acceptance: Awaited<ReturnType<typeof evaluateAcceptance>> | undefined;
+	let acceptanceCanFailRun = false;
+	let effectiveFinalExitCode = resolvedOutput.saveError ? 1 : finalResult?.exitCode ?? 1;
+	let effectiveFinalError = finalResult?.error;
+	if (resolvedOutput.saveError) {
+		effectiveFinalError = effectiveFinalError
+			? `${effectiveFinalError}\n${resolvedOutput.saveError}`
+			: resolvedOutput.saveError;
+	}
+
+	try {
+		acceptance = step.effectiveAcceptance
 			? await evaluateAcceptance({
 				acceptance: step.effectiveAcceptance,
 				output: outputForAcceptance,
 				cwd: step.cwd ?? ctx.cwd,
 			})
-		: undefined;
-	const acceptanceFailure = acceptance ? acceptanceFailureMessage(acceptance) : undefined;
-	const acceptanceCanFailRun = acceptanceFailure && acceptance?.explicit && (finalResult?.exitCode ?? 1) === 0 && !finalResult?.interrupted;
-	const effectiveFinalExitCode = acceptanceCanFailRun ? 1 : finalResult?.exitCode ?? 1;
-	const effectiveFinalError = acceptanceCanFailRun
-		? (finalResult?.error ? `${finalResult.error}\n${acceptanceFailure}` : acceptanceFailure)
-		: finalResult?.error;
+			: undefined;
+		const acceptanceFailure = acceptance ? acceptanceFailureMessage(acceptance) : undefined;
+		acceptanceCanFailRun = Boolean(
+			acceptanceFailure
+			&& acceptance?.explicit
+			&& effectiveFinalExitCode === 0
+			&& !finalResult?.interrupted,
+		);
+		if (acceptanceCanFailRun) {
+			effectiveFinalExitCode = 1;
+			effectiveFinalError = effectiveFinalError
+				? `${effectiveFinalError}\n${acceptanceFailure}`
+				: acceptanceFailure;
+		}
 
 	if (artifactPaths && ctx.artifactConfig?.enabled !== false) {
 		if (ctx.artifactConfig?.includeOutput !== false) {
@@ -805,6 +1048,38 @@ async function runSingleStep(
 			);
 		}
 	}
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		effectiveFinalExitCode = 1;
+		effectiveFinalError = effectiveFinalError ? `${effectiveFinalError}\n${message}` : message;
+	}
+
+	// Native runs have runPiStreaming write outputFile live; external runs persist it
+	// before their surface can be destructively closed as delivered.
+	if (externalOwner) {
+		try {
+			fs.writeFileSync(ctx.outputFile, outputForSummary, "utf-8");
+		} catch (error) {
+			const message = safeExternalFailure("output persistence", error);
+			effectiveFinalExitCode = 1;
+			effectiveFinalError = effectiveFinalError ? `${effectiveFinalError}\n${message}` : message;
+		}
+	}
+
+	// Finish only after core finalization, retaining every failed external leaf.
+	if (externalOwner) {
+		const isDelivered = effectiveFinalExitCode === 0 && !acceptanceCanFailRun;
+		let finishResult: Awaited<ReturnType<ExternalExecution["finish"]>>;
+		try {
+			finishResult = await externalOwner.finish(isDelivered ? "delivered" : "retained");
+		} catch (error) {
+			const message = safeExternalFailure("finish", error);
+			effectiveFinalExitCode = 1;
+			effectiveFinalError = effectiveFinalError ? `${effectiveFinalError}\n${message}` : message;
+			finishResult = { handle: externalOwner.surface, retained: true };
+		}
+		executionSurface = { handle: finishResult.handle, retained: finishResult.retained };
+	}
 
 	return {
 		agent: step.agent,
@@ -822,6 +1097,7 @@ async function runSingleStep(
 		structuredOutputPath: effectiveStructuredOutput?.outputPath,
 		structuredOutputSchemaPath: effectiveStructuredOutput?.schemaPath,
 		acceptance,
+		executionSurface,
 	};
 }
 
@@ -961,6 +1237,11 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	const overallStartTime = Date.now();
 	const shareEnabled = config.share === true;
 	const asyncDir = config.asyncDir;
+	const executionBackendConfig = config.executionBackends ?? {
+		protocolVersion: 1 as const,
+		registrations: [],
+	};
+	const executionBackendCoordinator = createDetachedExecutionBackendCoordinator(executionBackendConfig);
 	Object.assign(process.env, runDirEnv(asyncDir));
 	const statusPath = path.join(asyncDir, "status.json");
 	const eventsPath = path.join(asyncDir, "events.jsonl");
@@ -1596,6 +1877,8 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					piPackageRoot: config.piPackageRoot,
 					piArgv1: config.piArgv1,
 					forwardedFlags: config.forwardedFlags,
+					executionBackendCoordinator,
+					executionBackendConfig,
 					nestedRoute: config.nestedRoute,
 					registerInterrupt: (interrupt) => {
 						activeChildInterrupt = interrupt;
@@ -1646,6 +1929,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					structuredOutputPath: pr.structuredOutputPath,
 					structuredOutputSchemaPath: pr.structuredOutputSchemaPath,
 					acceptance: pr.acceptance,
+					executionSurface: pr.executionSurface,
 				});
 			}
 			const collection = collectDynamicResults(step as Parameters<typeof collectDynamicResults>[0], materialized.items, parallelResults);
@@ -1841,6 +2125,8 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 							piPackageRoot: config.piPackageRoot,
 							piArgv1: config.piArgv1,
 							forwardedFlags: config.forwardedFlags,
+							executionBackendCoordinator,
+							executionBackendConfig,
 							nestedRoute: config.nestedRoute,
 							registerInterrupt: (interrupt) => {
 								activeChildInterrupt = interrupt;
@@ -1934,6 +2220,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 							structuredOutputPath: pr.structuredOutputPath,
 							structuredOutputSchemaPath: pr.structuredOutputSchemaPath,
 							acceptance: pr.acceptance,
+							executionSurface: pr.executionSurface,
 						});
 					}
 				for (let t = 0; t < group.parallel.length; t++) {
@@ -2006,6 +2293,8 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				piPackageRoot: config.piPackageRoot,
 				piArgv1: config.piArgv1,
 				forwardedFlags: config.forwardedFlags,
+				executionBackendCoordinator,
+				executionBackendConfig,
 				nestedRoute: config.nestedRoute,
 				registerInterrupt: (interrupt) => {
 					activeChildInterrupt = interrupt;
@@ -2033,6 +2322,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				structuredOutputPath: singleResult.structuredOutputPath,
 				structuredOutputSchemaPath: singleResult.structuredOutputSchemaPath,
 				acceptance: singleResult.acceptance,
+				executionSurface: singleResult.executionSurface,
 			});
 			if (seqStep.outputName) {
 				outputs[seqStep.outputName] = outputEntryFromAsyncResult({
@@ -2241,6 +2531,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				structuredOutputPath: r.structuredOutputPath,
 				structuredOutputSchemaPath: r.structuredOutputSchemaPath,
 				acceptance: r.acceptance,
+				executionSurface: r.executionSurface,
 			})),
 			outputs,
 			workflowGraph: statusPayload.workflowGraph,
@@ -2264,11 +2555,13 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	}
 }
 
-const configArg = process.argv[2];
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+const configArg = isMain ? process.argv[2] : undefined;
 if (configArg) {
 	try {
 		const configJson = fs.readFileSync(configArg, "utf-8");
 		const config = JSON.parse(configJson) as SubagentRunConfig;
+		config.executionBackends = decodeDetachedExecutionBackendConfig(config.executionBackends);
 		try {
 			fs.unlinkSync(configArg);
 		} catch {
@@ -2282,7 +2575,7 @@ if (configArg) {
 		console.error("Subagent runner error:", err);
 		process.exit(1);
 	}
-} else {
+} else if (isMain) {
 	let input = "";
 	process.stdin.setEncoding("utf-8");
 	process.stdin.on("data", (chunk) => {
@@ -2291,6 +2584,7 @@ if (configArg) {
 	process.stdin.on("end", () => {
 		try {
 			const config = JSON.parse(input) as SubagentRunConfig;
+			config.executionBackends = decodeDetachedExecutionBackendConfig(config.executionBackends);
 			runSubagent(config).catch((runErr) => {
 				console.error("Subagent runner error:", runErr);
 				process.exit(1);

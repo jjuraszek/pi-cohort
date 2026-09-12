@@ -66,6 +66,8 @@ interface BuildPiArgsResult {
 	tempDir?: string;
 }
 
+type BuildPiArgsFileSystem = Pick<typeof fs, "mkdtempSync" | "writeFileSync" | "rmSync">;
+
 export function runDirEnv(asyncDir: string): Record<string, string> {
 	return { [SUBAGENT_RUN_DIR_ENV]: asyncDir };
 }
@@ -77,7 +79,7 @@ export function applyThinkingSuffix(model: string | undefined, thinking: string 
 	return `${model}:${thinking}`;
 }
 
-export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
+export function buildPiArgs(input: BuildPiArgsInput, fileSystem: BuildPiArgsFileSystem = fs): BuildPiArgsResult {
 	const args = [...input.baseArgs];
 	// Forwarded flags are already name-deduped by deriveForwardedFlags; append only
 	// when the child inherits full extension discovery (extensions === undefined).
@@ -137,23 +139,28 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 	}
 
 	let tempDir: string | undefined;
-	if (input.systemPrompt !== undefined && input.systemPrompt !== null) {
-		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
-		const stem = (input.promptFileStem ?? "prompt").replace(/[^\w.-]/g, "_");
-		const promptPath = path.join(tempDir, `${stem}.md`);
-		fs.writeFileSync(promptPath, input.systemPrompt, { mode: 0o600 });
-		args.push(input.systemPromptMode === "replace" ? "--system-prompt" : "--append-system-prompt", promptPath);
-	}
-
-	if (input.task.length > TASK_ARG_LIMIT) {
-		if (!tempDir) {
-			tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
+	try {
+		if (input.systemPrompt !== undefined && input.systemPrompt !== null) {
+			tempDir = fileSystem.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
+			const stem = (input.promptFileStem ?? "prompt").replace(/[^\w.-]/g, "_");
+			const promptPath = path.join(tempDir, `${stem}.md`);
+			fileSystem.writeFileSync(promptPath, input.systemPrompt, { mode: 0o600 });
+			args.push(input.systemPromptMode === "replace" ? "--system-prompt" : "--append-system-prompt", promptPath);
 		}
-		const taskFilePath = path.join(tempDir, "task.md");
-		fs.writeFileSync(taskFilePath, `Task: ${input.task}`, { mode: 0o600 });
-		args.push(`@${taskFilePath}`);
-	} else {
-		args.push(`Task: ${input.task}`);
+
+		if (input.task.length > TASK_ARG_LIMIT) {
+			if (!tempDir) {
+				tempDir = fileSystem.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
+			}
+			const taskFilePath = path.join(tempDir, "task.md");
+			fileSystem.writeFileSync(taskFilePath, `Task: ${input.task}`, { mode: 0o600 });
+			args.push(`@${taskFilePath}`);
+		} else {
+			args.push(`Task: ${input.task}`);
+		}
+	} catch (error) {
+		cleanupTempDir(tempDir, fileSystem);
+		throw error;
 	}
 
 	const env: Record<string, string | undefined> = {};
@@ -213,10 +220,13 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 
 export const parseParentPathEnv = parseNestedPathEnv;
 
-export function cleanupTempDir(tempDir: string | null | undefined): void {
+export function cleanupTempDir(
+	tempDir: string | null | undefined,
+	fileSystem: Pick<typeof fs, "rmSync"> = fs,
+): void {
 	if (!tempDir) return;
 	try {
-		fs.rmSync(tempDir, { recursive: true, force: true });
+		fileSystem.rmSync(tempDir, { recursive: true, force: true });
 	} catch {
 		// Temp cleanup is best effort.
 	}
