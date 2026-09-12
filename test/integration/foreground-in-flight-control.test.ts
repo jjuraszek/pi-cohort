@@ -72,7 +72,8 @@ describe("foreground in-flight turn control", { skip: !available ? "pi packages 
 		const controlEvents: NonNullable<RunSyncResult["controlEvents"]> = [];
 		const result = await runSync!(tempDir, agents, "echo", "Think hard", {
 			runId: "run-inflight",
-			controlConfig: { enabled: true, needsAttentionAfterMs: 200, inFlightSilenceCeilingMs: 100_000, activeNoticeAfterMs: 100_000, notifyOn: ["active_long_running", "needs_attention"] },
+			// 1s: message_start from a real child must land before the attention timer under full-suite load
+			controlConfig: { enabled: true, needsAttentionAfterMs: 1_000, inFlightSilenceCeilingMs: 100_000, activeNoticeAfterMs: 100_000, notifyOn: ["active_long_running", "needs_attention"] },
 			onControlEvent: (event: NonNullable<RunSyncResult["controlEvents"]>[number]) => controlEvents.push(event),
 		});
 		assert.equal(result.exitCode, 0);
