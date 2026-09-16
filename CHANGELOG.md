@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Child steps with an `outputSchema` now keep the `structured_output` tool when the resolved agent has a tool allowlist (`tools`, `toolsPrepend`, or `toolsAppend` in effect). Previously the allowlist dropped the extension-registered `structured_output` tool while the prompt still instructed the child to call it, so the step could never satisfy its structured output contract.
+
 ## [6.1.0] - 2026-09-12
 
 External execution backends currently require a non-Windows host. Native execution remains supported on Windows.

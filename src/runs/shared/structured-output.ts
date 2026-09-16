@@ -6,6 +6,9 @@ import type { JsonSchemaObject } from "../../shared/types.ts";
 
 export const STRUCTURED_OUTPUT_SCHEMA_ENV = "PI_SUBAGENT_STRUCTURED_OUTPUT_SCHEMA";
 export const STRUCTURED_OUTPUT_CAPTURE_ENV = "PI_SUBAGENT_STRUCTURED_OUTPUT_CAPTURE";
+// Registered by subagent-prompt-runtime.ts whenever the capture env is set; child
+// `--tools` allowlists must keep this name or the tool is filtered out of the toolbelt.
+export const STRUCTURED_OUTPUT_TOOL_NAME = "structured_output";
 
 export interface StructuredOutputRuntime {
 	schema: JsonSchemaObject;
