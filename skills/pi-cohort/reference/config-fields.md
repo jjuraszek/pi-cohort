@@ -1,10 +1,14 @@
 # subagent field reference: `config` and call-time `control`
 
-Fields accepted by `subagent({ action: "create" | "update", config: {...} })`, plus the call-time `control` overrides (last section).
+Scope: management `config` (`action: create|update`) and call-time `control`. The execution-time `skill` override is documented in SKILL.md "Per-task overrides"; the last section below only contrasts it with management `skills` so the two are not confused.
+
+## Management config (skills, plural)
+
+These fields are written via `subagent({ action: "create" | "update", config })`; `skills` is plural here. This section also lists the call-time `control` overrides.
 `config` may be an object or a JSON string. Presence of `steps` makes it a chain.
 Scope (for `config`): this is the management create/update path (`parseStepList`), which accepts exactly the step fields below and requires `outputSchema` to be a file path; file-authored `.chain.md` chains support additional step fields (parallel, expand, collect, concurrency, failFast, worktree, acceptance, inline outputSchema) - see SKILL.md chain authoring.
 
-## Agent config
+### Agent config
 
 | Field | Type | Meaning | Default |
 |---|---|---|---|
@@ -17,7 +21,7 @@ Scope (for `config`): this is the management create/update path (`parseStepList`
 | `model` | string \| false | Model override; false/"" clears. | inherit |
 | `fallbackModels` | string (csv) \| string[] \| false | Models tried in order on failure; false/"" clears. | none |
 | `tools` | string (csv) \| false | Tool allowlist; false/"" clears. MCP-direct tools rejected. | all |
-| `skills` | string (csv) \| false | Skills injected into the agent; false/"" clears. | none |
+| `skills` | string (csv) \| false | Skills injected into the agent (management config; execution-time per-task field is singular `skill`); false/"" clears. | none |
 | `extensions` | string (csv) \| "" \| false | Extension list; "" means empty list, false clears. | inherit |
 | `thinking` | string \| false | Thinking level; false/"" clears. | inherit |
 | `inheritProjectContext` | boolean | Inject project AGENTS.md context. | per-agent default |
@@ -29,7 +33,7 @@ Scope (for `config`): this is the management create/update path (`parseStepList`
 | `maxSubagentDepth` | integer >= 0 \| false | Nested subagent depth cap; false/"" clears. | inherit |
 | `completionGuard` | boolean | Enable completion guard for this agent. | inherit |
 
-## Chain config
+### Chain config
 
 Top-level: `name`, `description`, `package`, `scope` as above, plus required `steps` (non-empty array).
 
@@ -47,10 +51,10 @@ Per step:
 | `outputMode` | `"inline"` \| `"file-only"` | Output return mode. |
 | `reads` | string[] \| false | Files to read before the step. |
 | `model` | string | Model override. |
-| `skills` | string[] \| false | Skills to inject (NOTE: plural `skills` here, unlike the execution-time `skill` param). |
+| `skills` | string[] \| false | Skills to inject into this step's agent (management config, plural); the execution-time `chain[].skill` param is singular. |
 | `progress` | boolean | progress.md tracking. |
 
-## Call-time `control` overrides
+### Call-time `control` overrides
 
 Per-call attention-tracking overrides: `subagent({ ..., control: {...} })`. Run-level field - sits beside `tasks`/`chain`, not inside task items. The tool schema declares only `enabled`; all fields below are accepted (`additionalProperties: true`) and re-parsed defensively at runtime (`resolveControlConfig`, `src/runs/shared/subagent-control.ts`) - invalid values fall back to the defaults.
 
@@ -66,3 +70,13 @@ Per-call attention-tracking overrides: `subagent({ ..., control: {...} })`. Run-
 | `failedToolAttemptsBeforeAttention` | integer >= 1 | Mutating-tool failures before `needs_attention`. | `3` |
 | `notifyOn` | array of `"active_long_running"` \| `"needs_attention"` | Which events notify the parent. | both |
 | `notifyChannels` | array of `"event"` \| `"async"` | Delivery channels. | both |
+
+## Execution-time overrides (skill, singular)
+
+`skill` (csv) on a top-level call, a `tasks[]` item, or a `chain[]` step injects skills into that one child at dispatch; it never edits the agent definition.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `skill` | string (csv) | Skills injected into one child for this dispatch. |
+
+For the full per-task field list, see SKILL.md "Per-task overrides".

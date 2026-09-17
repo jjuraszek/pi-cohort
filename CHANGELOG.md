@@ -1,5 +1,22 @@
 # Changelog
 
+## [Unreleased]
+
+### Removed
+
+- Packaged prompts `/parallel-review`, `/review-loop`, `/parallel-cleanup`, `/gather-context-and-clarify`, `/parallel-context-build`, `/parallel-handoff-plan`. Review and delivery workflows live in pi-gauntlet.
+- Remaining `interview` references left from the pi-intercom removal.
+
+### Added
+
+- `/investigate <request> [--out path]`: parallel read-only recon (`scout`, `reviewer`, `context-builder` on refs), premise check, questions with recommendations, optional verification wave.
+- `/handoff [--out path]`: fixed-template brief for a fresh session; `doc/handoff-template.md` is the contract consumers parse.
+
+### Changed
+
+- `skills/pi-cohort/SKILL.md` covers only what the tool description and schema leave open (fresh vs fork, acceptance levels, per-task overrides, control actions); the prompt bodies, agent roster, and duplicated tool mechanics are gone.
+- `reference/config-fields.md` separates management `skills` from execution-time `skill`.
+
 ## [6.1.1] - 2026-09-17
 
 ### Fixed

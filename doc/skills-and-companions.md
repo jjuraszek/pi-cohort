@@ -42,14 +42,14 @@ Missing skills do not fail execution. The result summary shows a warning.
 
 The package bundles a `pi-cohort` skill that is automatically available to the parent agent when the extension is installed. It is for the orchestrating parent only: child subagents never receive it, and their context is explicitly filtered to strip parent-only orchestration instructions.
 
-What the bundled skill covers:
-- **Delegation patterns**: when to launch which agent, whether to use single, parallel, chain, or async mode, and whether to use fresh or forked context
-- **Prompt workflow recipes**: how to apply the packaged techniques directly with `subagent(...)` when the user describes the workflow in natural language instead of invoking a slash command. This includes parallel review, review-loop, parallel context-build, parallel handoff-plan, gather-context-and-clarify, and parallel cleanup
-- **Role-agent prompting guidance**: compact contract prompts instead of long scripts, what to include in role-specific meta prompts, and retrieval budgets for context gathering
-- **Safety boundaries**: child agents must not run subagents unless their resolved builtin tools explicitly include `subagent`, and must stop on unapproved decisions
-- **Control and diagnostics**: attention signals, soft interrupts, status, and the `doctor` action
+What the bundled skill covers - only what the `subagent` tool description and schema leave open:
+- **Fresh vs fork**: when a branched thread earns its cost and when a reviewer must not see the parent's reasoning
+- **Acceptance levels**: the evidence each level requires and how `auto` infers a level
+- **Per-task overrides**: `reads`, `outputMode`, `outputSchema`, `skill`, `cwd`, `acceptance` and where outputs land
+- **Control actions**: `status`, `interrupt`, `resume`, attention thresholds
+- **Config fields**: `reference/config-fields.md` for agent and chain management config
 
-If you are writing an agent that orchestrates subagents, the bundled skill helps it behave correctly without guessing the patterns. If you are a human user, you do not need to read it directly; the README and prompt shortcuts encode the same workflows in user-facing form.
+Review and delivery workflows live in pi-gauntlet; pi-cohort ships delegation primitives.
 
 ## Optional shortcuts
 
@@ -57,14 +57,8 @@ The package includes reusable prompt templates for common workflows. You do not 
 
 | Prompt | Use it for |
 |---|---|
-| `/parallel-review` | Launch fresh-context reviewers with distinct angles, then synthesize what to fix. |
-| `/review-loop` | Run parent-controlled worker, reviewer, and fix-worker cycles until clean or capped. |
-| `/parallel-context-build` | Run `context-builder` agents in parallel to produce planning handoff context and meta-prompts. |
-| `/parallel-handoff-plan` | Combine an external-reference `context-builder` pass and a local `context-builder` pass into an implementation handoff plan and meta-prompt. |
-| `/gather-context-and-clarify` | Scout and gather context first, then ask the user the clarification questions that matter. |
-| `/parallel-cleanup` | Run review-only cleanup passes after implementation. |
-
-Add `autofix` to `/parallel-review` or `/parallel-cleanup` to apply only the synthesized fixes worth doing now after reviewers return.
+| `/investigate <request> [--out path]` | Parallel read-only recon and premise check before planning or brainstorming; writes a brief with cited findings, questions with recommendations, and optional verification tasks. |
+| `/handoff [--out path]` | A fixed-template brief for continuing in a fresh session: intent, decisions, repo/worktree state, skills loaded, and gauntlet process state when present. Contract: [doc/handoff-template.md](handoff-template.md). |
 
 When a child needs an unapproved decision, it must stop with `BLOCKED: <decision needed>` as the first line, followed by `Done: <complete>` and `Remaining: <left>`. The parent receives an ordinary failed result; sequential chains stop at that step, parallel siblings keep their results, and follow-up is a fresh dispatch after the parent or human decides.
 

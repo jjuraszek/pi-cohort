@@ -117,6 +117,8 @@ Run parallel reviewers: one for correctness, one for tests, and one for unnecess
 
 That's the whole surface for day-to-day use. More phrasing patterns: [doc/commands.md](doc/commands.md#prompt-cookbook-appendix).
 
+Review and delivery workflows live in pi-gauntlet; pi-cohort ships delegation primitives plus `/investigate` and `/handoff`.
+
 ## Architecture
 
 `subagent()` supports four dispatch shapes, all through the same tool:
