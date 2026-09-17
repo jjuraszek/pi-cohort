@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { SUBAGENT_FANOUT_CHILD_ENV } from "./pi-args.ts";
-import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV, validateStructuredOutputValue } from "./structured-output.ts";
+import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV, STRUCTURED_OUTPUT_TOOL_NAME, validateStructuredOutputValue } from "./structured-output.ts";
 import type { JsonSchemaObject } from "../../shared/types.ts";
 
 const SUBAGENT_INHERIT_PROJECT_CONTEXT_ENV = "PI_SUBAGENT_INHERIT_PROJECT_CONTEXT";
@@ -10,7 +10,7 @@ const SUBAGENT_INHERIT_SKILLS_ENV = "PI_SUBAGENT_INHERIT_SKILLS";
 
 const STRUCTURED_OUTPUT_INSTRUCTIONS = [
 	"This subagent step has a strict structured output contract.",
-	"Your final action must be to call the `structured_output` tool with JSON matching the provided schema.",
+	"Your final action must be to call the `" + STRUCTURED_OUTPUT_TOOL_NAME + "` tool with JSON matching the provided schema.",
 	"Do not rely on prose-only completion; if you do not call `structured_output`, the parent will fail this step.",
 ].join("\n");
 
@@ -194,7 +194,7 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI): void {
 			execute: (_id: string, params: { value: unknown }) => Promise<unknown>;
 		}) => void;
 		registerTool({
-			name: "structured_output",
+			name: STRUCTURED_OUTPUT_TOOL_NAME,
 			label: "Structured Output",
 			description: "Submit the required final structured output for this subagent step. This terminates the step.",
 			parameters: parameters as never,

@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { encodeNestedPathEnv, parseNestedPathEnv, type NestedPathEntry } from "./nested-path.ts";
-import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV } from "./structured-output.ts";
+import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV, STRUCTURED_OUTPUT_TOOL_NAME } from "./structured-output.ts";
 import type { JsonSchemaObject } from "../../shared/types.ts";
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"];
@@ -116,6 +116,11 @@ export function buildPiArgs(input: BuildPiArgsInput, fileSystem: BuildPiArgsFile
 			}
 		}
 		if (builtinTools.length > 0) {
+			// The prompt runtime registers structured_output on demand; an allowlist
+			// without it would strand the tool the child is instructed to call.
+			if (input.structuredOutput && !builtinTools.includes(STRUCTURED_OUTPUT_TOOL_NAME)) {
+				builtinTools.push(STRUCTURED_OUTPUT_TOOL_NAME);
+			}
 			args.push("--tools", builtinTools.join(","));
 		}
 	}

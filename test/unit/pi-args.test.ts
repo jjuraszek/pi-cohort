@@ -19,6 +19,7 @@ import {
 	buildPiArgs,
 	runDirEnv,
 } from "../../src/runs/shared/pi-args.ts";
+import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_TOOL_NAME } from "../../src/runs/shared/structured-output.ts";
 
 const originalEnv = {
 	HOME: process.env.HOME,
@@ -200,6 +201,38 @@ describe("buildPiArgs system prompt mode wiring", () => {
 
 		const toolsArg = args[args.indexOf("--tools") + 1];
 		assert.equal(toolsArg, "read,grep,find,ls,bash,edit,write,custom_tool");
+	});
+
+	it("keeps the structured_output tool in the allowlist for structured output steps", () => {
+		const { args, env } = buildPiArgs({
+			baseArgs: ["-p"],
+			task: "hello",
+			sessionEnabled: false,
+			inheritProjectContext: false,
+			inheritSkills: false,
+			tools: ["read", "bash"],
+			structuredOutput: {
+				schema: { type: "object" },
+				schemaPath: "/tmp/schema.json",
+				outputPath: "/tmp/output.json",
+			},
+		});
+
+		assert.equal(args[args.indexOf("--tools") + 1], `read,bash,${STRUCTURED_OUTPUT_TOOL_NAME}`);
+		assert.equal(env[STRUCTURED_OUTPUT_CAPTURE_ENV], "/tmp/output.json");
+	});
+
+	it("does not add structured_output to the allowlist without a structured output contract", () => {
+		const { args } = buildPiArgs({
+			baseArgs: ["-p"],
+			task: "hello",
+			sessionEnabled: false,
+			inheritProjectContext: false,
+			inheritSkills: false,
+			tools: ["read", "bash"],
+		});
+
+		assert.equal(args[args.indexOf("--tools") + 1], "read,bash");
 	});
 
 	it("keeps tool extension paths when explicit extensions are allowlisted", () => {

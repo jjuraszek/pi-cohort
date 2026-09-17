@@ -111,6 +111,8 @@ Supported override fields are `model`, `fallbackModels`, `thinking`, `systemProm
 "agentOverrides": { "scout": { "toolsPrepend": ["some_extension_tool"] } }
 ```
 
+Any entry in the resolved list becomes a `--tools` allowlist on the child, and allowlists filter extension-registered tools too - an extension tool that loads in the child (registers, shows in discovery) is still hidden from the child's toolbelt unless its name is in the list. Exception: a step with `outputSchema` gets pi-cohort's `structured_output` tool added to its allowlist automatically; never add `structured_output` to `tools`/`toolsAppend` yourself, since the tool only exists on structured output steps.
+
 Set `disabled: true` to hide a builtin from runtime discovery and agent-facing `subagent({ action: "list" })` output. For bulk control, set `subagents.disableBuiltins: true` in settings.
 
 ## Prompt assembly
