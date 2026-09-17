@@ -45,3 +45,21 @@ test("prompts take the argument and handoff names every template section", () =>
 		assert.ok(handoff.includes(section), `handoff.md: missing section ${section}`);
 	}
 });
+
+test("handoff prompt and template carry the run-worktree contract", () => {
+	const handoff = fs.readFileSync(path.join(promptsDir, "handoff.md"), "utf-8");
+	for (const token of [
+		"Run worktree:",
+		"git worktree list --porcelain",
+		"git -C <candidate> rev-parse --show-toplevel",
+		"git -C <target>",
+		"open-question:",
+		"flow-level",
+	]) {
+		assert.ok(handoff.includes(token), `handoff.md: missing token ${token}`);
+	}
+	const template = fs.readFileSync(path.join(projectRoot, "doc", "handoff-template.md"), "utf-8");
+	for (const token of ["describes that worktree", "open-question"]) {
+		assert.ok(template.includes(token), `handoff-template.md: missing token ${token}`);
+	}
+});

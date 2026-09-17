@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- `/handoff` records the run's linked worktree instead of the session cwd: the producer names it, the scout validates it against `git worktree list --porcelain` and snapshots it via `git -C`; a rejected candidate is surfaced under `## Open questions`; the `worktree:` field no longer misreports `yes` from a primary subdirectory. ([#17](https://github.com/jjuraszek/pi-cohort/issues/17))
+
 ## [7.0.0] - 2026-09-17
 
 ### Removed
