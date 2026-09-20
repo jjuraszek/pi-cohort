@@ -17,6 +17,7 @@ $@
 - Write nothing into the repository. The brief goes to `--out` if given (relative resolves against cwd), else `$DIR/brief.md`.
 - A question whose answer is in code, docs, or the tracker is not asked; it is looked up in wave 1 or wave 2.
 - A verification task that would run, build, or validate the proposed change is rejected at brief-writing time. Wave 2 exercises the system as it is today.
+- No human gate between waves: the request is the approval for the whole investigation, and every wave is read-only.
 
 ## Wave 1
 
@@ -40,12 +41,12 @@ A task that errored or left its output empty -> its section reads `<agent> faile
 
 ## Brief
 
-Read the outputs and write, section names fixed:
+Read the outputs and draft, section names fixed:
 
 ```markdown
 # Investigation: <slug>
 ## Request
-## Findings            (cited; `### Verified` appended after wave 2)
+## Findings            (cited; `### Verified` holds wave 2 results)
 ## External context    (only when context-builder ran; unreadable refs listed)
 ## Premise check       (Confirmed / Contradicted / Unverified - one line each, cited)
 ## Open questions      (numbered; each ends with `Recommendation: <answer> - <why>`)
@@ -53,8 +54,6 @@ Read the outputs and write, section names fixed:
 ## Next steps          (suggestions only; no implementation task decomposition)
 ```
 
-Print the path and the brief.
+## Wave 2
 
-## Wave 2 (ask once)
-
-Ask: "Run the verification tasks?" No -> stop. Yes -> one call `subagent({ async: false, context: "fresh", tasks })`, one task per verification task, `scout` by default or `reviewer` when judgement is needed, each task text containing the phrase "read-only", `reads: false`, absolute `output` under `$DIR`. Fold results into `## Findings` under `### Verified` and rewrite the brief at the same path.
+Runs immediately after the draft; no ask. One call `subagent({ async: false, context: "fresh", tasks })`, one task per verification task, `scout` by default or `reviewer` when judgement is needed, each task text containing the phrase "read-only", `reads: false`, absolute `output` under `$DIR`. No verification tasks -> skip the wave and omit `### Verified`. Fold results into `## Findings` under `### Verified`, write the brief, and print the path and the brief once.

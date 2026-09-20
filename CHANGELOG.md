@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- `/investigate` runs the verification wave right after the wave-1 draft instead of asking "Run the verification tasks?": every wave is read-only, so the request already authorizes the whole run. The brief prints once, with `### Verified` filled in.
+
 ## [7.0.1] - 2026-09-17
 
 ### Fixed

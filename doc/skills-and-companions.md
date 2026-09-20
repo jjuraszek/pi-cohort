@@ -57,7 +57,7 @@ The package includes reusable prompt templates for common workflows. You do not 
 
 | Prompt | Use it for |
 |---|---|
-| `/investigate <request> [--out path]` | Parallel read-only recon and premise check before planning or brainstorming; writes a brief with cited findings, questions with recommendations, and optional verification tasks. |
+| `/investigate <request> [--out path]` | Parallel read-only recon and premise check before planning or brainstorming; writes a brief with cited findings, questions with recommendations, and verified findings from a second read-only wave. |
 | `/handoff [--out path]` | A fixed-template brief for continuing in a fresh session: intent, decisions, repo/worktree state, skills loaded, and gauntlet process state when present. Contract: [doc/handoff-template.md](handoff-template.md). |
 
 When a child needs an unapproved decision, it must stop with `BLOCKED: <decision needed>` as the first line, followed by `Done: <complete>` and `Remaining: <left>`. The parent receives an ordinary failed result; sequential chains stop at that step, parallel siblings keep their results, and follow-up is a fresh dispatch after the parent or human decides.
