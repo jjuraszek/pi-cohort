@@ -38,11 +38,15 @@ Injected skills use this shape:
 
 Missing skills do not fail execution. The result summary shows a warning.
 
-## Bundled skill
+## Bundled skills
 
-The package bundles a `pi-cohort` skill that is automatically available to the parent agent when the extension is installed. It is for the orchestrating parent only: child subagents never receive it, and their context is explicitly filtered to strip parent-only orchestration instructions.
+The package bundles two skills, both available to the parent agent when the extension is installed.
 
-What the bundled skill covers - only what the `subagent` tool description and schema leave open:
+`handoff` (`/skill:handoff [--out <path> | --key <stem>]`) writes a fixed-template brief for continuing in a fresh session: intent, repo/worktree state, decisions, open questions, skills loaded - nothing else. It ends with `Handoff written: <abs path>`. By default the brief lands in `<tmpdir>/pi-handoff/<primary>--<leaf>.md`, a path a resume flow derives from its own cwd; `--key` picks another file name in that directory and `--out` any path. A skill in another package that wants extra sections reads `skills/handoff/SKILL.md`, follows it, and appends its own `##` sections after `## Skills loaded`. Contract: [doc/handoff-template.md](handoff-template.md).
+
+`pi-cohort` is for the orchestrating parent only: child subagents never receive it, and their context is explicitly filtered to strip parent-only orchestration instructions.
+
+What the `pi-cohort` skill covers - only what the `subagent` tool description and schema leave open:
 - **Fresh vs fork**: when a branched thread earns its cost and when a reviewer must not see the parent's reasoning
 - **Acceptance levels**: the evidence each level requires and how `auto` infers a level
 - **Per-task overrides**: `reads`, `outputMode`, `outputSchema`, `skill`, `cwd`, `acceptance` and where outputs land
@@ -53,12 +57,11 @@ Review and delivery workflows live in pi-gauntlet; pi-cohort ships delegation pr
 
 ## Optional shortcuts
 
-The package includes reusable prompt templates for common workflows. You do not need them, but they are handy when you want the same shape every time:
+The package includes a reusable prompt template for recon. You do not need them, but they are handy when you want the same shape every time:
 
 | Prompt | Use it for |
 |---|---|
 | `/investigate <request> [--out path]` | Parallel read-only recon and premise check before planning or brainstorming; writes a brief with cited findings, questions with recommendations, and verified findings from a second read-only wave. |
-| `/handoff [--out path]` | A fixed-template brief for continuing in a fresh session: intent, decisions, repo/worktree state, skills loaded, and gauntlet process state when present. Contract: [doc/handoff-template.md](handoff-template.md). |
 
 When a child needs an unapproved decision, it must stop with `BLOCKED: <decision needed>` as the first line, followed by `Done: <complete>` and `Remaining: <left>`. The parent receives an ordinary failed result; sequential chains stop at that step, parallel siblings keep their results, and follow-up is a fresh dispatch after the parent or human decides.
 

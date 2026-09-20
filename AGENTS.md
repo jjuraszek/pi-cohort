@@ -85,7 +85,7 @@ Flat discovery in `src/agents/agents.ts` is the single source of truth for perso
 | What changed across versions | [`CHANGELOG.md`](CHANGELOG.md) |
 | Agent/chain discovery, overrides, scopes | [`doc/agents-and-chains.md`](doc/agents-and-chains.md) |
 | Cost aggregation, `cost:external` | [`doc/observability.md`](doc/observability.md) |
-| Consume or produce a handoff brief | [`doc/handoff-template.md`](doc/handoff-template.md) |
+| Produce (`/skill:handoff`) or consume a handoff brief | [`doc/handoff-template.md`](doc/handoff-template.md) |
 | pi-gauntlet skill overrides for this repo | [`.pi/gauntlet-overrides.md`](.pi/gauntlet-overrides.md) |
 | Run a release | [`.agents/skills/release/SKILL.md`](.agents/skills/release/SKILL.md) |
 | Change the shared AGENTS core | edit [`AGENTS.core.md`](AGENTS.core.md), `node scripts/check-agents-core.mjs --fix`, copy both files to the siblings, `--fix` there |

@@ -1,5 +1,7 @@
 # /handoff records the run's worktree, not the session cwd (#17)
 
+> **Superseded by:** [doc/specs/2026-09-20-gh-18-handoff-skill-append-seam.md](./2026-09-20-gh-18-handoff-skill-append-seam.md) - "### Template" and "### Tests" sections only
+
 **Goal:** `/handoff`'s `## Repo state` describes the linked worktree the run works in, even when pi runs in the primary checkout. Supersedes `doc/specs/2026-09-17-prune-prompts-investigate-handoff.md`, "### `prompts/handoff.md`" flow step 1 (the repo snapshot) only.
 
 ## Problem

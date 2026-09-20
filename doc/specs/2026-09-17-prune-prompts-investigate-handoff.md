@@ -1,6 +1,7 @@
 # Prune packaged prompts: `/investigate`, `/handoff`, schema-residual SKILL.md
 
 > **Superseded by:** [doc/specs/2026-09-17-gh-17-handoff-records-run-worktree.md](./2026-09-17-gh-17-handoff-records-run-worktree.md) - "### `prompts/handoff.md`" flow step 1 (repo snapshot) only
+> **Superseded by:** [doc/specs/2026-09-20-gh-18-handoff-skill-append-seam.md](./2026-09-20-gh-18-handoff-skill-append-seam.md) - "### `prompts/handoff.md`" fully, and the `/handoff` entries of "### Docs" only
 
 **Goal:** replace pi-cohort's six packaged prompts with two user-invoked prompts that use parallel personas where they add information the parent lacks, shrink `skills/pi-cohort/SKILL.md` to what the `subagent` tool description and schema cannot carry, remove the last `interview` (pi-intercom) references, and hand pi-gauntlet the process-resume and brainstorming-rigor sides via tickets (filed: pi-gauntlet#31, #32).
 

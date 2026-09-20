@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- `/handoff` no longer expands; `/skill:handoff [--out <path> | --key <stem>]` replaces it, writes to `<tmpdir>/pi-handoff/<primary>--<leaf>.md` by default and ends with `Handoff written: <path>`; `## Process state` is no longer produced here; argument-less `gauntlet-resume` lookup of that path lands on the pi-gauntlet side - until then resume takes the printed path. ([#18](https://github.com/jjuraszek/pi-cohort/issues/18), [pi-gauntlet#40](https://github.com/jjuraszek/pi-gauntlet/issues/40))
+
 ## [7.0.2] - 2026-09-20
 
 ### Changed

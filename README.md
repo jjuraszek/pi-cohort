@@ -117,7 +117,7 @@ Run parallel reviewers: one for correctness, one for tests, and one for unnecess
 
 That's the whole surface for day-to-day use. More phrasing patterns: [doc/commands.md](doc/commands.md#prompt-cookbook-appendix).
 
-Review and delivery workflows live in pi-gauntlet; pi-cohort ships delegation primitives plus `/investigate` and `/handoff`.
+Review and delivery workflows live in pi-gauntlet; pi-cohort ships delegation primitives plus `/investigate` and `/skill:handoff [--out <path> | --key <stem>]` (the brief lands in `<tmpdir>/pi-handoff/<primary>--<leaf>.md` by default; contract in [doc/handoff-template.md](doc/handoff-template.md)).
 
 ## Architecture
 
