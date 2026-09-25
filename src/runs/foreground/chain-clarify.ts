@@ -11,7 +11,7 @@ import { matchesKey, visibleWidth, truncateToWidth } from "@earendil-works/pi-tu
 import type { AgentConfig } from "../../agents/agents.ts";
 import type { ResolvedStepBehavior } from "../../shared/settings.ts";
 import { resolveModelCandidate, splitThinkingSuffix } from "../shared/model-fallback.ts";
-import { findModelInfo, getSupportedThinkingLevels, type ModelInfo, type ThinkingLevel } from "../../shared/model-info.ts";
+import { findModelInfo, getSupportedThinkingLevels, splitKnownThinkingSuffix, type ModelInfo, type ThinkingLevel } from "../../shared/model-info.ts";
 
 type ClarifyMode = 'single' | 'parallel' | 'chain';
 
@@ -696,9 +696,8 @@ export class ChainClarifyComponent implements Component {
 		const currentModel = this.getEffectiveBehavior(stepIndex).model;
 		if (!currentModel) return;
 
-		const { baseModel } = splitThinkingSuffix(currentModel);
-		const newModel = level === "off" ? baseModel : `${baseModel}:${level}`;
-		this.updateBehavior(stepIndex, "model", newModel);
+		const { baseModel } = splitKnownThinkingSuffix(currentModel);
+		this.updateBehavior(stepIndex, "model", `${baseModel}:${level}`);
 	}
 
 	private filterSkills(): void {
@@ -1009,7 +1008,8 @@ export class ChainClarifyComponent implements Component {
 			"low": "Light reasoning",
 			"medium": "Moderate reasoning",
 			"high": "Deep reasoning",
-			"xhigh": "Maximum reasoning (ultrathink)",
+			"xhigh": "Extra-deep reasoning (ultrathink)",
+			"max": "Provider maximum reasoning",
 		};
 
 		const levels = this.getAvailableThinkingLevels(this.editingStep!);

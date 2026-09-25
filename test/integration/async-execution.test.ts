@@ -13,7 +13,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createEventBus, createMockPi, createTempDir, events, makeAgent, makeMinimalCtx, removeTempDir, tryImport } from "../support/helpers.ts";
+import { createEventBus, createMockPi, createTempDir, events, makeAgent, makeMinimalCtx, makeParentSessionCtx, removeTempDir, tryImport } from "../support/helpers.ts";
 import type { MockPi } from "../support/helpers.ts";
 
 interface AsyncExecutionResult {
@@ -487,6 +487,47 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.ok(taskArg.includes(`Update progress at: ${path.join(tempDir, "progress.md")}`));
 		assert.ok(taskArg.includes(`Write your findings to: ${outputPath}`));
 		assert.equal(fs.existsSync(path.join(tempDir, "progress.md")), true);
+	});
+
+	it("top-level async and resume inherit the parent's then-current model and thinking", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
+		mockPi.onCall({ output: "First pass" });
+		mockPi.onCall({ output: "Resumed pass" });
+		const executor = createSubagentExecutor!({
+			pi: { events: createEventBus(), getSessionName: () => undefined },
+			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
+			config: {},
+			asyncByDefault: false,
+			tempArtifactsDir: tempDir,
+			getSubagentSessionRoot: () => tempDir,
+			expandTilde: (p: string) => p,
+			discoverAgents: () => ({ agents: [makeAgent("worker")] }),
+		});
+
+		const first = await executor.execute(
+			"async-inherit-first",
+			{ agent: "worker", task: "Do async work", async: true, clarify: false },
+			new AbortController().signal,
+			undefined,
+			makeParentSessionCtx(tempDir, "github-copilot", "gpt-6", "high"),
+		);
+		const firstId = first.details?.asyncId;
+		assert.ok(firstId, "expected asyncId");
+		const firstPayload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(firstId, 15_000), "utf-8")) as AsyncResultPayload;
+		assert.equal(firstPayload.results[0]?.model, "github-copilot/gpt-6:high");
+		assert.deepEqual(firstPayload.results[0]?.attemptedModels, ["github-copilot/gpt-6:high"]);
+
+		const resumed = await executor.execute(
+			"async-inherit-resume",
+			{ action: "resume", id: firstId, message: "Continue" },
+			new AbortController().signal,
+			undefined,
+			makeParentSessionCtx(tempDir, "anthropic", "claude-sonnet-4", "low"),
+		);
+		const resumedId = resumed.details?.asyncId;
+		assert.ok(resumedId, `expected resumed asyncId: ${JSON.stringify(resumed.content)}`);
+		const resumedPayload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(resumedId, 15_000), "utf-8")) as AsyncResultPayload;
+		assert.equal(resumedPayload.results[0]?.model, "anthropic/claude-sonnet-4:low");
+		assert.deepEqual(resumedPayload.results[0]?.attemptedModels, ["anthropic/claude-sonnet-4:low"]);
 	});
 
 	it("top-level async parallel defaults require explicit output and progress", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
@@ -1499,6 +1540,78 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(payload.success, true);
 		assert.equal(payload.results[0].model, "github-copilot/gpt-5-mini");
 		assert.deepEqual(payload.results[0].attemptedModels, ["github-copilot/gpt-5-mini"]);
+	});
+
+	it("background single runs inherit the parent model and thinking, including fallbacks", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		mockPi.onCall({
+			jsonl: [{
+				type: "message_end",
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "primary failed" }],
+					model: "github-copilot/gpt-6",
+					errorMessage: "rate limit exceeded",
+					usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } },
+				},
+			}],
+			exitCode: 1,
+		});
+		mockPi.onCall({ output: "Done asynchronously" });
+		const id = `async-inherit-${Date.now().toString(36)}`;
+
+		executeAsyncSingle(id, {
+			agent: "worker",
+			task: "Do work",
+			agentConfig: makeAgent("worker", { fallbackModels: ["anthropic/claude-sonnet-4"] }),
+			ctx: {
+				pi: { events: { emit() {} } },
+				cwd: tempDir,
+				currentSessionId: "session-1",
+				currentModelProvider: "github-copilot",
+				parentModel: "github-copilot/gpt-6",
+				parentThinking: "max",
+			},
+			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+			shareEnabled: false,
+			sessionRoot: path.join(tempDir, "sessions"),
+			maxSubagentDepth: 2,
+		});
+
+		const resultFile = await waitForAsyncResultFile(id, 15_000);
+		const payload = JSON.parse(fs.readFileSync(resultFile, "utf-8")) as AsyncResultPayload;
+		assert.equal(payload.results[0]?.model, "anthropic/claude-sonnet-4:max");
+		const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf-8")) as AsyncStatusPayload;
+		assert.equal(status.steps?.[0]?.model, "anthropic/claude-sonnet-4:max");
+		assert.equal(status.steps?.[0]?.thinking, "max");
+		assert.deepEqual(payload.results[0]?.attemptedModels, ["github-copilot/gpt-6:max", "anthropic/claude-sonnet-4:max"]);
+		const args = readLastMockPiArgs(mockPi);
+		assert.equal(args[args.indexOf("--model") + 1], "anthropic/claude-sonnet-4:max");
+	});
+
+	it("background chain steps inherit the parent model and emit :off", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		mockPi.onCall({ output: "Step done" });
+		const id = `async-chain-inherit-${Date.now().toString(36)}`;
+
+		executeAsyncChain(id, {
+			chain: [{ agent: "worker", task: "Do work" }],
+			agents: [makeAgent("worker")],
+			ctx: {
+				pi: { events: { emit() {} } },
+				cwd: tempDir,
+				currentSessionId: "session-1",
+				parentModel: "github-copilot/gpt-6",
+				parentThinking: "off",
+			},
+			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+			shareEnabled: false,
+			maxSubagentDepth: 2,
+		});
+
+		const resultFile = await waitForAsyncResultFile(id, 15_000);
+		const payload = JSON.parse(fs.readFileSync(resultFile, "utf-8")) as AsyncResultPayload;
+		assert.equal(payload.results[0]?.model, "github-copilot/gpt-6:off");
+		const args = readLastMockPiArgs(mockPi);
+		assert.equal(args[args.indexOf("--model") + 1], "github-copilot/gpt-6:off");
 	});
 
 	it("background runs resolve skills from the effective task cwd", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {

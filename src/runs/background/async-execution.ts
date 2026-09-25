@@ -51,6 +51,10 @@ interface AsyncExecutionContext {
 	cwd: string;
 	currentSessionId: string;
 	currentModelProvider?: string;
+	/** Parent session model as provider/id, captured at dispatch */
+	parentModel?: string;
+	/** Parent session thinking level, captured at dispatch */
+	parentThinking?: string;
 	executionBackend?: string;
 }
 
@@ -355,8 +359,10 @@ export function executeAsyncChain(
 		taskTemplate = taskTemplate.replace(/\{chain_dir\}/g, runnerCwd);
 		const task = injectSingleOutputInstruction(`${readInstructions.prefix}${taskTemplate}${progressInstructions.suffix}`, outputPath);
 
-		const primaryModel = resolveModelCandidate(behavior.model ?? a.model, availableModels, ctx.currentModelProvider);
-		const model = applyThinkingSuffix(primaryModel, a.thinking);
+		const primaryRaw = behavior.model ?? a.model ?? ctx.parentModel;
+		const thinking = a.thinking ?? ctx.parentThinking;
+		const primaryModel = resolveModelCandidate(primaryRaw, availableModels, ctx.currentModelProvider);
+		const model = applyThinkingSuffix(primaryModel, thinking);
 		return {
 			agent: s.agent,
 			task,
@@ -366,9 +372,9 @@ export function executeAsyncChain(
 			structured: Boolean(s.outputSchema),
 			cwd: stepCwd,
 			model,
-			thinking: resolveEffectiveThinking(model, a.thinking),
-			modelCandidates: buildModelCandidates(behavior.model ?? a.model, a.fallbackModels, availableModels, ctx.currentModelProvider).map((candidate) =>
-				applyThinkingSuffix(candidate, a.thinking),
+			thinking: resolveEffectiveThinking(model, thinking),
+			modelCandidates: buildModelCandidates(primaryRaw, a.fallbackModels, availableModels, ctx.currentModelProvider).map((candidate) =>
+				applyThinkingSuffix(candidate, thinking),
 			),
 			tools: a.tools,
 			extensions: a.extensions,
@@ -670,10 +676,9 @@ export function executeAsyncSingle(
 	const validationError = validateFileOnlyOutputMode(outputMode, outputPath, `Async single run (${agent})`);
 	if (validationError) return formatAsyncStartError("single", validationError);
 	const taskWithOutputInstruction = injectSingleOutputInstruction(task, outputPath);
-	const model = applyThinkingSuffix(
-		resolveModelCandidate(params.modelOverride ?? agentConfig.model, availableModels, ctx.currentModelProvider),
-		agentConfig.thinking,
-	);
+	const primaryRaw = params.modelOverride ?? agentConfig.model ?? ctx.parentModel;
+	const thinking = agentConfig.thinking ?? ctx.parentThinking;
+	const model = applyThinkingSuffix(resolveModelCandidate(primaryRaw, availableModels, ctx.currentModelProvider), thinking);
 	let spawnResult: { pid?: number; error?: string } = {};
 	try {
 		spawnResult = spawnRunner(
@@ -685,9 +690,9 @@ export function executeAsyncSingle(
 						task: taskWithOutputInstruction,
 						cwd: runnerCwd,
 						model,
-						thinking: resolveEffectiveThinking(model, agentConfig.thinking),
-						modelCandidates: buildModelCandidates(params.modelOverride ?? agentConfig.model, agentConfig.fallbackModels, availableModels, ctx.currentModelProvider).map((candidate) =>
-							applyThinkingSuffix(candidate, agentConfig.thinking),
+						thinking: resolveEffectiveThinking(model, thinking),
+						modelCandidates: buildModelCandidates(primaryRaw, agentConfig.fallbackModels, availableModels, ctx.currentModelProvider).map((candidate) =>
+							applyThinkingSuffix(candidate, thinking),
 						),
 						tools: agentConfig.tools,
 						extensions: agentConfig.extensions,

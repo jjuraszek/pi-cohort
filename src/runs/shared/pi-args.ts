@@ -6,7 +6,7 @@ import { encodeNestedPathEnv, parseNestedPathEnv, type NestedPathEntry } from ".
 import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV, STRUCTURED_OUTPUT_TOOL_NAME } from "./structured-output.ts";
 import type { JsonSchemaObject } from "../../shared/types.ts";
 
-const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"];
+const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const TASK_ARG_LIMIT = 8000;
 const PROMPT_RUNTIME_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "subagent-prompt-runtime.ts");
 const FANOUT_CHILD_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "extension", "fanout-child.ts");
@@ -73,7 +73,7 @@ export function runDirEnv(asyncDir: string): Record<string, string> {
 }
 
 export function applyThinkingSuffix(model: string | undefined, thinking: string | undefined): string | undefined {
-	if (!model || !thinking || thinking === "off") return model;
+	if (!model || !thinking) return model;
 	const colonIdx = model.lastIndexOf(":");
 	if (colonIdx !== -1 && THINKING_LEVELS.includes(model.substring(colonIdx + 1))) return model;
 	return `${model}:${thinking}`;

@@ -17,7 +17,7 @@ interface ClarifyTestComponent {
 	modelSelectedIndex: number;
 	filteredModels: ClarifyTestModel[];
 	getEffectiveModel(stepIndex: number): string;
-	applyThinkingLevel(level: "high"): void;
+	applyThinkingLevel(level: "high" | "off"): void;
 	enterModelSelector(): void;
 	enterThinkingSelector(): void;
 	renderThinkingSelector(): string[];
@@ -39,6 +39,47 @@ const available = !!clarifyMod;
 const ChainClarifyComponent = clarifyMod?.ChainClarifyComponent;
 
 describe("chain clarify model display", { skip: !available ? "pi packages not available" : undefined }, () => {
+	it("emits :off when the user selects off", () => {
+		const component = new ChainClarifyComponent(
+			{ requestRender() {} },
+			{ fg(_key: string, text: string) { return text; } },
+			[{ name: "worker", description: "", systemPrompt: "", systemPromptMode: "replace", inheritProjectContext: false, inheritSkills: false, source: "user", filePath: "worker.md" }],
+			["Task"],
+			"Task",
+			undefined,
+			[{ output: false, outputMode: "inline", reads: false, progress: false, skills: [], model: "github-copilot/gpt-6:high" }],
+			[{ provider: "github-copilot", id: "gpt-6", fullId: "github-copilot/gpt-6" }],
+			"github-copilot",
+			[],
+			() => {},
+			"chain",
+		);
+
+		component.editingStep = 0;
+		component.applyThinkingLevel("off");
+
+		assert.equal(component.getEffectiveModel(0), "github-copilot/gpt-6:off");
+	});
+	it("preserves a colon in a model id when applying thinking", () => {
+		const component = new ChainClarifyComponent(
+			{ requestRender() {} },
+			{ fg(_key: string, text: string) { return text; } },
+			[{ name: "worker", description: "", systemPrompt: "", systemPromptMode: "replace", inheritProjectContext: false, inheritSkills: false, source: "user", filePath: "worker.md" }],
+			["Task"],
+			"Task",
+			undefined,
+			[{ output: false, outputMode: "inline", reads: false, progress: false, skills: [], model: "bedrock/anthropic.claude-v1:0" }],
+			[{ provider: "bedrock", id: "anthropic.claude-v1:0", fullId: "bedrock/anthropic.claude-v1:0" }],
+			"bedrock",
+			[],
+			() => {},
+			"chain",
+		);
+		component.editingStep = 0;
+		component.applyThinkingLevel("high");
+		assert.equal(component.getEffectiveModel(0), "bedrock/anthropic.claude-v1:0:high");
+	});
+
 	it("keeps the preferred provider visible after applying thinking to a bare model", () => {
 		const component = new ChainClarifyComponent(
 			{ requestRender() {} },
@@ -112,7 +153,8 @@ describe("chain clarify model display", { skip: !available ? "pi packages not av
 
 		assert.match(rendered, /off - No extended thinking/);
 		assert.match(rendered, /high - Deep reasoning/);
-		assert.match(rendered, /xhigh - Maximum reasoning/);
+		assert.match(rendered, /xhigh - Extra-deep reasoning/);
+		assert.doesNotMatch(rendered, /\bmax - /);
 		assert.doesNotMatch(rendered, /minimal - Brief reasoning/);
 		assert.doesNotMatch(rendered, /low - Light reasoning/);
 		assert.doesNotMatch(rendered, /medium - Moderate reasoning/);

@@ -96,7 +96,8 @@ interface MinimalCtx {
 	modelRegistry: {
 		getAvailable: () => Array<{ provider: string; id: string }>;
 	};
-	model?: { provider: string };
+	model?: { provider: string; id?: string };
+	thinkingLevel?: string;
 }
 
 export function makeMinimalCtx(cwd: string): MinimalCtx {
@@ -112,6 +113,11 @@ export function makeMinimalCtx(cwd: string): MinimalCtx {
 			getAvailable: () => [],
 		},
 	};
+}
+
+/** MinimalCtx whose parent session runs `provider/id` at `thinkingLevel`, as a live pi session would expose. */
+export function makeParentSessionCtx(cwd: string, provider: string, id: string, thinkingLevel?: string): MinimalCtx {
+	return { ...makeMinimalCtx(cwd), model: { provider, id }, thinkingLevel };
 }
 
 /**

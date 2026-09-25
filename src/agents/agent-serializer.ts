@@ -42,7 +42,7 @@ export function serializeAgent(config: AgentConfig): string {
 	if (config.model) lines.push(`model: ${config.model}`);
 	const fallbackModelsValue = joinComma(config.fallbackModels);
 	if (fallbackModelsValue) lines.push(`fallbackModels: ${fallbackModelsValue}`);
-	if (config.thinking && config.thinking !== "off") lines.push(`thinking: ${config.thinking}`);
+	if (config.thinking) lines.push(`thinking: ${config.thinking}`);
 	lines.push(`systemPromptMode: ${config.systemPromptMode}`);
 	lines.push(`inheritProjectContext: ${config.inheritProjectContext ? "true" : "false"}`);
 	lines.push(`inheritSkills: ${config.inheritSkills ? "true" : "false"}`);

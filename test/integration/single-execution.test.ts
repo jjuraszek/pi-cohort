@@ -148,11 +148,11 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		removeTempDir(tempDir);
 	});
 
-	function readCallArgs(): string[] {
+	function readCallArgs(index = -1): string[] {
 		const callFile = fs.readdirSync(mockPi.dir)
 			.filter((name) => name.startsWith("call-") && name.endsWith(".json"))
 			.sort()
-			.at(-1);
+			.at(index);
 		assert.ok(callFile, "expected a recorded mock pi call");
 		const payload = JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")) as { args?: string[] };
 		assert.ok(Array.isArray(payload.args), "expected recorded args");
@@ -521,6 +521,78 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.deepEqual(result.attemptedModels, ["github-copilot/gpt-5-mini"]);
 	});
 
+	it("inherits the parent session model and thinking when neither call nor agent sets one", async () => {
+		mockPi.onCall({ output: "Done" });
+		const result = await runSync(tempDir, [makeAgent("echo")], "echo", "Task", {
+			parentModel: "github-copilot/gpt-6",
+			parentThinking: "high",
+		});
+
+		assert.equal(result.exitCode, 0);
+		assert.equal(result.model, "github-copilot/gpt-6:high");
+		const args = readCallArgs();
+		assert.equal(args[args.indexOf("--model") + 1], "github-copilot/gpt-6:high");
+	});
+
+	it("emits no --model when the parent has no model", async () => {
+		mockPi.onCall({ output: "Done" });
+		const result = await runSync(tempDir, [makeAgent("echo")], "echo", "Task", { parentThinking: "high" });
+
+		assert.equal(result.exitCode, 0);
+		assert.ok(!readCallArgs().includes("--model"));
+	});
+
+	it("per-call and agent models beat the parent model", async () => {
+		mockPi.onCall({ output: "Done" });
+		mockPi.onCall({ output: "Done" });
+		const pinned = await runSync(tempDir, [makeAgent("echo", { model: "anthropic/claude-sonnet-4" })], "echo", "Task", {
+			parentModel: "github-copilot/gpt-6",
+			parentThinking: "xhigh",
+		});
+		const pinnedArgs = readCallArgs();
+		const overridden = await runSync(tempDir, [makeAgent("echo", { model: "anthropic/claude-sonnet-4" })], "echo", "Task", {
+			modelOverride: "openai/gpt-4o",
+			parentModel: "github-copilot/gpt-6",
+		});
+
+		assert.equal(pinned.model, "anthropic/claude-sonnet-4:xhigh");
+		assert.ok(pinnedArgs.includes("--model"));
+		assert.equal(pinnedArgs[pinnedArgs.indexOf("--model") + 1], "anthropic/claude-sonnet-4:xhigh");
+		assert.equal(overridden.model, "openai/gpt-4o");
+	});
+
+	it("agent thinking beats parent thinking; parent off and max are emitted; an existing suffix wins", async () => {
+		mockPi.onCall({ output: "Done" });
+		mockPi.onCall({ output: "Done" });
+		mockPi.onCall({ output: "Done" });
+		mockPi.onCall({ output: "Done" });
+		const agentLow = await runSync(tempDir, [makeAgent("echo", { thinking: "low" })], "echo", "Task", {
+			parentModel: "github-copilot/gpt-6",
+			parentThinking: "high",
+		});
+		const agentLowArgs = readCallArgs();
+		const parentOff = await runSync(tempDir, [makeAgent("echo")], "echo", "Task", {
+			parentModel: "github-copilot/gpt-6",
+			parentThinking: "off",
+		});
+		const parentMax = await runSync(tempDir, [makeAgent("echo")], "echo", "Task", {
+			parentModel: "github-copilot/gpt-6",
+			parentThinking: "max",
+		});
+		const callMax = await runSync(tempDir, [makeAgent("echo")], "echo", "Task", {
+			modelOverride: "github-copilot/gpt-6:max",
+			parentModel: "github-copilot/gpt-6",
+			parentThinking: "high",
+		});
+
+		assert.equal(agentLow.model, "github-copilot/gpt-6:low");
+		assert.ok(agentLowArgs.includes("--model"));
+		assert.equal(agentLowArgs[agentLowArgs.indexOf("--model") + 1], "github-copilot/gpt-6:low");
+		assert.equal(parentOff.model, "github-copilot/gpt-6:off");
+		assert.equal(parentMax.model, "github-copilot/gpt-6:max");
+		assert.equal(callMax.model, "github-copilot/gpt-6:max");
+	});
+
 	it("tracks usage from message events", async () => {
 		mockPi.onCall({ output: "Done" });
 		const agents = makeAgentConfigs(["echo"]);
@@ -530,6 +602,37 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.equal(result.usage.turns, 1);
 		assert.equal(result.usage.input, 100); // from mock
 		assert.equal(result.usage.output, 50); // from mock
+	});
+
+	it("applies parent thinking to the inherited model and fallback candidates", async () => {
+		mockPi.onCall({
+			jsonl: [{
+				type: "message_end",
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "temporary provider failure" }],
+					model: "github-copilot/gpt-6",
+					errorMessage: "rate limit exceeded",
+					usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } },
+				},
+			}],
+			exitCode: 1,
+		});
+		mockPi.onCall({ output: "Recovered on fallback" });
+
+		const result = await runSync(tempDir, [makeAgent("echo", { fallbackModels: ["openai/gpt-4o"] })], "echo", "Task", {
+			parentModel: "github-copilot/gpt-6",
+			parentThinking: "high",
+		});
+
+		assert.equal(result.exitCode, 0);
+		assert.deepEqual(result.attemptedModels, ["github-copilot/gpt-6", "openai/gpt-4o"]);
+		const firstArgs = readCallArgs(0);
+		const secondArgs = readCallArgs(1);
+		assert.ok(firstArgs.includes("--model"));
+		assert.equal(firstArgs[firstArgs.indexOf("--model") + 1], "github-copilot/gpt-6:high");
+		assert.ok(secondArgs.includes("--model"));
+		assert.equal(secondArgs[secondArgs.indexOf("--model") + 1], "openai/gpt-4o:high");
 	});
 
 	it("retries with fallback models on retryable provider failures", async () => {

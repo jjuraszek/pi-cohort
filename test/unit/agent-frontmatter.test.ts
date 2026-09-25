@@ -66,6 +66,29 @@ Do work
 	});
 });
 
+describe("agent frontmatter thinking", () => {
+	it("round-trips explicit off thinking", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cohort-agent-thinking-"));
+		tempDirs.push(dir);
+		const agentsDir = path.join(dir, ".pi", "agents");
+		fs.mkdirSync(agentsDir, { recursive: true });
+		const agent: AgentConfig = {
+			name: "worker",
+			description: "Worker",
+			systemPrompt: "Do work",
+			systemPromptMode: "replace",
+			inheritProjectContext: false,
+			inheritSkills: false,
+			source: "project",
+			filePath: path.join(agentsDir, "worker.md"),
+			thinking: "off",
+		};
+		fs.writeFileSync(agent.filePath, serializeAgent(agent), "utf-8");
+		const worker = discoverAgents(dir, "project").agents.find((candidate) => candidate.name === "worker");
+		assert.equal(worker?.thinking, "off");
+	});
+});
+
 describe("chain discovery", () => {
 	it("prefers same-scope .chain.json over .chain.md for the same runtime name", () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cohort-chain-format-precedence-"));

@@ -20,7 +20,16 @@ A simple rule of thumb: use `scout` before you understand the code, `planner` be
 
 ## Changing a builtin agent's model
 
-Builtin agents inherit your current Pi default model by default. This keeps new installs from depending on a provider you may not have configured. If you want a role to use a specific model, set an override instead of copying the bundled agent file.
+Builtin agents inherit the parent session's current model and thinking level by default. This keeps new installs from depending on a provider you may not have configured. If you want a role to use a specific model, set an override instead of copying the bundled agent file.
+
+Resolution per dispatch, first defined wins:
+
+| Field | 1 | 2 | 3 | 4 |
+|---|---|---|---|---|
+| model | per-call `model:` (single, per-task, per-chain-step) | agent `model` after `agentOverrides` merge | parent session model as `provider/id` | none - no `--model`, child pi uses its `defaultModel` |
+| thinking | agent `thinking` after `agentOverrides` merge | parent session thinking level | none - no suffix | - |
+
+`model: false` / `thinking: false` in a builtin override clear the pin, so the agent inherits. There is no setting for "use pi's default model": pin a model to diverge from the parent. Values are captured at dispatch; a running async job does not follow a later `/model` switch, and a resume of an unpinned agent picks up the parent's then-current values. A parent model unavailable to the child (missing key, or an extension provider excluded by an agent's `extensions:` setting) fails like an explicitly pinned unknown model; `fallbackModels` behavior is unchanged.
 
 For one run, put the override in the command:
 
@@ -28,7 +37,7 @@ For one run, put the override in the command:
 /run reviewer[model=anthropic/claude-sonnet-4:high] "Review this diff"
 ```
 
-For a persistent override, edit settings. This example pins the reviewer everywhere, adds a backup model for provider failures, and keeps the other builtins on your normal default model:
+For a persistent override, edit settings. This example pins the reviewer everywhere, adds a backup model for provider failures, and keeps the other builtins on the parent session's model:
 
 ```json
 {
@@ -80,7 +89,7 @@ Use `agentScope: "user" | "project" | "both"` to control discovery; `both` is th
 
 Implementation (`src/agents/agents.ts`): `resolveUserAgentDirs()` / `preferredUserAgentDir()` order the user roots; `listFilesFlat` / `isAgentFileName` / `isChainFileName` do the flat read; `findGitRoot` (a `.git` file or directory, no subprocess) / `enumerateProjectLevels` / `dedupeByRealPath` / `readMergedProjectSubagentSettings` do the walk. `dedupeByRealPath` collapses symlinked `.pi` levels on the expanded read-dir list - a nearest `.pi` symlinked to a farther real `.pi` yields distinct level dirs but identical `<level>/.pi/agents` paths. `agentOverrides` merge is whole-object replacement per agent name across levels (disjoint fields do not compose). A builtin override's displayed `override.path` always points at the nearest project settings file even when the winning value came from a farther level - attribution is nearest-by-design.
 
-Builtin agents load at the lowest priority, so a user or project agent with the same name overrides them. They do not pin a provider model; they inherit your current Pi default model unless you set `subagents.agentOverrides.<name>.model`. `oracle` is an advisory reviewer that critiques direction and proposes an execution prompt without editing files. `worker` is the implementation agent for normal tasks and approved oracle handoffs.
+Builtin agents load at the lowest priority, so a user or project agent with the same name overrides them. They do not pin a provider model; they inherit the parent session's current model and thinking level unless you set `subagents.agentOverrides.<name>.model` / `.thinking`. `oracle` is an advisory reviewer that critiques direction and proposes an execution prompt without editing files. `worker` is the implementation agent for normal tasks and approved oracle handoffs.
 
 ## Builtin overrides
 
@@ -169,7 +178,7 @@ Important fields:
 | `extensions` | Omitted means normal extensions; empty means no extensions; comma-separated values allowlist specific extensions. |
 | `model` | Default model. Bare ids prefer the current provider when possible, then unique registry matches. |
 | `fallbackModels` | Ordered backup models for provider/model failures such as quota, auth, timeout, or unavailable model. Ordinary task failures do not trigger fallback. |
-| `thinking` | Appended as a `:level` suffix at runtime unless a suffix is already present. |
+| `thinking` | Appended as a `:level` suffix at runtime unless a suffix is already present; unset means the parent session's level; `off` is emitted as `:off`. |
 | `systemPromptMode` | `replace` by default; `append` keeps Pi's base prompt. |
 | `inheritProjectContext` | Keeps or strips inherited project instruction blocks. |
 | `inheritSkills` | Keeps or strips Pi's discovered skills catalog. |

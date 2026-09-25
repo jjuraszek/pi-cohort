@@ -47,6 +47,19 @@ describe("model info helpers", () => {
 		);
 	});
 
+	it("includes max when per-level metadata supports it", () => {
+		assert.deepEqual(
+			getSupportedThinkingLevels({
+				provider: "openai",
+				id: "gpt-6",
+				fullId: "openai/gpt-6",
+				reasoning: true,
+				thinkingLevelMap: { max: "max" },
+			}),
+			["off", "minimal", "low", "medium", "high", "max"],
+		);
+	});
+
 	it("honors metadata that marks off unsupported", () => {
 		assert.deepEqual(
 			getSupportedThinkingLevels({

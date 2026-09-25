@@ -6,7 +6,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { AgentConfig, AgentScope } from "../../agents/agents.ts";
 import { getArtifactsDir } from "../../shared/artifacts.ts";
 import { ChainClarifyComponent, type ChainClarifyResult } from "./chain-clarify.ts";
-import { toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
+import { parentModelFullId, toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
 import { executeChain } from "./chain-execution.ts";
 import { resolveExecutionAgentScope } from "../../agents/agent-scope.ts";
 import { handleManagementAction } from "../../agents/agent-management.ts";
@@ -207,6 +207,18 @@ function nestedResolutionScopeForExecutor(deps: ExecutorDeps): NestedRunResoluti
 	return {
 		routes: route ? [route] : [],
 		...(address ? { descendantOf: { parentRunId: address.parentRunId, ...(address.parentStepIndex !== undefined ? { parentStepIndex: address.parentStepIndex } : {}) } } : {}),
+	};
+}
+
+function buildAsyncContext(ctx: ExtensionContext, deps: ExecutorDeps, cwd: string) {
+	return {
+		pi: deps.pi,
+		cwd,
+		currentSessionId: deps.state.currentSessionId!,
+		currentModelProvider: ctx.model?.provider,
+		parentModel: parentModelFullId(ctx.model),
+		parentThinking: ctx.thinkingLevel,
+		executionBackend: deps.config.executionBackend,
 	};
 }
 
@@ -591,13 +603,7 @@ async function resumeAsyncRun(input: {
 		agent: target.agent,
 		task: buildRevivedAsyncTask(target, followUp),
 		agentConfig,
-		ctx: {
-			pi: input.deps.pi,
-			cwd: input.requestCwd,
-			currentSessionId: input.deps.state.currentSessionId,
-			currentModelProvider: input.ctx.model?.provider,
-			executionBackend: input.deps.config.executionBackend,
-		},
+		ctx: buildAsyncContext(input.ctx, input.deps, input.requestCwd),
 		cwd: effectiveCwd,
 		maxOutput: input.params.maxOutput,
 		artifactsDir: input.deps.tempArtifactsDir,
@@ -974,13 +980,7 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): AgentTool
 		};
 	}
 	const id = randomUUID();
-	const asyncCtx = {
-		pi: deps.pi,
-		cwd: ctx.cwd,
-		currentSessionId: deps.state.currentSessionId!,
-		currentModelProvider: ctx.model?.provider,
-		executionBackend: deps.config.executionBackend,
-	};
+	const asyncCtx = buildAsyncContext(ctx, deps, ctx.cwd);
 	const availableModels: ModelInfo[] = ctx.modelRegistry.getAvailable().map(toModelInfo);
 	const currentMaxSubagentDepth = resolveCurrentMaxSubagentDepth(deps.config.maxSubagentDepth);
 	const currentProvider = ctx.model?.provider;
@@ -1164,13 +1164,7 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 			};
 		}
 		const id = randomUUID();
-		const asyncCtx = {
-			pi: deps.pi,
-			cwd: ctx.cwd,
-			currentSessionId: deps.state.currentSessionId!,
-			currentModelProvider: ctx.model?.provider,
-			executionBackend: deps.config.executionBackend,
-		};
+		const asyncCtx = buildAsyncContext(ctx, deps, ctx.cwd);
 		const asyncChain = wrapChainTasksForFork(chainResult.requestedAsync.chain, params.context);
 		return executeAsyncChain(id, {
 			chain: asyncChain,
@@ -1432,6 +1426,8 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 			modelOverride: input.modelOverrides[index],
 			availableModels: input.availableModels,
 			preferredModelProvider: input.ctx.model?.provider,
+			parentModel: parentModelFullId(input.ctx.model),
+			parentThinking: input.ctx.thinkingLevel,
 			skills: effectiveSkills === false ? [] : effectiveSkills,
 			acceptance: task.acceptance,
 			acceptanceContext: { mode: "parallel" },
@@ -1605,13 +1601,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 				};
 			}
 			const id = randomUUID();
-			const asyncCtx = {
-				pi: deps.pi,
-				cwd: ctx.cwd,
-				currentSessionId: deps.state.currentSessionId!,
-				currentModelProvider: ctx.model?.provider,
-				executionBackend: deps.config.executionBackend,
-			};
+			const asyncCtx = buildAsyncContext(ctx, deps, ctx.cwd);
 			const parallelTasks = tasks.map((t, i) => {
 				const taskText = params.context === "fork" ? wrapForkTask(taskTexts[i]!) : taskTexts[i]!;
 				const progress = taskDisallowsFileUpdates(taskText) ? false : behaviorOverrides[i]?.progress;
@@ -1883,13 +1873,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 				};
 			}
 			const id = randomUUID();
-			const asyncCtx = {
-				pi: deps.pi,
-				cwd: ctx.cwd,
-				currentSessionId: deps.state.currentSessionId!,
-				currentModelProvider: ctx.model?.provider,
-				executionBackend: deps.config.executionBackend,
-			};
+			const asyncCtx = buildAsyncContext(ctx, deps, ctx.cwd);
 			return executeAsyncSingle(id, {
 				agent: params.agent!,
 				task: params.context === "fork" ? wrapForkTask(task) : task,
@@ -1993,6 +1977,8 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		modelOverride,
 		availableModels,
 		preferredModelProvider: currentProvider,
+		parentModel: parentModelFullId(ctx.model),
+		parentThinking: ctx.thinkingLevel,
 		skills: effectiveSkills,
 		acceptance: params.acceptance,
 		acceptanceContext: { mode: "single" },

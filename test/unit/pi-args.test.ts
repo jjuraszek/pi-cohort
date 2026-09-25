@@ -20,6 +20,7 @@ import {
 	runDirEnv,
 } from "../../src/runs/shared/pi-args.ts";
 import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_TOOL_NAME } from "../../src/runs/shared/structured-output.ts";
+import { parentModelFullId } from "../../src/shared/model-info.ts";
 
 const originalEnv = {
 	HOME: process.env.HOME,
@@ -139,6 +140,19 @@ describe("buildPiArgs model wiring", () => {
 		assert.equal(applyThinkingSuffix("openai-codex/gpt-5.4-mini", "high"), "openai-codex/gpt-5.4-mini:high");
 		assert.ok(args.includes("--model"));
 		assert.ok(args.includes("openai-codex/gpt-5.4-mini:high"));
+	});
+
+	it("emits :off and keeps an existing max suffix", () => {
+		assert.equal(applyThinkingSuffix("github-copilot/gpt-6", "off"), "github-copilot/gpt-6:off");
+		assert.equal(applyThinkingSuffix("github-copilot/gpt-6", undefined), "github-copilot/gpt-6");
+		assert.equal(applyThinkingSuffix("github-copilot/gpt-6:max", "high"), "github-copilot/gpt-6:max");
+		assert.equal(applyThinkingSuffix("github-copilot/gpt-6", "max"), "github-copilot/gpt-6:max");
+	});
+
+	it("builds the parent model id only when provider and id are both present", () => {
+		assert.equal(parentModelFullId({ provider: "github-copilot", id: "gpt-6" }), "github-copilot/gpt-6");
+		assert.equal(parentModelFullId({ provider: "github-copilot" }), undefined);
+		assert.equal(parentModelFullId(undefined), undefined);
 	});
 });
 

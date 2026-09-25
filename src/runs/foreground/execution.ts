@@ -684,11 +684,12 @@ export async function runSync(
 	}
 
 	const candidates = buildModelCandidates(
-		options.modelOverride ?? agent.model,
+		options.modelOverride ?? agent.model ?? options.parentModel,
 		agent.fallbackModels,
 		options.availableModels,
 		options.preferredModelProvider,
 	);
+	const effectiveAgent: AgentConfig = { ...agent, thinking: agent.thinking ?? options.parentThinking };
 	const attemptedModels: string[] = [];
 	const modelAttempts: ModelAttempt[] = [];
 	const aggregateUsage = emptyUsage();
@@ -751,7 +752,7 @@ export async function runSync(
 					owner: externalOwner,
 					attemptId: `${childId}-attempt-${i}`,
 					runtimeCwd,
-					agent,
+					agent: effectiveAgent,
 					model: candidate,
 					task: taskWithAcceptance,
 					options,
@@ -762,7 +763,7 @@ export async function runSync(
 			}
 		} else {
 			result = await (dependencies.runNativeAttempt ?? runSingleAttempt)(
-				runtimeCwd, agent, taskWithAcceptance, candidate, options, shared,
+				runtimeCwd, effectiveAgent, taskWithAcceptance, candidate, options, shared,
 			);
 		}
 		lastResult = result;

@@ -1,4 +1,4 @@
-export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type ThinkingLevel = typeof THINKING_LEVELS[number];
 export type ThinkingLevelMap = Partial<Record<ThinkingLevel, string | null>>;
 
@@ -63,16 +63,21 @@ export function findModelInfo(model: string | undefined, availableModels: ModelI
 }
 
 export function getSupportedThinkingLevels(model: ModelInfo | undefined): ThinkingLevel[] {
-	if (!model) return [...THINKING_LEVELS];
+	if (!model) return THINKING_LEVELS.filter((level) => level !== "max");
 	if (model.reasoning === false) return ["off"];
 
-	if (!model.thinkingLevelMap) return [...THINKING_LEVELS];
+	if (!model.thinkingLevelMap) return THINKING_LEVELS.filter((level) => level !== "max");
 
 	const levels = THINKING_LEVELS.filter((level) => {
 		const mapped = model.thinkingLevelMap?.[level];
 		if (mapped === null) return false;
-		if (level === "xhigh") return mapped !== undefined;
+		if (level === "xhigh" || level === "max") return mapped !== undefined;
 		return true;
 	});
 	return levels;
+}
+
+/** Provider-qualified id of the parent session model; undefined when either part is missing (SDK hosts, minimal test contexts). */
+export function parentModelFullId(model: { provider?: string; id?: string } | undefined): string | undefined {
+	return model?.provider && model.id ? `${model.provider}/${model.id}` : undefined;
 }

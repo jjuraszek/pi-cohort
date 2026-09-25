@@ -23,6 +23,7 @@ import {
 	makeAgent,
 	makeAgentConfigs,
 	makeMinimalCtx,
+	makeParentSessionCtx,
 	removeTempDir,
 	tryImport,
 } from "../support/helpers.ts";
@@ -200,6 +201,23 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 		assert.ok(result.details?.results?.some((item: any) => item.finalOutput === "Sibling completed"));
 		assert.match(result.content[0]?.text ?? "", /BLOCKED: select an API/);
 		assert.match(result.content[0]?.text ?? "", /Sibling completed/);
+	});
+
+	it("parallel tasks inherit the parent session model and thinking", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+		mockPi.onCall({ output: "Done" });
+		const executor = makeExecutor([makeAgent("echo")]);
+
+		const result = await executor.execute(
+			"parallel-inherit",
+			{ tasks: [{ agent: "echo", task: "Inherit" }] },
+			new AbortController().signal,
+			undefined,
+			makeParentSessionCtx(tempDir, "github-copilot", "gpt-6", "high"),
+		);
+
+		assert.equal(result.isError, undefined);
+		const args = readLastCallArgs();
+		assert.equal(args[args.indexOf("--model") + 1], "github-copilot/gpt-6:high");
 	});
 
 	it("top-level parallel defaults require explicit output and progress", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {

@@ -101,6 +101,28 @@ describe("builtin agent overrides", () => {
 		assert.equal(reviewer.override?.path, path.join(tempProject, ".pi", "settings.json"));
 	});
 
+	it("clears a builtin's model and thinking with false so the agent inherits", () => {
+		const settingsPath = path.join(tempProject, ".pi", "settings.json");
+		writeJson(settingsPath, {
+			subagents: { agentOverrides: { reviewer: { model: "openai/gpt-5.4", thinking: "high" } } },
+		});
+
+		const configuredReviewer = discoverAgents(tempProject, "both").agents.find((agent) => agent.name === "reviewer");
+		assert.ok(configuredReviewer);
+		assert.equal(configuredReviewer.model, "openai/gpt-5.4");
+		assert.equal(configuredReviewer.thinking, "high");
+
+		writeJson(settingsPath, {
+			subagents: { agentOverrides: { reviewer: { model: false, thinking: false } } },
+		});
+
+		const reviewer = discoverAgents(tempProject, "both").agents.find((agent) => agent.name === "reviewer");
+		assert.ok(reviewer);
+		assert.equal(reviewer.model, undefined);
+		assert.equal(reviewer.thinking, undefined);
+		assert.equal(reviewer.override?.scope, "project");
+	});
+
 	it("does not apply project settings overrides when scope is user", () => {
 		fs.mkdirSync(path.join(tempProject, ".pi"), { recursive: true });
 		writeJson(path.join(tempHome, ".pi", "agent", "settings.json"), {

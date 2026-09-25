@@ -20,6 +20,7 @@ import {
 	removeTempDir,
 	makeAgent,
 	makeMinimalCtx,
+	makeParentSessionCtx,
 	tryImport,
 	events,
 } from "../support/helpers.ts";
@@ -438,6 +439,28 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 		assert.ok(!result.isError, `chain should succeed: ${JSON.stringify(result.content)}`);
 		assert.equal(result.details.results[0].model, "github-copilot/gpt-5-mini");
 		assert.deepEqual(result.details.results[0].attemptedModels, ["github-copilot/gpt-5-mini"]);
+	});
+
+	it("sequential and parallel-in-chain steps inherit the parent session model and thinking", async () => {
+		mockPi.onCall({ output: "Step 1 ran" });
+		mockPi.onCall({ output: "Parallel a ran" });
+		mockPi.onCall({ output: "Parallel b ran" });
+		const agents = [makeAgent("step1"), makeAgent("pa"), makeAgent("pb")];
+
+		const result = await executeChain(
+			makeChainParams(
+				[{ agent: "step1", task: "Do step 1" }, { parallel: [{ agent: "pa", task: "a" }, { agent: "pb", task: "b" }] }],
+				agents,
+				{ ctx: makeParentSessionCtx(tempDir, "github-copilot", "gpt-6", "low") },
+			),
+		);
+
+		assert.ok(!result.isError, `chain should succeed: ${JSON.stringify(result.content)}`);
+		assert.equal(result.details.results[0].model, "github-copilot/gpt-6:low");
+		for (const index of [0, 1, 2]) {
+			const args = readCallArgs(index);
+			assert.equal(args[args.indexOf("--model") + 1], "github-copilot/gpt-6:low");
+		}
 	});
 
 	it("suppresses progress for {task} chain templates when the top-level task is review-only", async () => {
@@ -1282,6 +1305,82 @@ describe("chain execution - clarify boundary", { skip: !available ? "pi packages
 			...overrides,
 		};
 	}
+
+	it("seeds the clarify screen with the inherited model and thinking", async () => {
+		const agents = [makeAgent("worker")];
+		let seeded: string | undefined;
+		const custom = async (factory: (...args: unknown[]) => { getEffectiveModel(i: number): string }) => {
+			const component = factory({ requestRender() {} }, { fg(_key: string, text: string) { return text; } }, {}, () => {});
+			seeded = component.getEffectiveModel(0);
+			return { confirmed: false, templates: [], behaviorOverrides: [] };
+		};
+
+		const result = await executeChain(
+			makeChainParams(
+				[{ agent: "worker", task: "Do the thing" }],
+				agents,
+				{ clarify: true },
+				{ ...makeParentSessionCtx(tempDir, "github-copilot", "gpt-6", "high"), hasUI: true, ui: { custom } },
+			),
+		);
+
+		assert.match(result.content[0]?.text ?? "", /Chain cancelled/);
+		assert.equal(seeded, "github-copilot/gpt-6:high");
+	});
+
+	it("confirms an untouched seed without overriding the inherited dispatch model", async () => {
+		mockPi.onCall({ output: "done" });
+		const agents = [makeAgent("worker")];
+		let confirmed: { confirmed: boolean; templates: string[]; behaviorOverrides: Array<{ model?: string } | undefined> } | undefined;
+		const custom = async (factory: (...args: unknown[]) => { handleInput(data: string): void }) => {
+			const component = factory(
+				{ requestRender() {} },
+				{ fg(_key: string, text: string) { return text; } },
+				{},
+				(result: typeof confirmed) => { confirmed = result; },
+			);
+			component.handleInput("\r");
+			return confirmed;
+		};
+
+		const result = await executeChain(
+			makeChainParams(
+				[{ agent: "worker", task: "Do the thing" }],
+				agents,
+				{ clarify: true },
+				{ ...makeParentSessionCtx(tempDir, "github-copilot", "gpt-6", "high"), hasUI: true, ui: { custom } },
+			),
+		);
+
+		assert.ok(!result.isError, `chain should succeed: ${JSON.stringify(result.content)}`);
+		assert.equal(confirmed?.confirmed, true);
+		assert.equal(confirmed?.behaviorOverrides[0]?.model, undefined);
+		const callFiles = fs.readdirSync(mockPi.dir).filter((name) => name.startsWith("call-") && name.endsWith(".json"));
+		assert.equal(callFiles.length, 1);
+		const args = JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFiles[0]!), "utf8")).args as string[];
+		assert.equal(args[args.indexOf("--model") + 1], "github-copilot/gpt-6:high");
+	});
+
+	it("seeds an explicit per-step thinking suffix instead of the parent's", async () => {
+		const agents = [makeAgent("worker")];
+		let seeded: string | undefined;
+		const custom = async (factory: (...args: unknown[]) => { getEffectiveModel(i: number): string }) => {
+			const component = factory({ requestRender() {} }, { fg(_key: string, text: string) { return text; } }, {}, () => {});
+			seeded = component.getEffectiveModel(0);
+			return { confirmed: false, templates: [], behaviorOverrides: [] };
+		};
+
+		await executeChain(
+			makeChainParams(
+				[{ agent: "worker", task: "x", model: "github-copilot/gpt-6:low" }],
+				agents,
+				{ clarify: true },
+				{ ...makeParentSessionCtx(tempDir, "github-copilot", "gpt-6", "high"), hasUI: true, ui: { custom } },
+			),
+		);
+
+		assert.equal(seeded, "github-copilot/gpt-6:low");
+	});
 
 	it("launches directly when clarify is omitted, without opening the clarify TUI", async () => {
 		mockPi.onCall({ output: "done" });

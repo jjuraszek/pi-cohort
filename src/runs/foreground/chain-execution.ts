@@ -8,7 +8,7 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../../agents/agents.ts";
 import { ChainClarifyComponent, type ChainClarifyResult, type BehaviorOverride } from "./chain-clarify.ts";
-import { toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
+import { parentModelFullId, toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
 import {
 	resolveChainTemplates,
 	createChainDir,
@@ -58,6 +58,7 @@ import {
 	resolveChildMaxSubagentDepth,
 } from "../../shared/types.ts";
 import { resolveModelCandidate } from "../shared/model-fallback.ts";
+import { applyThinkingSuffix } from "../shared/pi-args.ts";
 import { validateFileOnlyOutputMode } from "../shared/single-output.ts";
 import { buildWorkflowGraphSnapshot } from "../shared/workflow-graph.ts";
 import { ChainOutputValidationError, outputEntryFromResult, resolveOutputReferences, validateChainOutputBindings } from "../shared/chain-outputs.ts";
@@ -278,6 +279,8 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 				modelOverride: effectiveModel,
 				availableModels: input.availableModels,
 				preferredModelProvider: input.ctx.model?.provider,
+				parentModel: parentModelFullId(input.ctx.model),
+				parentThinking: input.ctx.thinkingLevel,
 				skills: behavior.skills === false ? [] : behavior.skills,
 				structuredOutput: structuredRuntime,
 				acceptance: task.acceptance,
@@ -512,6 +515,14 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 			resolveStepBehavior(config, stepOverrides[i]!, chainSkills),
 		);
 		const flatTemplates = templates as string[];
+		// Seed what dispatch will resolve so the screen shows it and the thinking selector is enabled;
+		// untouched steps still reach runSync with no override and inherit there.
+		const parentModel = parentModelFullId(ctx.model);
+		const seededBehaviors = resolvedBehaviors.map((behavior, i) => {
+			const model = behavior.model ?? parentModel;
+			if (!model) return behavior;
+			return { ...behavior, model: applyThinkingSuffix(model, agentConfigs[i]!.thinking ?? ctx.thinkingLevel) };
+		});
 
 		const result = await ctx.ui.custom<ChainClarifyResult>(
 			(tui, theme, _kb, done) =>
@@ -522,7 +533,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					flatTemplates,
 					originalTask,
 					chainDir,
-					resolvedBehaviors,
+					seededBehaviors,
 					availableModels,
 					ctx.model?.provider,
 					availableSkills,
@@ -1030,6 +1041,8 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				modelOverride: effectiveModel,
 				availableModels,
 				preferredModelProvider: ctx.model?.provider,
+				parentModel: parentModelFullId(ctx.model),
+				parentThinking: ctx.thinkingLevel,
 				skills: behavior.skills === false ? [] : behavior.skills,
 				structuredOutput: structuredRuntime,
 				acceptance: seqStep.acceptance,

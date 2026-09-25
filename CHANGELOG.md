@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- A dispatch that names no model now runs the child on the parent session's current model and thinking level instead of the child's saved `defaultModel`; `thinking: off` is emitted as `:off`, and `max` is a recognized level. Precedence: per-call `model:` > agent `model` / `thinking` (after `agentOverrides`) > parent session > none. Pin `subagents.agentOverrides.<agent>.model` to keep a child on a fixed model. Agents that pin `model` but not `thinking` now also take the parent's thinking level; set `thinking` to keep a fixed level. Children now bill on the parent's model, and an agent with `extensions:` whose parent model comes from an extension provider fails as an unknown model would; give it a pinned model or `fallbackModels`.
+
 ## [7.1.0] - 2026-09-20
 
 ### Changed

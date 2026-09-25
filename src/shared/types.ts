@@ -776,6 +776,10 @@ export interface RunSyncOptions {
 	availableModels?: Array<{ provider: string; id: string; fullId: string }>;
 	/** Current parent-session provider to prefer for ambiguous bare model ids */
 	preferredModelProvider?: string;
+	/** Parent session model as provider/id; used when neither the call nor the agent names a model */
+	parentModel?: string;
+	/** Parent session thinking level; used when the agent sets no `thinking` */
+	parentThinking?: string;
 	/** Skills to inject (overrides agent default if provided) */
 	skills?: string[];
 	structuredOutput?: {
