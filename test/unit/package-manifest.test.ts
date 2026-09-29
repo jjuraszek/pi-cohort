@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
-import { createRequire } from "node:module";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -74,15 +73,9 @@ test("execution reporting requires Pi 0.85", () => {
 	}
 });
 
-test("typebox is a real runtime dependency for the detached async runner", () => {
+test("typebox is a host-provided peer, never a runtime dependency", () => {
 	const packageJson = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf-8"));
-	assert.equal(packageJson.dependencies?.typebox, "^1.3.11");
-	assert.equal(packageJson.peerDependencies?.typebox, undefined);
-	assert.equal(packageJson.peerDependenciesMeta?.typebox, undefined);
-	assert.equal(packageJson.devDependencies?.typebox, undefined);
-});
-
-test("runner boot graph resolves typebox/compile from the package root", () => {
-	const require = createRequire(import.meta.url);
-	assert.ok(require.resolve("typebox/compile", { paths: [projectRoot] }));
+	assert.equal(packageJson.peerDependencies?.typebox, "*");
+	assert.equal(packageJson.peerDependenciesMeta?.typebox?.optional, true);
+	assert.equal(packageJson.dependencies?.typebox, undefined);
 });

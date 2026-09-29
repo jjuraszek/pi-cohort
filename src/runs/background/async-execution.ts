@@ -14,7 +14,7 @@ import { injectSingleOutputInstruction, normalizeSingleOutputOverride, resolvePa
 import { buildChainInstructions, isDynamicParallelStep, isParallelStep, resolveStepBehavior, suppressProgressForReadOnlyTask, writeInitialProgressFile, type ChainStep, type ResolvedStepBehavior, type SequentialStep, type StepOverrides } from "../../shared/settings.ts";
 import type { RunnerStep } from "../shared/parallel-utils.ts";
 import { resolvePiPackageRoot } from "../shared/pi-spawn.ts";
-import { ensureJitiCliPath } from "../shared/jiti-cli.ts";
+import { ensureJitiCliPath, resolveHostModuleAliases } from "../shared/jiti-cli.ts";
 export { createJitiCliResolver } from "../shared/jiti-cli.ts";
 import { buildSkillInjection, normalizeSkillInput, resolveSkillsWithFallback } from "../../agents/skills.ts";
 import { resolveChildCwd } from "../../shared/utils.ts";
@@ -145,7 +145,7 @@ export function isAsyncAvailable(): boolean {
  * Falls back to ignored stdio if the log file cannot be opened; the parent always
  * closes its copy of the fd, on every exit path.
  */
-export function spawnDetachedWithLog(command: string, args: string[], cwd: string, asyncDir: string, spawnImpl: typeof spawn = spawn): { pid?: number; error?: string } {
+export function spawnDetachedWithLog(command: string, args: string[], cwd: string, asyncDir: string, spawnImpl: typeof spawn = spawn, env?: NodeJS.ProcessEnv): { pid?: number; error?: string } {
 	let fd: number | undefined;
 	try {
 		try {
@@ -156,6 +156,7 @@ export function spawnDetachedWithLog(command: string, args: string[], cwd: strin
 		}
 		const proc = spawnImpl(command, args, {
 			cwd,
+			env,
 			detached: true,
 			stdio: fd === undefined ? "ignore" : ["ignore", fd, fd],
 			windowsHide: true,
@@ -187,7 +188,7 @@ export function spawnRunner(
 	suffix: string,
 	cwd: string,
 	asyncDir: string,
-	deps: { ensureJiti?: () => string | undefined; spawnImpl?: typeof spawn } = {},
+	deps: { ensureJiti?: () => string | undefined; spawnImpl?: typeof spawn; hostAliases?: () => Record<string, string> } = {},
 ): { pid?: number; error?: string } {
 	const ensureJiti = deps.ensureJiti ?? ensureJitiCliPath;
 	const jitiCliPath = ensureJiti();
@@ -209,7 +210,12 @@ export function spawnRunner(
 	fs.writeFileSync(cfgPath, JSON.stringify(cfg));
 	const runner = path.join(path.dirname(fileURLToPath(import.meta.url)), "subagent-runner.ts");
 
-	return spawnDetachedWithLog(process.execPath, [jitiCliPath, runner, cfgPath], cwd, asyncDir, deps.spawnImpl ?? spawn);
+	const aliases = (deps.hostAliases ?? resolveHostModuleAliases)();
+	const env = Object.keys(aliases).length > 0
+		? { ...process.env, JITI_ALIAS: JSON.stringify(aliases) }
+		: process.env;
+
+	return spawnDetachedWithLog(process.execPath, [jitiCliPath, runner, cfgPath], cwd, asyncDir, deps.spawnImpl ?? spawn, env);
 }
 
 /**

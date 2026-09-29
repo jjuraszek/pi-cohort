@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- `typebox` moves from `dependencies` to an optional `peerDependencies: "*"` entry, which silences pi's "Host-provided extension packages must be declared in peerDependencies" startup warning and removes the second typebox copy from consumer installs. The detached async runner keeps working without its own copy: `spawnRunner` now passes pi's own `typebox`, `typebox/compile`, and `typebox/value` files to the bare jiti child through `JITI_ALIAS`, the same alias map pi's extension loader applies in-process, so the `Cannot find module 'typebox/compile'` crash from [#9](https://github.com/jjuraszek/pi-cohort/issues/9) stays fixed.
+
 ## [7.1.1] - 2026-09-24
 
 ### Changed

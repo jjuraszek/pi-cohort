@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
 import { asyncStartHeadline, spawnDetachedWithLog, spawnRunner } from "../../src/runs/background/async-execution.ts";
-import { createJitiCliResolver } from "../../src/runs/shared/jiti-cli.ts";
+import { createJitiCliResolver, resolveHostModuleAliases } from "../../src/runs/shared/jiti-cli.ts";
 
 function tempDir(prefix: string): string {
 	return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -90,6 +90,30 @@ describe("spawnRunner", () => {
 		assert.equal(spawnCalls, 1);
 		assert.equal(result.pid, 4242);
 		assert.equal(result.error, undefined);
+	});
+
+	it("passes the host typebox aliases to the runner through JITI_ALIAS", () => {
+		const dir = tempDir("pi-cohort-spawnrunner-alias-");
+		let env: NodeJS.ProcessEnv | undefined;
+		const fakeChild = { pid: 4243, on: () => {}, unref: () => {} };
+		const spawnImpl = ((_cmd: string, _args: string[], opts: { env?: NodeJS.ProcessEnv }) => {
+			env = opts.env;
+			return fakeChild as unknown as ReturnType<typeof import("node:child_process").spawn>;
+		}) as unknown as typeof import("node:child_process").spawn;
+		const hostAliases = () => ({ typebox: "/host/typebox/index.mjs", "typebox/compile": "/host/typebox/compile/index.mjs" });
+		spawnRunner({}, "g4-alias", dir, dir, { ensureJiti: () => "/fake/jiti-cli.mjs", spawnImpl, hostAliases });
+		assert.deepEqual(JSON.parse(env?.JITI_ALIAS ?? "{}"), hostAliases());
+		assert.equal(env?.PATH, process.env.PATH);
+	});
+});
+
+describe("resolveHostModuleAliases", () => {
+	it("maps typebox and typebox/compile to absolute files", () => {
+		const aliases = resolveHostModuleAliases();
+		for (const specifier of ["typebox", "typebox/compile"]) {
+			assert.ok(path.isAbsolute(aliases[specifier] ?? ""), `${specifier} resolved to ${aliases[specifier]}`);
+			assert.ok(fs.existsSync(aliases[specifier]));
+		}
 	});
 });
 

@@ -24,17 +24,23 @@ function resolveJitiCliFromPackageJson(packageJsonPath: string): string | undefi
 	return undefined;
 }
 
-function resolveJitiCliPath(): string | undefined {
-	const candidates: Array<() => string | undefined> = [
-		() => require.resolve("jiti/package.json"),
+function hostResolveCandidates(specifier: string): Array<() => string | undefined> {
+	return [
+		() => require.resolve(specifier),
 		() => piPackageRoot
-			? createRequire(path.join(piPackageRoot, "package.json")).resolve("jiti/package.json")
+			? createRequire(path.join(piPackageRoot, "package.json")).resolve(specifier)
 			: undefined,
 		() => {
 			if (!process.argv[1]) return undefined;
 			const piEntry = fs.realpathSync(process.argv[1]);
-			return createRequire(piEntry).resolve("jiti/package.json");
+			return createRequire(piEntry).resolve(specifier);
 		},
+	];
+}
+
+function resolveJitiCliPath(): string | undefined {
+	const candidates = [
+		...hostResolveCandidates("jiti/package.json"),
 		() => piPackageRoot ? path.join(piPackageRoot, "node_modules", "jiti", "package.json") : undefined,
 	];
 	for (const candidate of candidates) {
@@ -48,6 +54,31 @@ function resolveJitiCliPath(): string | undefined {
 		}
 	}
 	return undefined;
+}
+
+function resolveFromHost(specifier: string): string | undefined {
+	for (const candidate of hostResolveCandidates(specifier)) {
+		try {
+			const resolved = candidate();
+			if (resolved) return resolved;
+		} catch {
+			// Candidate not available in this install, continue probing.
+		}
+	}
+	return undefined;
+}
+
+// Pi's extension loader aliases these to its own copies; the detached runner boots
+// under the bare jiti CLI, so it gets the same map through JITI_ALIAS.
+const HOST_ALIASED_SPECIFIERS = ["typebox", "typebox/compile", "typebox/value"];
+
+export function resolveHostModuleAliases(): Record<string, string> {
+	const aliases: Record<string, string> = {};
+	for (const specifier of HOST_ALIASED_SPECIFIERS) {
+		const resolved = resolveFromHost(specifier);
+		if (resolved) aliases[specifier] = resolved;
+	}
+	return aliases;
 }
 
 export function createJitiCliResolver(deps: { resolve?: () => string | undefined; exists?: (p: string) => boolean } = {}): () => string | undefined {
