@@ -13,12 +13,7 @@ import type { AgentProgress, AsyncStatus, Details, DisplayItem, ErrorInfo, Singl
 // File System Utilities
 // ============================================================================
 
-export function getAgentDir(): string {
-	const configured = process.env.PI_CODING_AGENT_DIR;
-	if (configured === "~") return os.homedir();
-	if (configured?.startsWith("~/")) return path.join(os.homedir(), configured.slice(2));
-	return configured || path.join(os.homedir(), ".pi", "agent");
-}
+export { getAgentDir } from "./agent-dir.ts";
 
 const statusCache = new Map<string, { mtime: number; status: AsyncStatus }>();
 

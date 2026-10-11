@@ -3,7 +3,8 @@
  */
 
 import { spawn } from "node:child_process";
-import * as fs from "node:fs";
+import { PINNED_AGENT_DIR_OVERRIDE } from "../../shared/agent-dir.ts";
+import fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,8 +13,9 @@ import type { AgentConfig } from "../../agents/agents.ts";
 import { applyThinkingSuffix } from "../shared/pi-args.ts";
 import { injectSingleOutputInstruction, normalizeSingleOutputOverride, resolveParallelTaskOutputPath, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
 import { buildChainInstructions, isDynamicParallelStep, isParallelStep, resolveStepBehavior, suppressProgressForReadOnlyTask, writeInitialProgressFile, type ChainStep, type ResolvedStepBehavior, type SequentialStep, type StepOverrides } from "../../shared/settings.ts";
-import type { RunnerStep } from "../shared/parallel-utils.ts";
-import { resolvePiPackageRoot } from "../shared/pi-spawn.ts";
+import { writeAtomicJson } from "../../shared/atomic-json.ts";
+import { isDynamicRunnerGroup, isParallelGroup, type RunnerStep } from "../shared/parallel-utils.ts";
+import { getPiSpawnCommand, PiRuntimeLaunchError, type PiRuntimeIdentity } from "../shared/pi-spawn.ts";
 import { ensureJitiCliPath, resolveHostModuleAliases } from "../shared/jiti-cli.ts";
 export { createJitiCliResolver } from "../shared/jiti-cli.ts";
 import { buildSkillInjection, normalizeSkillInput, resolveSkillsWithFallback } from "../../agents/skills.ts";
@@ -39,14 +41,14 @@ import {
 	RESULTS_DIR,
 	SUBAGENT_ASYNC_STARTED_EVENT,
 	TEMP_ROOT_DIR,
+	RUN_STATE_ROOT_DIR,
 	getAsyncConfigPath,
 	resolveChildMaxSubagentDepth,
 } from "../../shared/types.ts";
 import { nestedResultsPath, resolveInheritedNestedRouteFromEnv, resolveNestedParentAddressFromEnv, writeNestedEvent } from "../shared/nested-events.ts";
 
-const piPackageRoot = resolvePiPackageRoot();
-
 interface AsyncExecutionContext {
+	runtime: PiRuntimeIdentity;
 	pi: ExtensionAPI;
 	cwd: string;
 	currentSessionId: string;
@@ -73,6 +75,7 @@ interface AsyncChainParams {
 	sessionRoot?: string;
 	chainSkills?: string[];
 	sessionFilesByFlatIndex?: (string | undefined)[];
+	originSessionRoot?: string;
 	dynamicFanoutMaxItems?: number;
 	maxSubagentDepth: number;
 	worktreeSetupHook?: string;
@@ -103,6 +106,7 @@ interface AsyncSingleParams {
 	shareEnabled: boolean;
 	sessionRoot?: string;
 	sessionFile?: string;
+	originSessionRoot?: string;
 	skills?: string[];
 	output?: string | boolean;
 	outputMode?: "inline" | "file-only";
@@ -136,8 +140,8 @@ export function formatAsyncStartedMessage(headline: string): string {
 /**
  * Check if jiti is available for async execution
  */
-export function isAsyncAvailable(): boolean {
-	return ensureJitiCliPath() !== undefined;
+export function isAsyncAvailable(runtime: PiRuntimeIdentity): boolean {
+	return ensureJitiCliPath(runtime.piPackageRoot) !== undefined;
 }
 
 /**
@@ -184,18 +188,19 @@ export function spawnDetachedWithLog(command: string, args: string[], cwd: strin
  * Spawn the async runner process
  */
 export function spawnRunner(
-	cfg: object,
+	cfg: { runtime: PiRuntimeIdentity },
 	suffix: string,
 	cwd: string,
 	asyncDir: string,
-	deps: { ensureJiti?: () => string | undefined; spawnImpl?: typeof spawn; hostAliases?: () => Record<string, string> } = {},
+	deps: { ensureJiti?: (root: string) => string | undefined; spawnImpl?: typeof spawn; hostAliases?: (root: string) => Record<string, string> } = {},
 ): { pid?: number; error?: string } {
 	const ensureJiti = deps.ensureJiti ?? ensureJitiCliPath;
-	const jitiCliPath = ensureJiti();
+	const jitiCliPath = ensureJiti(cfg.runtime.piPackageRoot);
 	if (!jitiCliPath) {
-		return { error: "upstream jiti for TypeScript execution could not be found; ensure package dependencies are installed" };
+		throw new PiRuntimeLaunchError(`Cannot resolve jiti from selected Pi installation ${cfg.runtime.piPackageRoot}`);
 	}
 
+	getPiSpawnCommand([], cfg.runtime);
 	try {
 		const cwdStats = fs.statSync(cwd);
 		if (!cwdStats.isDirectory()) {
@@ -210,12 +215,122 @@ export function spawnRunner(
 	fs.writeFileSync(cfgPath, JSON.stringify(cfg));
 	const runner = path.join(path.dirname(fileURLToPath(import.meta.url)), "subagent-runner.ts");
 
-	const aliases = (deps.hostAliases ?? resolveHostModuleAliases)();
+	const aliases = (deps.hostAliases ?? resolveHostModuleAliases)(cfg.runtime.piPackageRoot);
 	const env = Object.keys(aliases).length > 0
 		? { ...process.env, JITI_ALIAS: JSON.stringify(aliases) }
-		: process.env;
+		: { ...process.env };
+	if (PINNED_AGENT_DIR_OVERRIDE) env.PI_CODING_AGENT_DIR = PINNED_AGENT_DIR_OVERRIDE;
 
-	return spawnDetachedWithLog(process.execPath, [jitiCliPath, runner, cfgPath], cwd, asyncDir, deps.spawnImpl ?? spawn, env);
+	return spawnDetachedWithLog(cfg.runtime.nodeExecPath, [jitiCliPath, runner, cfgPath], cwd, asyncDir, deps.spawnImpl ?? spawn, env);
+}
+
+type NestedStartWriter = (...args: Parameters<typeof writeNestedEvent>) => void | boolean;
+
+function publishAndSpawnRunner(
+	cfg: { runtime: PiRuntimeIdentity; id: string; steps: RunnerStep[]; sessionId: string; sessionDir: string; resultMode: SubagentRunMode; [key: string]: unknown },
+	suffix: string,
+	cwd: string,
+	asyncDir: string,
+	origin: { route?: NestedRouteInfo; address?: ReturnType<typeof resolveNestedParentAddressFromEnv>; sessionFile?: string; sessionFiles?: string[]; sessionRoot?: string },
+	writeStart: NestedStartWriter,
+): { pid?: number; error?: string } {
+	const parallelGroups: Array<{ start: number; count: number; stepIndex: number }> = [];
+	const steps: object[] = [];
+	for (const [stepIndex, step] of cfg.steps.entries()) {
+		const leaves = isParallelGroup(step) ? step.parallel : isDynamicRunnerGroup(step) ? [step.parallel] : [step];
+		if (isParallelGroup(step) || isDynamicRunnerGroup(step)) parallelGroups.push({ start: steps.length, count: leaves.length, stepIndex });
+		for (const leaf of leaves) {
+			steps.push({
+				agent: isDynamicRunnerGroup(step) ? `expand:${leaf.agent}` : leaf.agent,
+				phase: isDynamicRunnerGroup(step) ? step.phase ?? leaf.phase : leaf.phase,
+				label: isDynamicRunnerGroup(step) ? step.label ?? leaf.label ?? `Dynamic fanout (${step.collect.as})` : leaf.label,
+				outputName: isDynamicRunnerGroup(step) ? step.collect.as : leaf.outputName,
+				structured: isDynamicRunnerGroup(step) ? Boolean(step.collect.outputSchema) : leaf.structured,
+				status: "pending",
+				...(isDynamicRunnerGroup(step) ? {} : {
+					sessionFile: leaf.sessionFile,
+					skills: leaf.skills,
+					model: leaf.model,
+					thinking: leaf.thinking,
+					attemptedModels: leaf.modelCandidates && leaf.modelCandidates.length > 0 ? leaf.modelCandidates : leaf.model ? [leaf.model] : undefined,
+				}),
+				recentTools: [],
+				recentOutput: [],
+			});
+		}
+	}
+	let preparationError: unknown;
+	try {
+		fs.mkdirSync(cfg.sessionDir, { recursive: true });
+		cfg.sessionDir = fs.realpathSync.native(cfg.sessionDir);
+	} catch (error) {
+		preparationError = error;
+	}
+	const statusPath = path.join(asyncDir, "status.json");
+	const now = Date.now();
+	const status = {
+		runId: cfg.id, runtime: cfg.runtime, sessionId: cfg.sessionId,
+		state: "queued", mode: cfg.resultMode, cwd, currentStep: 0, chainStepCount: cfg.steps.length,
+		startedAt: now, lastUpdate: now, lastActivityAt: now, outputFile: path.join(asyncDir, "output-0.log"), steps, parallelGroups, workflowGraph: cfg.workflowGraph,
+		artifactsDir: cfg.artifactsDir, sessionDir: cfg.sessionDir,
+	};
+	writeAtomicJson(statusPath, status);
+	try {
+		if (preparationError) throw preparationError;
+		let sessionRoot = cfg.sessionDir;
+		if (origin.sessionRoot !== undefined) {
+			if (!origin.sessionFile && !origin.sessionFiles?.length) throw new Error("Origin session root requires a reused session file.");
+			if (!path.isAbsolute(origin.sessionRoot)) throw new Error("Origin session root must be absolute.");
+			let stat: fs.Stats;
+			try {
+				stat = fs.statSync(origin.sessionRoot);
+			} catch {
+				throw new Error("Origin session root must exist.");
+			}
+			if (!stat.isDirectory()) throw new Error("Origin session root must be a directory.");
+			sessionRoot = fs.realpathSync.native(origin.sessionRoot);
+			if (sessionRoot !== origin.sessionRoot) throw new Error("Origin session root must be canonical and cannot be retargeted.");
+		}
+		const effectiveFiles = origin.sessionFiles ?? (origin.sessionFile ? [origin.sessionFile] : []);
+		if (origin.sessionRoot) {
+			const contains = (candidate: string) => {
+				const relative = path.relative(sessionRoot, candidate);
+				return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+			};
+			if (origin.sessionFiles && !contains(cfg.sessionDir)) throw new Error("Runner session directory is outside origin session root.");
+			for (const file of effectiveFiles) {
+				if (!fs.existsSync(file)) throw new Error("Reused session file must be an existing regular .jsonl file.");
+				const stat = fs.lstatSync(file);
+				if (!stat.isFile() || stat.isSymbolicLink() || path.extname(file) !== ".jsonl") throw new Error("Reused session file must be a regular .jsonl file.");
+				if (!contains(fs.realpathSync.native(file))) throw new Error("Reused session file is outside origin session root.");
+			}
+		}
+		if (origin.route && origin.address) {
+			if (effectiveFiles.some(file => fs.existsSync(file)) && !origin.sessionRoot) throw new Error("Origin session root is required for a reused nested session.");
+			const firstLeaf = isParallelGroup(cfg.steps[0]) ? cfg.steps[0].parallel[0] : isDynamicRunnerGroup(cfg.steps[0]) ? cfg.steps[0].parallel : cfg.steps[0];
+			const agents = cfg.steps.flatMap(step => isParallelGroup(step) ? step.parallel.map(leaf => leaf.agent) : isDynamicRunnerGroup(step) ? [step.parallel.agent] : [step.agent]);
+			try {
+				if (writeStart(origin.route, {
+					type: "subagent.nested.started", ts: now,
+					parentRunId: origin.address.parentRunId, parentStepIndex: origin.address.parentStepIndex,
+					child: {
+						id: cfg.id, ...origin.address, asyncDir, sessionId: cfg.sessionId, capabilityToken: origin.route.capabilityToken,
+						runtime: cfg.runtime, sessionRoot, mode: cfg.resultMode, state: "queued",
+						agent: firstLeaf?.agent, agents, chainStepCount: cfg.steps.length, parallelGroups,
+						startedAt: now, lastUpdate: now,
+					},
+				}) === false) throw new Error("Nested origin stamp was refused.");
+			} catch (error) {
+				throw new Error(`Failed to stamp nested origin: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+			}
+		}
+		const result = spawnRunner(cfg, suffix, cwd, asyncDir);
+		if (result.error) throw new Error(result.error);
+		return result;
+	} catch (error) {
+		writeAtomicJson(statusPath, { ...status, state: "failed", error: error instanceof Error ? error.message : String(error), lastUpdate: Date.now() });
+		throw error;
+	}
 }
 
 /**
@@ -245,6 +360,7 @@ class AsyncStartValidationError extends Error {}
 export function executeAsyncChain(
 	id: string,
 	params: AsyncChainParams,
+	writeStart: NestedStartWriter = writeNestedEvent,
 ): AsyncExecutionResult {
 	const {
 		chain,
@@ -304,10 +420,11 @@ export function executeAsyncChain(
 	const inheritedNestedRoute = resolveInheritedNestedRouteFromEnv();
 	const nestedAddress = inheritedNestedRoute ? resolveNestedParentAddressFromEnv() : undefined;
 	const asyncDir = inheritedNestedRoute
-		? path.join(TEMP_ROOT_DIR, "nested-subagent-runs", inheritedNestedRoute.rootRunId, id)
+		? path.join(RUN_STATE_ROOT_DIR, "nested-subagent-runs", inheritedNestedRoute.rootRunId, id)
 		: path.join(ASYNC_DIR, id);
 	try {
-		fs.mkdirSync(asyncDir, { recursive: true });
+		fs.mkdirSync(path.dirname(asyncDir), { recursive: true });
+		fs.mkdirSync(asyncDir);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		return {
@@ -486,7 +603,7 @@ export function executeAsyncChain(
 
 	let spawnResult: { pid?: number; error?: string } = {};
 	try {
-		spawnResult = spawnRunner(
+		spawnResult = publishAndSpawnRunner(
 			{
 				id,
 				steps,
@@ -497,11 +614,10 @@ export function executeAsyncChain(
 				artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
 				artifactConfig,
 				share: shareEnabled,
-				sessionDir: sessionRoot ? path.join(sessionRoot, `async-${id}`) : undefined,
+				sessionDir: path.join(sessionRoot ?? path.join(RUN_STATE_ROOT_DIR, "sessions"), `async-${id}`),
 				asyncDir,
 				sessionId: ctx.currentSessionId,
-				piPackageRoot,
-				piArgv1: process.argv[1],
+				runtime: ctx.runtime,
 				forwardedFlags,
 				worktreeSetupHook,
 				worktreeSetupHookTimeoutMs,
@@ -521,6 +637,15 @@ export function executeAsyncChain(
 			id,
 			runnerCwd,
 			asyncDir,
+			{
+				route: inheritedNestedRoute,
+				address: nestedAddress,
+				sessionFiles: steps
+					.flatMap(step => isParallelGroup(step) ? step.parallel : isDynamicRunnerGroup(step) ? [step.parallel] : [step])
+					.flatMap(step => step.sessionFile ? [step.sessionFile] : []),
+				sessionRoot: params.originSessionRoot,
+			},
+			writeStart,
 		);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -554,37 +679,6 @@ export function executeAsyncChain(
 			} else {
 				flatAgents.push((step as SequentialStep).agent);
 				flatStepStart++;
-			}
-		}
-		if (inheritedNestedRoute && nestedAddress) {
-			const now = Date.now();
-			try {
-				writeNestedEvent(inheritedNestedRoute, {
-					type: "subagent.nested.started",
-					ts: now,
-					parentRunId: nestedAddress.parentRunId,
-					parentStepIndex: nestedAddress.parentStepIndex,
-					child: {
-						id,
-						parentRunId: nestedAddress.parentRunId,
-						parentStepIndex: nestedAddress.parentStepIndex,
-						depth: nestedAddress.depth,
-						path: nestedAddress.path,
-						asyncDir,
-						pid: spawnResult.pid,
-						ownerState: "live",
-						mode: resultMode,
-						state: "running",
-						agent: firstAgents[0],
-						agents: flatAgents,
-						chainStepCount: chain.length,
-						parallelGroups,
-						startedAt: now,
-						lastUpdate: now,
-					},
-				});
-			} catch (error) {
-				console.error("Failed to emit nested async start event:", error);
 			}
 		}
 		ctx.pi.events.emit(SUBAGENT_ASYNC_STARTED_EVENT, {
@@ -629,6 +723,7 @@ export function executeAsyncChain(
 export function executeAsyncSingle(
 	id: string,
 	params: AsyncSingleParams,
+	writeStart: NestedStartWriter = writeNestedEvent,
 ): AsyncExecutionResult {
 	const {
 		agent,
@@ -663,10 +758,11 @@ export function executeAsyncSingle(
 	const inheritedNestedRoute = resolveInheritedNestedRouteFromEnv();
 	const nestedAddress = inheritedNestedRoute ? resolveNestedParentAddressFromEnv() : undefined;
 	const asyncDir = inheritedNestedRoute
-		? path.join(TEMP_ROOT_DIR, "nested-subagent-runs", inheritedNestedRoute.rootRunId, id)
+		? path.join(RUN_STATE_ROOT_DIR, "nested-subagent-runs", inheritedNestedRoute.rootRunId, id)
 		: path.join(ASYNC_DIR, id);
 	try {
-		fs.mkdirSync(asyncDir, { recursive: true });
+		fs.mkdirSync(path.dirname(asyncDir), { recursive: true });
+		fs.mkdirSync(asyncDir);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		return {
@@ -687,7 +783,7 @@ export function executeAsyncSingle(
 	const model = applyThinkingSuffix(resolveModelCandidate(primaryRaw, availableModels, ctx.currentModelProvider), thinking);
 	let spawnResult: { pid?: number; error?: string } = {};
 	try {
-		spawnResult = spawnRunner(
+		spawnResult = publishAndSpawnRunner(
 			{
 				id,
 				steps: [
@@ -728,11 +824,10 @@ export function executeAsyncSingle(
 				artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
 				artifactConfig,
 				share: shareEnabled,
-				sessionDir: sessionRoot ? path.join(sessionRoot, `async-${id}`) : undefined,
+				sessionDir: path.join(sessionRoot ?? path.join(RUN_STATE_ROOT_DIR, "sessions"), `async-${id}`),
 				asyncDir,
 				sessionId: ctx.currentSessionId,
-				piPackageRoot,
-				piArgv1: process.argv[1],
+				runtime: ctx.runtime,
 				forwardedFlags,
 				worktreeSetupHook,
 				worktreeSetupHookTimeoutMs,
@@ -750,6 +845,8 @@ export function executeAsyncSingle(
 			id,
 			runnerCwd,
 			asyncDir,
+			{ route: inheritedNestedRoute, address: nestedAddress, sessionFile, sessionRoot: params.originSessionRoot },
+			writeStart,
 		);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -761,36 +858,6 @@ export function executeAsyncSingle(
 	}
 
 	if (spawnResult.pid) {
-		if (inheritedNestedRoute && nestedAddress) {
-			const now = Date.now();
-			try {
-				writeNestedEvent(inheritedNestedRoute, {
-					type: "subagent.nested.started",
-					ts: now,
-					parentRunId: nestedAddress.parentRunId,
-					parentStepIndex: nestedAddress.parentStepIndex,
-					child: {
-						id,
-						parentRunId: nestedAddress.parentRunId,
-						parentStepIndex: nestedAddress.parentStepIndex,
-						depth: nestedAddress.depth,
-						path: nestedAddress.path,
-						asyncDir,
-						pid: spawnResult.pid,
-						ownerState: "live",
-						mode: "single",
-						state: "running",
-						agent,
-						agents: [agent],
-						chainStepCount: 1,
-						startedAt: now,
-						lastUpdate: now,
-					},
-				});
-			} catch (error) {
-				console.error("Failed to emit nested async start event:", error);
-			}
-		}
 		ctx.pi.events.emit(SUBAGENT_ASYNC_STARTED_EVENT, {
 			id,
 			pid: spawnResult.pid,

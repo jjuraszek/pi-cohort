@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -10,6 +11,62 @@ import { loadConfig } from "../../src/extension/config.ts";
 import { loadRunsForAgent, recordRun } from "../../src/runs/shared/run-history.ts";
 import { cleanupAllArtifactDirs } from "../../src/shared/artifacts.ts";
 import { getAgentDir } from "../../src/shared/utils.ts";
+
+describe("pinned profile storage", () => {
+	for (const profile of ["unset", "empty", "tilde", "relative", "absolute"] as const) {
+		it(`pins ${profile} profile roots before cwd changes`, () => {
+			const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cohort-profile-"));
+			try {
+				const home = path.join(root, "home");
+				const initialCwd = path.join(root, "initial");
+				const laterCwd = path.join(root, "later");
+				for (const dir of [home, initialCwd, laterCwd]) fs.mkdirSync(dir);
+				const configured = {
+					unset: undefined,
+					empty: "",
+					tilde: "~/selected",
+					relative: "selected",
+					absolute: path.join(root, "selected"),
+				}[profile];
+				const expected = profile === "unset" || profile === "empty"
+					? path.join(home, ".pi", "agent")
+					: profile === "tilde" ? path.join(home, "selected")
+						: path.resolve(fs.realpathSync(initialCwd), configured!);
+				const env = { ...process.env, HOME: home, USERPROFILE: home };
+				delete env.PI_CODING_AGENT_DIR;
+				if (configured !== undefined) env.PI_CODING_AGENT_DIR = configured;
+				const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+					import assert from "node:assert/strict";
+					import path from "node:path";
+					import os from "node:os";
+					import fs from "node:fs";
+					const storage = await import(${JSON.stringify(new URL("../../src/shared/types.ts", import.meta.url).href)});
+					const expected = ${JSON.stringify(expected)};
+					assert.equal(storage.RUN_STATE_ROOT_DIR, path.join(expected, "pi-cohort"));
+					const leaf = await import(${JSON.stringify(new URL("../../src/shared/agent-dir.ts", import.meta.url).href)});
+					const utils = await import(${JSON.stringify(new URL("../../src/shared/utils.ts", import.meta.url).href)});
+					assert.equal(utils.getAgentDir, leaf.getAgentDir);
+					assert.equal(path.resolve(leaf.getAgentDir()), expected);
+					process.chdir(${JSON.stringify(laterCwd)});
+					process.env.PI_CODING_AGENT_DIR = "changed";
+					assert.equal(leaf.getAgentDir(), "changed");
+					assert.equal(leaf.PINNED_AGENT_DIR, expected);
+					assert.equal(leaf.PINNED_AGENT_DIR_OVERRIDE, ${configured ? "expected" : "undefined"});
+					assert.equal(storage.RUN_STATE_ROOT_DIR, path.join(expected, "pi-cohort"));
+					assert.equal(storage.ASYNC_DIR, path.join(storage.RUN_STATE_ROOT_DIR, "async-subagent-runs"));
+					assert.equal(path.dirname(storage.TEMP_ROOT_DIR), os.tmpdir());
+					for (const [key, child] of [["RESULTS_DIR", "async-subagent-results"], ["LEGACY_ASYNC_DIR", "async-subagent-runs"], ["CHAIN_RUNS_DIR", "chain-runs"], ["TEMP_ARTIFACTS_DIR", "artifacts"]]) {
+						assert.equal(storage[key], path.join(storage.TEMP_ROOT_DIR, child));
+					}
+					assert.deepEqual(fs.readdirSync(${JSON.stringify(home)}), []);
+				`], { cwd: initialCwd, env, encoding: "utf8" });
+				assert.equal(result.status, 0, result.stderr);
+			} finally {
+				fs.rmSync(root, { recursive: true, force: true });
+			}
+		});
+	}
+});
 
 let tempDir = "";
 let agentDir = "";

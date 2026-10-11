@@ -140,7 +140,10 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 				try {
 					emitNewControlEvents(job);
 					reconcileNestedDescendants();
-					const reconciliation = reconcileAsyncRun(job.asyncDir, {
+					const stored = readStatus(job.asyncDir);
+					const reconciliation = stored && stored.state !== "running" && stored.state !== "queued"
+						? { status: stored }
+						: reconcileAsyncRun(job.asyncDir, {
 						resultsDir,
 						kill: options.kill,
 						now: options.now,

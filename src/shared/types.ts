@@ -4,6 +4,8 @@
 
 import * as os from "node:os";
 import * as path from "node:path";
+import { PINNED_AGENT_DIR } from "./agent-dir.ts";
+import type { PiRuntimeIdentity } from "../runs/shared/pi-spawn.ts";
 import type { Message } from "@earendil-works/pi-ai";
 import type { FSWatcher } from "node:fs";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -495,6 +497,8 @@ export interface NestedStepSummary {
 }
 
 export interface NestedRunSummary extends NestedRunAddress {
+	runtime?: PiRuntimeIdentity;
+	sessionRoot?: string;
 	asyncDir?: string;
 	pid?: number;
 	sessionId?: string;
@@ -549,6 +553,8 @@ export interface AsyncStartedEvent {
 }
 
 export interface AsyncStatus {
+	runtime?: PiRuntimeIdentity;
+	error?: string;
 	runId: string;
 	sessionId?: string;
 	mode: SubagentRunMode;
@@ -660,6 +666,7 @@ export interface ForegroundResumeChild {
 }
 
 export interface ForegroundResumeRun {
+	runtime?: PiRuntimeIdentity;
 	runId: string;
 	mode: SubagentRunMode;
 	cwd: string;
@@ -750,6 +757,7 @@ export const SUBAGENT_CONTROL_EVENT = "subagent:control-event";
 // ============================================================================
 
 export interface RunSyncOptions {
+	runtime: PiRuntimeIdentity;
 	cwd?: string;
 	signal?: AbortSignal;
 	interruptSignal?: AbortSignal;
@@ -902,7 +910,9 @@ const MAX_PARALLEL = 8;
 export const MAX_CONCURRENCY = 4;
 export const TEMP_ROOT_DIR = path.join(os.tmpdir(), `pi-cohort-${resolveTempScopeId()}`);
 export const RESULTS_DIR = path.join(TEMP_ROOT_DIR, "async-subagent-results");
-export const ASYNC_DIR = path.join(TEMP_ROOT_DIR, "async-subagent-runs");
+export const RUN_STATE_ROOT_DIR = path.join(PINNED_AGENT_DIR, "pi-cohort");
+export const ASYNC_DIR = path.join(RUN_STATE_ROOT_DIR, "async-subagent-runs");
+export const LEGACY_ASYNC_DIR = path.join(TEMP_ROOT_DIR, "async-subagent-runs");
 export const CHAIN_RUNS_DIR = path.join(TEMP_ROOT_DIR, "chain-runs");
 export const TEMP_ARTIFACTS_DIR = path.join(TEMP_ROOT_DIR, "artifacts");
 export const WIDGET_KEY = "pi-cohort-async";

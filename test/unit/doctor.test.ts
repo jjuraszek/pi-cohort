@@ -4,6 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
 import { buildDoctorReport } from "../../src/extension/doctor.ts";
+import { createMockPi } from "../support/mock-pi.ts";
+const mockPi = createMockPi();
 import type { AgentConfig, ChainConfig } from "../../src/agents/agents.ts";
 import type { ExtensionConfig, SubagentState } from "../../src/shared/types.ts";
 
@@ -62,6 +64,7 @@ describe("buildDoctorReport", () => {
 
 			const report = buildDoctorReport({
 				cwd: root,
+				runtime: mockPi.runtime,
 				config: { defaultSessionDir: "~/subagent-sessions" } as ExtensionConfig,
 				state: makeState(root),
 				currentSessionFile: path.join(root, "sessions", "parent.jsonl"),
@@ -69,7 +72,7 @@ describe("buildDoctorReport", () => {
 				expandTilde: (value) => value.replace(/^~\//, `${root}/home/`),
 				paths,
 				deps: {
-					isAsyncAvailable: () => true,
+					isAsyncAvailable: runtime => { assert.equal(runtime, mockPi.runtime); return true; },
 					discoverAgentsAll: () => ({
 						builtin: [makeAgent("builtin-a", "builtin")],
 						user: [makeAgent("user-a", "user")],
@@ -92,6 +95,7 @@ describe("buildDoctorReport", () => {
 			assert.match(report, /^Subagents doctor report/);
 			assert.ok(report.includes(`- cwd: ${root}`));
 			assert.match(report, /- async support: available/);
+			assert.doesNotMatch(report, /- (node executable|Pi entry|Pi package root):/);
 			assert.match(report, /- configured session dir: .*subagent-sessions/);
 			assert.match(report, /- current session file: .*parent\.jsonl/);
 			assert.match(report, /- temp root: ok /);
@@ -101,6 +105,15 @@ describe("buildDoctorReport", () => {
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
+	});
+
+	it("reports capture failure without checking a replacement runtime", () => {
+		const report = buildDoctorReport({
+			cwd: os.tmpdir(), config: {}, state: makeState(os.tmpdir()), runtimeError: "parent entry is unavailable",
+			deps: { isAsyncAvailable: () => { throw new Error("runtime check must not run"); }, discoverAvailableSkills: () => [], discoverAgentsAll: () => { throw new Error("offline"); } },
+		});
+		assert.match(report, /runtime capture: failed - parent entry is unavailable/);
+		assert.match(report, /async support: unavailable/);
 	});
 
 	it("keeps reporting when a directory or discovery check fails", () => {

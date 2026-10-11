@@ -21,6 +21,43 @@ function errno(code: string): NodeJS.ErrnoException {
 }
 
 describe("async stale-run reconciliation", () => {
+	for (const withResult of [false, true]) it(`leaves queued startup unresolved (${withResult ? "with" : "without"} result)`, () => {
+		const root = tempRoot("pi-queued-reconcile-");
+		try {
+			const asyncDir = path.join(root, "queued");
+			const resultsDir = path.join(root, "results");
+			writeStatus(asyncDir, { runId: "queued", mode: "single", state: "queued", pid: 123, startedAt: 1, steps: [] });
+			const statusPath = path.join(asyncDir, "status.json");
+			const before = fs.readFileSync(statusPath, "utf8");
+			const resultPath = path.join(resultsDir, "queued.json");
+			if (withResult) {
+				fs.mkdirSync(resultsDir);
+				fs.writeFileSync(resultPath, '{"success":true,"state":"complete"}');
+			}
+			let probes = 0;
+			const result = reconcileAsyncRun(asyncDir, { resultsDir, now: () => 10 ** 12, kill: () => { probes++; return true; } });
+			assert.equal(result.repaired, false);
+			assert.equal(result.status?.state, "queued");
+			assert.match(result.message ?? "", /unresolved async startup/i);
+			assert.equal(probes, 0);
+			assert.equal(fs.readFileSync(statusPath, "utf8"), before);
+			assert.deepEqual(fs.readdirSync(asyncDir), ["status.json"]);
+			assert.equal(fs.existsSync(resultPath), withResult);
+			if (withResult) assert.equal(fs.readFileSync(resultPath, "utf8"), '{"success":true,"state":"complete"}');
+		} finally { fs.rmSync(root, { recursive: true, force: true }); }
+	});
+
+	for (const state of ["complete", "failed", "paused"] as const) it(`leaves ${state} history unchanged without probing`, () => {
+		const root = tempRoot("pi-terminal-reconcile-");
+		try {
+			writeStatus(root, { runId: "terminal", mode: "single", state, pid: 123, startedAt: 1 });
+			const before = fs.readFileSync(path.join(root, "status.json"), "utf8");
+			const result = reconcileAsyncRun(root, { resultsDir: path.join(root, "results"), kill: () => { assert.fail("must not probe terminal history"); } });
+			assert.equal(result.repaired, false);
+			assert.equal(fs.readFileSync(path.join(root, "status.json"), "utf8"), before);
+			assert.deepEqual(fs.readdirSync(root), ["status.json"]);
+		} finally { fs.rmSync(root, { recursive: true, force: true }); }
+	});
 	it("classifies pid liveness without treating EPERM as dead", () => {
 		assert.equal(checkPidLiveness(123, () => true), "alive");
 		assert.equal(checkPidLiveness(123, () => { throw errno("ESRCH"); }), "dead");
@@ -42,6 +79,9 @@ describe("async stale-run reconciliation", () => {
 				startedAt: 1000,
 				lastUpdate: 1000,
 				currentStep: 0,
+				runtime: { nodeExecPath: "/origin/node", piEntryPath: "/origin/pi/cli.js", piPackageRoot: "/origin/pi" },
+				sessionFile: path.join(root, "session.jsonl"),
+				sessionDir: root,
 				steps: [{ agent: "scout", status: "running", startedAt: 1000 }],
 			});
 
@@ -57,9 +97,13 @@ describe("async stale-run reconciliation", () => {
 			const status = JSON.parse(fs.readFileSync(path.join(asyncDir, "status.json"), "utf-8"));
 			assert.equal(status.state, "failed");
 			assert.equal(status.sessionId, "session-current");
+			assert.equal(Object.hasOwn(status, "error"), false);
 			assert.equal(status.steps[0].status, "failed");
 			assert.match(status.steps[0].error, /process 12345 exited or disappeared/);
 			const resultJson = JSON.parse(fs.readFileSync(path.join(resultsDir, "run-dead.json"), "utf-8"));
+			assert.deepEqual(resultJson.runtime, status.runtime);
+			assert.equal(resultJson.sessionFile, status.sessionFile);
+			assert.equal(resultJson.sessionDir, root);
 			assert.equal(resultJson.success, false);
 			assert.equal(resultJson.sessionId, "session-current");
 			assert.equal(resultJson.state, "failed");
@@ -123,7 +167,7 @@ describe("async stale-run reconciliation", () => {
 		}
 	});
 
-	it("fails a stale run when a live pid has not updated beyond the stale threshold", () => {
+	for (const liveness of ["alive", "unknown"] as const) it(`fails a stale run when a live pid has not updated beyond the stale threshold (${liveness})`, () => {
 		const root = tempRoot("pi-stale-live-pid-");
 		try {
 			const asyncDir = path.join(root, "run-reused-pid");
@@ -140,7 +184,7 @@ describe("async stale-run reconciliation", () => {
 
 			const result = reconcileAsyncRun(asyncDir, {
 				resultsDir,
-				kill: () => true,
+				kill: () => { if (liveness === "unknown") throw errno("EPERM"); return true; },
 				now: () => 5000,
 				staleAlivePidMs: 1000,
 			});

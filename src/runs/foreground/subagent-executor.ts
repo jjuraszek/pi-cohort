@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
+import { capturePiRuntime, parsePiRuntime, type PiRuntimeIdentity } from "../shared/pi-spawn.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
@@ -41,7 +42,7 @@ import { finalizeSingleOutput, injectSingleOutputInstruction, normalizeTopLevelO
 import { compactForegroundDetails, getSingleResultOutput, mapConcurrent, readStatus, resolveChildCwd } from "../../shared/utils.ts";
 import { resolveSubagentResultStatus } from "../shared/result-children.ts";
 import { buildRevivedAsyncTask, resolveAsyncResumeTarget } from "../background/async-resume.ts";
-import { createNestedRoute, readNestedControlResults, resolveInheritedNestedRouteFromEnv, resolveNestedAsyncDir, resolveNestedParentAddressFromEnv, updateForegroundNestedProjection, writeNestedControlRequest, writeNestedEvent, type NestedRunResolutionScope } from "../shared/nested-events.ts";
+import { projectNestedEvents, nestedResultsPath, createNestedRoute, readNestedControlResults, resolveInheritedNestedRouteFromEnv, resolveNestedAsyncDir, resolveNestedParentAddressFromEnv, updateForegroundNestedProjection, writeNestedControlRequest, writeNestedEvent, type NestedRunResolutionScope } from "../shared/nested-events.ts";
 import { resolveSubagentRunId, type ResolvedSubagentRunId } from "../background/run-id-resolver.ts";
 import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
 import { inspectSubagentStatus } from "../background/run-status.ts";
@@ -132,6 +133,7 @@ export interface SubagentParamsLike {
 }
 
 interface ExecutorDeps {
+	captureRuntime?: () => PiRuntimeIdentity;
 	pi: ExtensionAPI;
 	state: SubagentState;
 	config: ExtensionConfig;
@@ -145,6 +147,7 @@ interface ExecutorDeps {
 }
 
 interface ExecutionContextData {
+	runtime: PiRuntimeIdentity;
 	params: SubagentParamsLike;
 	effectiveCwd: string;
 	ctx: ExtensionContext;
@@ -156,6 +159,7 @@ interface ExecutionContextData {
 	sessionRoot: string;
 	sessionDirForIndex: (idx?: number) => string;
 	sessionFileForIndex: (idx?: number) => string | undefined;
+	sessionFileHintForIndex: (idx?: number) => string;
 	artifactConfig: ArtifactConfig;
 	artifactsDir: string;
 	backgroundRequestedWhileClarifying: boolean;
@@ -210,8 +214,9 @@ function nestedResolutionScopeForExecutor(deps: ExecutorDeps): NestedRunResoluti
 	};
 }
 
-function buildAsyncContext(ctx: ExtensionContext, deps: ExecutorDeps, cwd: string) {
+function buildAsyncContext(ctx: ExtensionContext, deps: ExecutorDeps, cwd: string, runtime: PiRuntimeIdentity) {
 	return {
+		runtime,
 		pi: deps.pi,
 		cwd,
 		currentSessionId: deps.state.currentSessionId!,
@@ -225,7 +230,7 @@ function buildAsyncContext(ctx: ExtensionContext, deps: ExecutorDeps, cwd: strin
 function foregroundStatusResult(control: SubagentState["foregroundControls"] extends Map<string, infer T> ? T : never): AgentToolResult<Details> {
 	let nestedWarning: string | undefined;
 	try {
-		updateForegroundNestedProjection(control);
+		if (control.nestedRoute) control.nestedChildren = projectNestedEvents(control.nestedRoute, { readOnlyLegacy: true }).children;
 	} catch (error) {
 		nestedWarning = `Nested status unavailable: ${error instanceof Error ? error.message : String(error)}`;
 	}
@@ -242,9 +247,11 @@ function foregroundStatusResult(control: SubagentState["foregroundControls"] ext
 	return { content: [{ type: "text", text: lines.join("\n") }], details: { mode: "management", results: [] } };
 }
 
-function rememberForegroundRun(state: SubagentState, input: { runId: string; mode: "single" | "parallel" | "chain"; cwd: string; results: SingleResult[] }): void {
+function rememberForegroundRun(state: SubagentState, input: { runtime: PiRuntimeIdentity; sessionRoot: string; runId: string; mode: "single" | "parallel" | "chain"; cwd: string; results: SingleResult[] }): void {
 	state.foregroundRuns ??= new Map();
-	state.foregroundRuns.set(input.runId, {
+	const rememberedRun = {
+		sessionRoot: input.sessionRoot,
+		runtime: input.runtime,
 		runId: input.runId,
 		mode: input.mode,
 		cwd: input.cwd,
@@ -255,7 +262,8 @@ function rememberForegroundRun(state: SubagentState, input: { runId: string; mod
 			status: resolveSubagentResultStatus({ exitCode: result.exitCode, interrupted: result.interrupted }),
 			...(result.sessionFile ? { sessionFile: result.sessionFile } : {}),
 		})),
-	});
+	};
+	state.foregroundRuns.set(input.runId, rememberedRun);
 	while (state.foregroundRuns.size > 50) {
 		const oldest = [...state.foregroundRuns.values()].sort((left, right) => left.updatedAt - right.updatedAt)[0];
 		if (!oldest) break;
@@ -263,7 +271,7 @@ function rememberForegroundRun(state: SubagentState, input: { runId: string; mod
 	}
 }
 
-function resolveForegroundResumeTarget(params: SubagentParamsLike, state: SubagentState): { runId: string; mode: "single" | "parallel" | "chain"; state: "complete"; agent: string; index: number; cwd: string; sessionFile: string } | undefined {
+function resolveForegroundResumeTarget(params: SubagentParamsLike, state: SubagentState): { runId: string; mode: "single" | "parallel" | "chain"; state: "complete"; agent: string; index: number; cwd: string; sessionFile: string; runtime: PiRuntimeIdentity; sessionRoot: string } | undefined {
 	const requested = (params.id ?? params.runId)?.trim();
 	if (!requested || !state.foregroundRuns?.size) return undefined;
 	const direct = state.foregroundRuns.get(requested);
@@ -280,7 +288,10 @@ function resolveForegroundResumeTarget(params: SubagentParamsLike, state: Subage
 	if (path.extname(child.sessionFile) !== ".jsonl") throw new Error(`Foreground run '${run.runId}' child ${index} session file must be a .jsonl file: ${child.sessionFile}`);
 	const sessionFile = path.resolve(child.sessionFile);
 	if (!fs.existsSync(sessionFile)) throw new Error(`Foreground run '${run.runId}' child ${index} session file does not exist: ${child.sessionFile}`);
-	return { runId: run.runId, mode: run.mode, state: "complete", agent: child.agent, index, cwd: run.cwd, sessionFile };
+	const runtime = parsePiRuntime(run.runtime, `Foreground run '${run.runId}'`);
+	const stat = fs.lstatSync(sessionFile);
+	if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`Foreground run '${run.runId}' session file is not a regular file: ${sessionFile}`);
+	return { runId: run.runId, mode: run.mode, state: "complete", agent: child.agent, index, cwd: run.cwd, sessionFile: fs.realpathSync.native(sessionFile), runtime, sessionRoot: validateResumeSessionRoot((run as typeof run & { sessionRoot?: string }).sessionRoot ?? path.dirname(fs.realpathSync.native(sessionFile)), sessionFile, `Foreground run '${run.runId}'`) };
 }
 
 type AsyncResumeSourceTarget = ReturnType<typeof resolveAsyncResumeTarget> & { source: "async" };
@@ -288,6 +299,8 @@ type ForegroundResumeSourceTarget = NonNullable<ReturnType<typeof resolveForegro
 type NestedResumeSourceTarget = {
 	kind: "revive";
 	source: "nested";
+	runtime: PiRuntimeIdentity;
+	sessionRoot: string;
 	runId: string;
 	state: "complete" | "failed" | "paused";
 	agent: string;
@@ -437,7 +450,7 @@ function pathWithin(base: string, candidate: string): boolean {
 	return resolvedCandidate === resolvedBase || resolvedCandidate.startsWith(`${resolvedBase}${path.sep}`);
 }
 
-function validateNestedSessionFile(run: NestedRunSummary, trustedSessionRoots: string[]): string {
+function validateNestedSessionFile(run: NestedRunSummary, trustedSessionRoots: string[], route: NestedRouteInfo): string {
 	const sessionFile = nestedRunSessionFile(run);
 	if (!sessionFile) throw new Error(`Nested run '${run.id}' does not have a persisted session file to resume from.`);
 	if (path.extname(sessionFile) !== ".jsonl") throw new Error(`Nested run '${run.id}' session file must be a .jsonl file: ${sessionFile}`);
@@ -447,6 +460,15 @@ function validateNestedSessionFile(run: NestedRunSummary, trustedSessionRoots: s
 	const stat = fs.lstatSync(resolved);
 	if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`Nested run '${run.id}' session file is not a regular file: ${sessionFile}`);
 	const realSessionFile = fs.realpathSync(resolved);
+	if (run.runtime !== undefined || run.sessionRoot !== undefined) {
+		if (!run.sessionRoot || !path.isAbsolute(run.sessionRoot)) throw new Error(`Nested run '${run.id}' has no absolute original session root.`);
+		const root = fs.realpathSync.native(run.sessionRoot);
+		if (root !== run.sessionRoot || !fs.statSync(root).isDirectory() || !pathWithin(root, realSessionFile)) throw new Error(`Nested run '${run.id}' session file is outside its stamped session root.`);
+		const recorded = Buffer.from(run.capabilityToken ?? "");
+		const expected = Buffer.from(route.capabilityToken);
+		if (!recorded.length || recorded.length !== expected.length || !timingSafeEqual(recorded, expected)) throw new Error(`Nested run '${run.id}' capability does not match its route.`);
+		return realSessionFile;
+	}
 	const trustedRoots = trustedSessionRoots
 		.filter((root) => fs.existsSync(root))
 		.map((root) => fs.realpathSync(root));
@@ -459,22 +481,33 @@ function validateNestedSessionFile(run: NestedRunSummary, trustedSessionRoots: s
 	return realSessionFile;
 }
 
-function resolveNestedResumeTarget(match: ResolvedSubagentRunId & { kind: "nested" }, trustedSessionRoots: string[]): NestedResumeSourceTarget {
+function resolveNestedResumeTarget(match: ResolvedSubagentRunId & { kind: "nested" }, trustedSessionRoots: string[], index: SubagentParamsLike["index"]): NestedResumeSourceTarget {
 	const run = match.match.run;
-	if (run.state === "running" || run.state === "queued") throw new Error(`Nested run '${run.id}' is live; route the follow-up to the owner process instead.`);
 	const agent = nestedRunAgent(run);
 	if (!agent) throw new Error(`Could not determine child agent for nested run '${run.id}'.`);
 	const state = run.state === "complete" || run.state === "failed" || run.state === "paused" ? run.state : "failed";
 	const asyncDir = resolveNestedAsyncDir(match.match.rootRunId, run);
+	const authoritative = asyncDir ? resolveAsyncResumeTarget({ dir: asyncDir, id: run.id, index }, {
+		asyncDirRoot: path.dirname(asyncDir),
+		resultsDir: path.dirname(nestedResultsPath(match.match.rootRunId, run.id)),
+	}) : undefined;
+	if (!authoritative && (run.state === "running" || run.state === "queued")) throw new Error(`Nested run '${run.id}' is live; route the follow-up to the owner process instead.`);
+	const sessionFile = validateNestedSessionFile(
+		authoritative ? { ...run, sessionFile: authoritative.sessionFile } : run,
+		trustedSessionRoots,
+		match.match.route,
+	);
 	return {
 		kind: "revive",
 		source: "nested",
 		runId: run.id,
-		state,
-		agent,
-		index: 0,
-		cwd: asyncDir ? path.dirname(asyncDir) : undefined,
-		sessionFile: validateNestedSessionFile(run, trustedSessionRoots),
+		runtime: authoritative?.runtime ?? parsePiRuntime(run.runtime, `Nested run '${run.id}'`),
+		sessionRoot: run.sessionRoot!,
+		state: authoritative?.state ?? state,
+		agent: authoritative?.agent ?? agent,
+		index: authoritative?.index ?? 0,
+		cwd: authoritative?.cwd ?? (asyncDir ? path.dirname(asyncDir) : undefined),
+		sessionFile,
 	};
 }
 
@@ -535,6 +568,14 @@ async function resumeLiveNestedRun(input: { target: ResolvedSubagentRunId & { ki
 	return { content: [{ type: "text", text: `Nested run ${run.id} appears live but its owner route is not reachable. Wait for completion, then retry action='resume'.` }], isError: true, details: { mode: "management", results: [] } };
 }
 
+function validateResumeSessionRoot(value: unknown, sessionFile: string | undefined, source: string): string {
+	if (typeof value !== "string" || !path.isAbsolute(value)) throw new Error(`${source}: original session root was not recorded; a new run is required`);
+	const root = fs.realpathSync.native(value);
+	if (root !== value || !fs.statSync(root).isDirectory()) throw new Error(`${source}: original session root must be a canonical directory`);
+	if (sessionFile && !pathWithin(root, fs.realpathSync.native(sessionFile))) throw new Error(`${source}: session file is outside its original session root`);
+	return root;
+}
+
 async function resumeAsyncRun(input: {
 	params: SubagentParamsLike;
 	requestCwd: string;
@@ -556,14 +597,14 @@ async function resumeAsyncRun(input: {
 		const requestedId = input.params.id ?? input.params.runId;
 		const resolved = requestedId ? resolveSubagentRunId(requestedId, { state: input.deps.state, nested: nestedResolutionScopeForExecutor(input.deps) }) : undefined;
 		if (resolved?.kind === "nested") {
-			if (resolved.match.run.state === "running" || resolved.match.run.state === "queued") {
+			if (!resolveNestedAsyncDir(resolved.match.rootRunId, resolved.match.run) && (resolved.match.run.state === "running" || resolved.match.run.state === "queued")) {
 				return resumeLiveNestedRun({ target: resolved, message: followUp });
 			}
 			const trustedSessionRoots = [
 				...(input.deps.config.defaultSessionDir ? [path.resolve(input.deps.expandTilde(input.deps.config.defaultSessionDir))] : []),
 				...(parentSessionFile ? [input.deps.getSubagentSessionRoot(parentSessionFile)] : []),
 			];
-			target = resolveNestedResumeTarget(resolved, trustedSessionRoots);
+			target = resolveNestedResumeTarget(resolved, trustedSessionRoots, input.params.index);
 		} else {
 			target = resolveResumeTarget(input.params, input.deps.state);
 		}
@@ -596,20 +637,29 @@ async function resumeAsyncRun(input: {
 		};
 	}
 
-	const runId = randomUUID().slice(0, 8);
+	const runId = randomUUID();
+	const recordedRoot = target.sessionRoot ?? (target.source === "async" && target.sessionFile
+		? path.dirname(fs.realpathSync.native(target.sessionFile))
+		: undefined);
+	const originalRoot = validateResumeSessionRoot(recordedRoot, target.sessionFile, `Run '${target.runId}'`);
 	const artifactConfig: ArtifactConfig = { ...DEFAULT_ARTIFACT_CONFIG, enabled: input.params.artifacts !== false };
 	const availableModels = input.ctx.modelRegistry.getAvailable().map(toModelInfo);
 	const result = executeAsyncSingle(runId, {
 		agent: target.agent,
 		task: buildRevivedAsyncTask(target, followUp),
 		agentConfig,
-		ctx: buildAsyncContext(input.ctx, input.deps, input.requestCwd),
+		ctx: buildAsyncContext(input.ctx, input.deps, input.requestCwd, target.runtime),
 		cwd: effectiveCwd,
 		maxOutput: input.params.maxOutput,
 		artifactsDir: input.deps.tempArtifactsDir,
 		artifactConfig,
 		shareEnabled: input.params.share === true,
-		sessionRoot: input.deps.getSubagentSessionRoot(parentSessionFile),
+		sessionRoot: input.params.sessionDir
+			? path.resolve(input.deps.expandTilde(input.params.sessionDir))
+			: input.deps.config.defaultSessionDir
+				? path.resolve(input.deps.expandTilde(input.deps.config.defaultSessionDir))
+				: input.deps.getSubagentSessionRoot(parentSessionFile),
+		originSessionRoot: originalRoot,
 		sessionFile: target.sessionFile,
 		maxSubagentDepth: resolveCurrentMaxSubagentDepth(input.deps.config.maxSubagentDepth),
 		worktreeSetupHook: input.deps.config.worktreeSetupHook,
@@ -891,10 +941,7 @@ function collectChainSessionFiles(
 			}
 			continue;
 		}
-		if (isDynamicParallelStep(step)) {
-			sessionFiles.push(undefined);
-			continue;
-		}
+		if (isDynamicParallelStep(step)) continue;
 		sessionFiles.push(sessionFileForIndex(flatIndex));
 		flatIndex++;
 	}
@@ -972,15 +1019,15 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): AgentTool
 		}
 	}
 
-	if (!isAsyncAvailable()) {
+	if (!isAsyncAvailable(data.runtime)) {
 		return {
-			content: [{ type: "text", text: "Async mode requires upstream jiti for TypeScript execution but it could not be found. Ensure the pi-cohort package dependencies are installed." }],
+			content: [{ type: "text", text: `Cannot resolve jiti from selected Pi installation ${data.runtime.piPackageRoot}` }],
 			isError: true,
 			details: { mode: "single" as const, results: [] },
 		};
 	}
 	const id = randomUUID();
-	const asyncCtx = buildAsyncContext(ctx, deps, ctx.cwd);
+	const asyncCtx = buildAsyncContext(ctx, deps, ctx.cwd, data.runtime);
 	const availableModels: ModelInfo[] = ctx.modelRegistry.getAvailable().map(toModelInfo);
 	const currentMaxSubagentDepth = resolveCurrentMaxSubagentDepth(deps.config.maxSubagentDepth);
 	const currentProvider = ctx.model?.provider;
@@ -1020,6 +1067,7 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): AgentTool
 			shareEnabled,
 			sessionRoot,
 			chainSkills: [],
+			originSessionRoot: params.context === "fork" ? sessionRoot : undefined,
 			sessionFilesByFlatIndex: params.tasks.map((_, index) => sessionFileForIndex(index)),
 			maxSubagentDepth: currentMaxSubagentDepth,
 			worktreeSetupHook: deps.config.worktreeSetupHook,
@@ -1047,6 +1095,7 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): AgentTool
 			shareEnabled,
 			sessionRoot,
 			chainSkills,
+			originSessionRoot: params.context === "fork" ? sessionRoot : undefined,
 			sessionFilesByFlatIndex: collectChainSessionFiles(chain, sessionFileForIndex),
 			dynamicFanoutMaxItems: deps.config.chain?.dynamicFanout?.maxItems,
 			maxSubagentDepth: currentMaxSubagentDepth,
@@ -1085,6 +1134,7 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): AgentTool
 			artifactConfig,
 			shareEnabled,
 			sessionRoot,
+			originSessionRoot: params.context === "fork" ? sessionRoot : undefined,
 			sessionFile: sessionFileForIndex(0),
 			skills,
 			output: effectiveOutput,
@@ -1127,6 +1177,7 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 	const chain = wrapChainTasksForFork(params.chain as ChainStep[], params.context);
 	const currentMaxSubagentDepth = resolveCurrentMaxSubagentDepth(deps.config.maxSubagentDepth);
 	const chainResult = await executeChain({
+		runtime: data.runtime,
 		chain,
 		task: params.task,
 		agents,
@@ -1136,7 +1187,7 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 		cwd: effectiveCwd,
 		shareEnabled,
 		sessionDirForIndex,
-		sessionFileForIndex,
+		sessionFileForIndex: data.sessionFileHintForIndex,
 		artifactsDir,
 		artifactConfig,
 		includeProgress: params.includeProgress,
@@ -1156,15 +1207,15 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 	});
 
 	if (chainResult.requestedAsync) {
-		if (!isAsyncAvailable()) {
+		if (!isAsyncAvailable(data.runtime)) {
 			return {
-				content: [{ type: "text", text: "Background mode requires upstream jiti for TypeScript execution but it could not be found. Ensure the pi-cohort package dependencies are installed." }],
+				content: [{ type: "text", text: `Cannot resolve jiti from selected Pi installation ${data.runtime.piPackageRoot}` }],
 				isError: true,
 				details: { mode: "chain" as const, results: [] },
 			};
 		}
 		const id = randomUUID();
-		const asyncCtx = buildAsyncContext(ctx, deps, ctx.cwd);
+		const asyncCtx = buildAsyncContext(ctx, deps, ctx.cwd, data.runtime);
 		const asyncChain = wrapChainTasksForFork(chainResult.requestedAsync.chain, params.context);
 		return executeAsyncChain(id, {
 			chain: asyncChain,
@@ -1179,6 +1230,7 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 			shareEnabled,
 			sessionRoot,
 			chainSkills: chainResult.requestedAsync.chainSkills,
+			originSessionRoot: params.context === "fork" ? sessionRoot : undefined,
 			sessionFilesByFlatIndex: collectChainSessionFiles(asyncChain, sessionFileForIndex),
 			dynamicFanoutMaxItems: deps.config.chain?.dynamicFanout?.maxItems,
 			maxSubagentDepth: currentMaxSubagentDepth,
@@ -1192,7 +1244,7 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 
 	const chainDetails = chainResult.details ? compactForegroundDetails({ ...chainResult.details, runId }) : undefined;
 	if (foregroundControl) updateForegroundNestedProjection(foregroundControl);
-	if (chainDetails) rememberForegroundRun(deps.state, { runId, mode: "chain", cwd: effectiveCwd, results: chainDetails.results });
+	if (chainDetails) rememberForegroundRun(deps.state, { runtime: data.runtime, sessionRoot: data.sessionRoot, runId, mode: "chain", cwd: effectiveCwd, results: chainDetails.results });
 	recordSyncCost(deps.state.grandTotal, runId, (chainDetails?.results.reduce((sum, r) => sum + r.usage.cost, 0) ?? 0) + sumNestedCost(foregroundControl?.nestedChildren));
 	renderGrandTotal(deps.state);
 
@@ -1200,6 +1252,7 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 }
 
 interface ForegroundParallelRunInput {
+	runtime: PiRuntimeIdentity;
 	tasks: TaskParam[];
 	taskTexts: string[];
 	agents: AgentConfig[];
@@ -1405,6 +1458,7 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 		}
 		const agentConfig = input.agents.find((agent) => agent.name === task.agent);
 		return runSync(input.ctx.cwd, input.agents, task.agent, taskText, {
+			runtime: input.runtime,
 			cwd: taskCwd,
 			signal: input.signal,
 			interruptSignal: interruptController.signal,
@@ -1593,15 +1647,15 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 		}
 
 		if (result.runInBackground) {
-			if (!isAsyncAvailable()) {
+			if (!isAsyncAvailable(data.runtime)) {
 				return {
-					content: [{ type: "text", text: "Background mode requires upstream jiti for TypeScript execution but it could not be found. Ensure the pi-cohort package dependencies are installed." }],
+					content: [{ type: "text", text: `Cannot resolve jiti from selected Pi installation ${data.runtime.piPackageRoot}` }],
 					isError: true,
 					details: { mode: "parallel" as const, results: [] },
 				};
 			}
 			const id = randomUUID();
-			const asyncCtx = buildAsyncContext(ctx, deps, ctx.cwd);
+			const asyncCtx = buildAsyncContext(ctx, deps, ctx.cwd, data.runtime);
 			const parallelTasks = tasks.map((t, i) => {
 				const taskText = params.context === "fork" ? wrapForkTask(taskTexts[i]!) : taskTexts[i]!;
 				const progress = taskDisallowsFileUpdates(taskText) ? false : behaviorOverrides[i]?.progress;
@@ -1631,6 +1685,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 				shareEnabled,
 				sessionRoot,
 				chainSkills: [],
+				originSessionRoot: params.context === "fork" ? sessionRoot : undefined,
 				sessionFilesByFlatIndex: tasks.map((_, index) => sessionFileForIndex(index)),
 				maxSubagentDepth: currentMaxSubagentDepth,
 				worktreeSetupHook: deps.config.worktreeSetupHook,
@@ -1702,6 +1757,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 			: undefined;
 
 		const results = await runForegroundParallelTasks({
+			runtime: data.runtime,
 			tasks,
 			taskTexts,
 			agents,
@@ -1709,7 +1765,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 			signal,
 			runId,
 			sessionDirForIndex,
-			sessionFileForIndex,
+			sessionFileForIndex: data.sessionFileHintForIndex,
 			shareEnabled,
 			artifactConfig,
 			artifactsDir,
@@ -1755,7 +1811,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 			progress: params.includeProgress ? allProgress : undefined,
 			artifacts: allArtifactPaths.length ? { dir: artifactsDir, files: allArtifactPaths } : undefined,
 		});
-		rememberForegroundRun(deps.state, { runId, mode: "parallel", cwd: effectiveCwd, results: details.results });
+		rememberForegroundRun(deps.state, { runtime: data.runtime, sessionRoot: data.sessionRoot, runId, mode: "parallel", cwd: effectiveCwd, results: details.results });
 		if (interrupted) {
 			return {
 				content: [{ type: "text", text: withWorktreeSuffix(`Parallel run paused after interrupt (${interrupted.agent}). Waiting for explicit next action.`) }],
@@ -1865,15 +1921,15 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		if (override?.skills !== undefined) skillOverride = override.skills;
 
 		if (result.runInBackground) {
-			if (!isAsyncAvailable()) {
+			if (!isAsyncAvailable(data.runtime)) {
 				return {
-					content: [{ type: "text", text: "Background mode requires upstream jiti for TypeScript execution but it could not be found. Ensure the pi-cohort package dependencies are installed." }],
+					content: [{ type: "text", text: `Cannot resolve jiti from selected Pi installation ${data.runtime.piPackageRoot}` }],
 					isError: true,
 					details: { mode: "single" as const, results: [] },
 				};
 			}
 			const id = randomUUID();
-			const asyncCtx = buildAsyncContext(ctx, deps, ctx.cwd);
+			const asyncCtx = buildAsyncContext(ctx, deps, ctx.cwd, data.runtime);
 			return executeAsyncSingle(id, {
 				agent: params.agent!,
 				task: params.context === "fork" ? wrapForkTask(task) : task,
@@ -1886,6 +1942,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 				artifactConfig,
 				shareEnabled,
 				sessionRoot,
+				originSessionRoot: params.context === "fork" ? sessionRoot : undefined,
 				sessionFile: sessionFileForIndex(0),
 				skills: skillOverride === false ? [] : skillOverride,
 				output: effectiveOutput,
@@ -1956,12 +2013,13 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		: undefined;
 
 	const r = await runSync(ctx.cwd, agents, params.agent!, task, {
+		runtime: data.runtime,
 		cwd: effectiveCwd,
 		signal,
 		interruptSignal: interruptController.signal,
 		runId,
 		sessionDir: sessionDirForIndex(0),
-		sessionFile: sessionFileForIndex(0),
+		sessionFile: data.sessionFileHintForIndex(0),
 		share: shareEnabled,
 		artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
 		artifactConfig,
@@ -2024,7 +2082,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		artifacts: allArtifactPaths.length ? { dir: artifactsDir, files: allArtifactPaths } : undefined,
 		truncation: r.truncation,
 	});
-	rememberForegroundRun(deps.state, { runId, mode: "single", cwd: effectiveCwd, results: details.results });
+	rememberForegroundRun(deps.state, { runtime: data.runtime, sessionRoot: data.sessionRoot, runId, mode: "single", cwd: effectiveCwd, results: details.results });
 
 	if (!r.interrupted) {
 		if (foregroundControl) updateForegroundNestedProjection(foregroundControl);
@@ -2059,6 +2117,13 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		ctx: ExtensionContext,
 	) => Promise<AgentToolResult<Details>>;
 } {
+	let runtime: PiRuntimeIdentity | undefined;
+	let runtimeError: unknown;
+	try {
+		runtime = (deps.captureRuntime ?? capturePiRuntime)();
+	} catch (error) {
+		runtimeError = error;
+	}
 	const execute = async (
 		_id: string,
 		params: SubagentParamsLike,
@@ -2091,6 +2156,8 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 							config: deps.config,
 							state: deps.state,
 							requestedSessionDir: paramsWithResolvedCwd.sessionDir,
+							runtime,
+							runtimeError: runtimeError instanceof Error ? runtimeError.message : runtimeError === undefined ? undefined : String(runtimeError),
 							currentSessionFile,
 							currentSessionId,
 							sessionError,
@@ -2105,7 +2172,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				if (targetRunId) {
 					try {
 						const nestedScope = nestedResolutionScopeForExecutor(deps);
-						const resolved = resolveSubagentRunId(targetRunId, { state: deps.state, nested: nestedScope });
+						const resolved = resolveSubagentRunId(targetRunId, { state: deps.state, nested: nestedScope, readOnlyLegacy: true });
 						if (resolved?.kind === "foreground") {
 							const foreground = getForegroundControl(deps.state, resolved.id);
 							if (foreground) return foregroundStatusResult(foreground);
@@ -2121,7 +2188,11 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				return inspectSubagentStatus(paramsWithResolvedCwd, { state: deps.state, nested: nestedResolutionScopeForExecutor(deps) });
 			}
 			if (params.action === "resume") {
-				return resumeAsyncRun({ params: paramsWithResolvedCwd, requestCwd, ctx, deps });
+				try {
+					return await resumeAsyncRun({ params: paramsWithResolvedCwd, requestCwd, ctx, deps });
+				} catch (error) {
+					return { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], isError: true, details: { mode: "management", results: [] } };
+				}
 			}
 			if (params.action === "interrupt") {
 				const targetRunId = paramsWithResolvedCwd.runId ?? paramsWithResolvedCwd.id;
@@ -2177,6 +2248,8 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			return handleManagementAction(params.action, paramsWithResolvedCwd, { ...ctx, cwd: requestCwd });
 		}
 
+		if (!runtime) return toExecutionErrorResult(paramsWithResolvedCwd, runtimeError ?? new Error("Parent runtime capture failed."));
+
 		const { blocked, depth, maxDepth } = checkSubagentDepth(deps.config.maxSubagentDepth);
 		if (blocked) {
 			return {
@@ -2207,7 +2280,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		const scope: AgentScope = resolveExecutionAgentScope(effectiveParams.agentScope);
 		const effectiveCwd = effectiveParams.cwd ?? ctx.cwd;
 		const parentSessionFile = ctx.sessionManager.getSessionFile() ?? null;
-		const runId = randomUUID().slice(0, 8);
+		const runId = randomUUID();
 		const inheritedNestedRoute = resolveInheritedNestedRouteFromEnv();
 		const nestedParentAddress = inheritedNestedRoute ? resolveNestedParentAddressFromEnv() : undefined;
 		const nestedRoute = inheritedNestedRoute ?? createNestedRoute(runId);
@@ -2228,12 +2301,6 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		);
 		if (validationError) return validationError;
 
-		let sessionFileForIndex: (idx?: number) => string | undefined = () => undefined;
-		try {
-			sessionFileForIndex = createForkContextResolver(ctx.sessionManager, effectiveParams.context).sessionFileForIndex;
-		} catch (error) {
-			return toExecutionErrorResult(effectiveParams, error);
-		}
 		const requestedAsync = effectiveParams.async ?? deps.asyncByDefault;
 		const backgroundRequestedWhileClarifying = (hasChain || hasTasks) && requestedAsync && effectiveParams.clarify === true;
 		const effectiveAsync = requestedAsync && effectiveParams.clarify !== true;
@@ -2246,17 +2313,16 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		};
 		const artifactsDir = effectiveAsync ? deps.tempArtifactsDir : getArtifactsDir(parentSessionFile);
 
-		let sessionRoot: string;
-		if (effectiveParams.sessionDir) {
-			sessionRoot = path.resolve(deps.expandTilde(effectiveParams.sessionDir));
-		} else {
-			const baseSessionRoot = deps.config.defaultSessionDir
+		const baseSessionRoot = effectiveParams.sessionDir
+			? path.resolve(deps.expandTilde(effectiveParams.sessionDir))
+			: deps.config.defaultSessionDir
 				? path.resolve(deps.expandTilde(deps.config.defaultSessionDir))
 				: deps.getSubagentSessionRoot(parentSessionFile);
-			sessionRoot = path.join(baseSessionRoot, runId);
-		}
+		let sessionRoot = path.join(baseSessionRoot, runId);
 		try {
-			fs.mkdirSync(sessionRoot, { recursive: true });
+			fs.mkdirSync(baseSessionRoot, { recursive: true });
+			fs.mkdirSync(sessionRoot, { mode: 0o700 });
+			sessionRoot = fs.realpathSync.native(sessionRoot);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			return toExecutionErrorResult(
@@ -2266,6 +2332,12 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		}
 		const sessionDirForIndex = (idx?: number) =>
 			path.join(sessionRoot, `run-${idx ?? 0}`);
+		let sessionFileForIndex: (idx?: number) => string | undefined;
+		try {
+			sessionFileForIndex = createForkContextResolver(ctx.sessionManager, effectiveParams.context, { sessionDirForIndex }).sessionFileForIndex;
+		} catch (error) {
+			return toExecutionErrorResult(effectiveParams, error);
+		}
 		const childSessionFileForIndex = (idx?: number) =>
 			sessionFileForIndex(idx) ?? path.join(sessionDirForIndex(idx), "session.jsonl");
 
@@ -2274,6 +2346,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			: undefined;
 
 		const execData: ExecutionContextData = {
+			runtime,
 			params: effectiveParams,
 			effectiveCwd,
 			ctx,
@@ -2284,7 +2357,8 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			shareEnabled,
 			sessionRoot,
 			sessionDirForIndex,
-			sessionFileForIndex: childSessionFileForIndex,
+			sessionFileForIndex,
+			sessionFileHintForIndex: childSessionFileForIndex,
 			artifactConfig,
 			artifactsDir,
 			backgroundRequestedWhileClarifying,
@@ -2332,12 +2406,15 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 					? effectiveParams.chain.flatMap((step) => isParallelStep(step) ? step.parallel.map((task) => task.agent) : [(step as SequentialStep).agent])
 					: effectiveParams.agent ? [effectiveParams.agent] : [];
 			try {
-				writeNestedEvent(inheritedNestedRoute, {
+				const written = writeNestedEvent(inheritedNestedRoute, {
 					type,
 					ts: now,
 					parentRunId: nestedParentAddress.parentRunId,
 					parentStepIndex: nestedParentAddress.parentStepIndex,
 					child: {
+						runtime,
+						sessionRoot,
+						capabilityToken: inheritedNestedRoute.capabilityToken,
 						id: runId,
 						parentRunId: nestedParentAddress.parentRunId,
 						parentStepIndex: nestedParentAddress.parentStepIndex,
@@ -2360,7 +2437,9 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 						})) } : {}),
 					},
 				});
+				if (type === "subagent.nested.started" && written === false) throw new Error("Nested origin stamp was refused.");
 			} catch (error) {
+				if (type === "subagent.nested.started") throw error;
 				console.error("Failed to emit nested foreground status event:", error);
 			}
 		};

@@ -2,9 +2,10 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { formatDuration, formatModelThinking, formatTokens, shortenPath } from "../../shared/formatters.ts";
 import { formatActivityLabel, formatParallelOutcome } from "../../shared/status-format.ts";
-import { type ActivityState, type AsyncJobStep, type AsyncParallelGroupStatus, type AsyncStatus, type NestedRunSummary, type SubagentRunMode, type TokenUsage } from "../../shared/types.ts";
+import { RESULTS_DIR, type ActivityState, type AsyncJobStep, type AsyncParallelGroupStatus, type AsyncStatus, type NestedRunSummary, type SubagentRunMode, type TokenUsage } from "../../shared/types.ts";
+import { isLegacyAsyncDir, resolveAsyncRunLocation, winningAsyncRunEntries } from "./async-resume.ts";
 import { readStatus } from "../../shared/utils.ts";
-import { attachRootChildrenToSteps, findNestedRouteForRootId, projectNestedRegistryForRoot } from "../shared/nested-events.ts";
+import { attachRootChildrenToSteps, findNestedRouteForRootId, isLegacyNestedRoute, projectNestedRegistryForRoot } from "../shared/nested-events.ts";
 import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
 import { flatToLogicalStepIndex, normalizeParallelGroups } from "./parallel-groups.ts";
 import { readRunnerLogTail, reconcileAsyncRun, reconcileNestedAsyncDescendants } from "./stale-run-reconciler.ts";
@@ -133,7 +134,7 @@ function statusToSummary(asyncDir: string, status: AsyncStatus & { cwd?: string 
 	let nestedChildren: NestedRunSummary[] = [];
 	if (nestedWarnings.length === 0) {
 		try {
-			nestedChildren = projectNestedRegistryForRoot(status.runId || path.basename(asyncDir))?.children ?? [];
+			nestedChildren = projectNestedRegistryForRoot(status.runId || path.basename(asyncDir), { readOnlyLegacy: true })?.children ?? [];
 		} catch (error) {
 			nestedWarnings.push(`Nested status unavailable: ${getErrorMessage(error)}`);
 		}
@@ -242,10 +243,10 @@ function summarizePreStatusCrash(asyncDir: string, now: number): AsyncRunSummary
 	};
 }
 
-export function listAsyncRuns(asyncDirRoot: string, options: AsyncRunListOptions = {}): AsyncRunSummary[] {
-	let entries: string[];
+export function listAsyncRuns(asyncDirRoot: string | readonly string[], options: AsyncRunListOptions = {}): AsyncRunSummary[] {
+	let entries: ReturnType<typeof winningAsyncRunEntries>;
 	try {
-		entries = fs.readdirSync(asyncDirRoot).filter((entry) => isAsyncRunDir(asyncDirRoot, entry));
+		entries = winningAsyncRunEntries(asyncDirRoot);
 	} catch (error) {
 		if (isNotFoundError(error)) return [];
 		throw new Error(`Failed to list async runs in '${asyncDirRoot}': ${getErrorMessage(error)}`, {
@@ -256,8 +257,10 @@ export function listAsyncRuns(asyncDirRoot: string, options: AsyncRunListOptions
 	const allowedStates = options.states ? new Set(options.states) : undefined;
 	const runs: AsyncRunSummary[] = [];
 	for (const entry of entries) {
-		const asyncDir = path.join(asyncDirRoot, entry);
-		const reconciliation = options.reconcile === false
+		const asyncDir = resolveAsyncRunLocation({ id: entry.id }, entry.root, options.resultsDir ?? RESULTS_DIR).asyncDir;
+		if (!asyncDir || !isAsyncRunDir(entry.root, entry.id)) continue;
+		const stored = readStatus(asyncDir);
+		const reconciliation = options.reconcile === false || isLegacyAsyncDir(asyncDir) || (stored && stored.state !== "running" && stored.state !== "queued")
 			? undefined
 			: reconcileAsyncRun(asyncDir, { resultsDir: options.resultsDir, kill: options.kill, now: options.now });
 		const status = (reconciliation?.status ?? readStatus(asyncDir)) as (AsyncStatus & { cwd?: string }) | null;
@@ -269,7 +272,7 @@ export function listAsyncRuns(asyncDirRoot: string, options: AsyncRunListOptions
 		const nestedWarnings: string[] = [];
 		try {
 			const nestedRoute = findNestedRouteForRootId(status.runId || path.basename(asyncDir));
-			if (nestedRoute) reconcileNestedAsyncDescendants(nestedRoute, { resultsDir: options.resultsDir, kill: options.kill, now: options.now });
+			if (nestedRoute && !isLegacyAsyncDir(asyncDir) && !isLegacyNestedRoute(nestedRoute)) reconcileNestedAsyncDescendants(nestedRoute, { resultsDir: options.resultsDir, kill: options.kill, now: options.now });
 		} catch (error) {
 			nestedWarnings.push(`Nested status unavailable: ${getErrorMessage(error)}`);
 		}

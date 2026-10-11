@@ -1,16 +1,17 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import { readStatus } from "../../shared/utils.ts";
 import { formatAsyncRunList, formatAsyncRunOutputPath, formatAsyncRunProgressLabel, listAsyncRuns } from "./async-status.ts";
 import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
 import { formatModelThinking } from "../../shared/formatters.ts";
 import { formatActivityLabel } from "../../shared/status-format.ts";
-import { ASYNC_DIR, RESULTS_DIR, type AsyncStatus, type Details, type NestedRunSummary, type SubagentState } from "../../shared/types.ts";
-import { resolveAsyncRunLocation } from "./async-resume.ts";
+import { ASYNC_DIR, LEGACY_ASYNC_DIR, RESULTS_DIR, type AsyncStatus, type Details, type NestedRunSummary, type SubagentState } from "../../shared/types.ts";
+import { isLegacyAsyncDir, resolveAsyncRunLocation } from "./async-resume.ts";
 import { resolveSubagentRunId } from "./run-id-resolver.ts";
 import { flatToLogicalStepIndex, normalizeParallelGroups } from "./parallel-groups.ts";
 import { readRunnerLogTail, reconcileAsyncRun, reconcileNestedAsyncDescendants } from "./stale-run-reconciler.ts";
-import { attachRootChildrenToSteps, findNestedRouteForRootId, projectNestedRegistryForRoot, type NestedRunResolutionScope } from "../shared/nested-events.ts";
+import { attachRootChildrenToSteps, findNestedRouteForRootId, isLegacyNestedRoute, projectNestedRegistryForRoot, type NestedRunResolutionScope } from "../shared/nested-events.ts";
 
 interface RunStatusParams {
 	action?: "status";
@@ -20,7 +21,7 @@ interface RunStatusParams {
 }
 
 interface RunStatusDeps {
-	asyncDirRoot?: string;
+	asyncDirRoot?: string | readonly string[];
 	resultsDir?: string;
 	kill?: (pid: number, signal?: NodeJS.Signals | 0) => boolean;
 	now?: () => number;
@@ -98,7 +99,7 @@ function formatNestedExactStatus(rootRunId: string, run: NestedRunSummary): stri
 }
 
 export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDeps = {}): AgentToolResult<Details> {
-	const asyncDirRoot = deps.asyncDirRoot ?? ASYNC_DIR;
+	const asyncDirRoot = deps.asyncDirRoot ?? [ASYNC_DIR, LEGACY_ASYNC_DIR];
 	const resultsDir = deps.resultsDir ?? RESULTS_DIR;
 	if (!params.id && !params.runId && !params.dir) {
 		if (deps.nested) {
@@ -128,10 +129,10 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 	try {
 		const requestedId = params.id ?? params.runId;
 		if (!params.dir && requestedId) {
-			const resolved = resolveSubagentRunId(requestedId, { asyncDirRoot, resultsDir, state: deps.state, nested: deps.nested });
+			const resolved = resolveSubagentRunId(requestedId, { asyncDirRoot, resultsDir, state: deps.state, nested: deps.nested, readOnlyLegacy: true });
 			if (resolved?.kind === "nested") {
-				reconcileNestedAsyncDescendants(resolved.match.route, { resultsDir, kill: deps.kill, now: deps.now });
-				const refreshed = resolveSubagentRunId(requestedId, { asyncDirRoot, resultsDir, state: deps.state, nested: deps.nested });
+				if (!isLegacyNestedRoute(resolved.match.route)) reconcileNestedAsyncDescendants(resolved.match.route, { resultsDir, kill: deps.kill, now: deps.now });
+				const refreshed = resolveSubagentRunId(requestedId, { asyncDirRoot, resultsDir, state: deps.state, nested: deps.nested, readOnlyLegacy: true });
 				const nested = refreshed?.kind === "nested" ? refreshed : resolved;
 				return { content: [{ type: "text", text: formatNestedExactStatus(nested.match.rootRunId, nested.match.run) }], details: { mode: "single", results: [] } };
 			}
@@ -161,7 +162,17 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 	if (asyncDir) {
 		let reconciliation;
 		try {
-			reconciliation = reconcileAsyncRun(asyncDir, { resultsDir, kill: deps.kill, now: deps.now });
+			const statusPath = path.join(asyncDir, "status.json");
+			let stored: AsyncStatus | null = null;
+			try {
+				stored = readStatus(asyncDir);
+				if (fs.existsSync(statusPath) && (!stored || typeof stored !== "object" || Array.isArray(stored))) throw new Error(`Invalid async status '${statusPath}': expected an object.`);
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			}
+			reconciliation = isLegacyAsyncDir(asyncDir) || (stored && stored.state !== "running" && stored.state !== "queued")
+				? { status: stored, message: undefined, resultPath }
+				: reconcileAsyncRun(asyncDir, { resultsDir, kill: deps.kill, now: deps.now });
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			return {
@@ -179,8 +190,8 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 			let nestedWarning: string | undefined;
 			try {
 				const nestedRoute = findNestedRouteForRootId(status.runId);
-				if (nestedRoute) reconcileNestedAsyncDescendants(nestedRoute, { resultsDir, kill: deps.kill, now: deps.now });
-				nestedChildren = projectNestedRegistryForRoot(status.runId)?.children ?? [];
+				if (nestedRoute && !isLegacyAsyncDir(asyncDir) && !isLegacyNestedRoute(nestedRoute)) reconcileNestedAsyncDescendants(nestedRoute, { resultsDir, kill: deps.kill, now: deps.now });
+				nestedChildren = projectNestedRegistryForRoot(status.runId, { readOnlyLegacy: true })?.children ?? [];
 				attachRootChildrenToSteps(status.runId, status.steps, nestedChildren);
 			} catch (error) {
 				nestedWarning = `Nested status unavailable: ${error instanceof Error ? error.message : String(error)}`;

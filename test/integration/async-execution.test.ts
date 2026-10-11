@@ -101,7 +101,8 @@ const executorMod = await tryImport<ExecutorModule>("./src/runs/foreground/subag
 const reconcilerMod = await tryImport<ReconcileAsyncRunModule>("./src/runs/background/stale-run-reconciler.ts");
 const available = !!(asyncMod && utils && typesMod);
 
-const isAsyncAvailable = asyncMod?.isAsyncAvailable;
+const availabilityMock = createMockPi();
+const isAsyncAvailable = () => asyncMod!.isAsyncAvailable(availabilityMock.runtime);
 const executeAsyncSingle = asyncMod?.executeAsyncSingle;
 const executeAsyncChain = asyncMod?.executeAsyncChain;
 const spawnDetachedWithLog = asyncMod?.spawnDetachedWithLog;
@@ -263,6 +264,9 @@ function readMockPiArgs(mockPi: MockPi, index: number): string[] {
 describe("async execution utilities", { skip: !available ? "pi packages not available" : undefined }, () => {
 	let tempDir: string;
 	let mockPi: MockPi;
+	const createSubagentExecutor = (deps) => executorMod!.createSubagentExecutor({ ...deps, captureRuntime: mockPi.captureRuntime });
+	const executeAsyncSingle = (id, params) => asyncMod!.executeAsyncSingle(id, { ...params, ctx: { ...params.ctx, runtime: params.ctx.runtime ?? mockPi.runtime } });
+	const executeAsyncChain = (id, params) => asyncMod!.executeAsyncChain(id, { ...params, ctx: { ...params.ctx, runtime: mockPi.runtime } });
 
 	before(() => {
 		mockPi = createMockPi();
@@ -782,6 +786,9 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		mockPi.onCall({ output: "review-b", structuredOutput: { ok: "b" } });
 		mockPi.onCall({ output: "used reviews" });
 		const id = `async-dynamic-chain-${Date.now().toString(36)}`;
+		const originSessionRoot = fs.realpathSync.native(tempDir);
+		const original = path.join(originSessionRoot, "producer.jsonl");
+		fs.writeFileSync(original, "original history\n");
 		const result = executeAsyncChain(id, {
 			chain: [
 				{ agent: "producer", task: "Produce targets", as: "targets", outputSchema: { type: "object" } },
@@ -800,6 +807,9 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			],
 			agents: [makeAgent("producer"), makeAgent("reviewer"), makeAgent("consumer")],
 			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-dynamic" },
+			sessionRoot: originSessionRoot,
+			originSessionRoot,
+			sessionFilesByFlatIndex: [original, undefined],
 			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
 			shareEnabled: false,
 			maxSubagentDepth: 2,
@@ -811,6 +821,16 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf-8")) as AsyncStatusPayload;
 		assert.equal(payload.success, true);
 		assert.equal(mockPi.callCount(), 4);
+		assert.ok(fs.readFileSync(original, "utf8").startsWith("original history\n"));
+		assert.equal(readMockPiArgs(mockPi, 0)[readMockPiArgs(mockPi, 0).indexOf("--session") + 1], original);
+		const consumerArgs = readMockPiArgs(mockPi, 3);
+		assert.equal(consumerArgs.includes("--session"), false);
+		assert.equal(consumerArgs.includes("--session-dir"), true);
+		const consumerSessionDir = consumerArgs[consumerArgs.indexOf("--session-dir") + 1];
+		assert.ok(fs.realpathSync.native(consumerSessionDir).startsWith(`${originSessionRoot}${path.sep}`));
+		const consumerSession = payload.results[3].sessionFile;
+		assert.ok(fs.existsSync(consumerSession));
+		assert.notEqual(consumerSession, original);
 		assert.match(readMockPiArgs(mockPi, 1).at(-1) ?? "", /Review src\/a\.ts/);
 		assert.match(readMockPiArgs(mockPi, 2).at(-1) ?? "", /Review src\/b\.ts/);
 		assert.match(readMockPiArgs(mockPi, 3).at(-1) ?? "", /"key":"src\/a\.ts"/);
@@ -1896,15 +1916,14 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 	});
 
 	it("returns a tool error when the async runner process cannot spawn", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, () => {
-		const originalExecPath = process.execPath;
-		process.execPath = path.join(tempDir, "missing-node");
-		try {
+		const runtime = { ...mockPi.runtime, nodeExecPath: path.join(tempDir, "missing-node") };
+		{
 			const id = `async-spawn-fail-${Date.now().toString(36)}`;
 			const result = executeAsyncSingle(id, {
 				agent: "worker",
 				task: "Do work",
 				agentConfig: makeAgent("worker"),
-				ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
+				ctx: { runtime, pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
 				artifactConfig: {
 					enabled: false,
 					includeInput: false,
@@ -1920,9 +1939,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 
 			assert.equal(result.isError, true);
 			assert.match(result.content[0]?.text ?? "", /Failed to start async run/);
-			assert.match(result.content[0]?.text ?? "", /async runner did not produce a pid/);
-		} finally {
-			process.execPath = originalExecPath;
+			assert.match(result.content[0]?.text ?? "", /missing-node.*ENOENT/);
 		}
 	});
 

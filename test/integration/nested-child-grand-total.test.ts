@@ -73,6 +73,7 @@ function assistantEvent(text: string, total: number) {
 
 describe("nested child grand-total accounting", { skip: !available ? "fanout child extension unavailable" : undefined }, () => {
 	let mockPi: MockPi;
+	let originalArgv1: string | undefined;
 	let tempDir: string;
 	let originalCwd: string;
 	let environment: Map<string, string | undefined>;
@@ -87,6 +88,8 @@ describe("nested child grand-total accounting", { skip: !available ? "fanout chi
 	});
 
 	beforeEach(() => {
+		originalArgv1 = process.argv[1];
+		process.argv[1] = mockPi.runtime.piEntryPath;
 		tempDir = createTempDir("pi-nested-grand-total-");
 		originalCwd = process.cwd();
 		environment = new Map(environmentKeys.map((key) => [key, process.env[key]]));
@@ -105,6 +108,7 @@ describe("nested child grand-total accounting", { skip: !available ? "fanout chi
 	});
 
 	afterEach(() => {
+		process.argv[1] = originalArgv1;
 		process.chdir(originalCwd);
 		for (const [key, value] of environment) {
 			if (value === undefined) delete process.env[key];

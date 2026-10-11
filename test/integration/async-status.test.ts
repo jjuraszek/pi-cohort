@@ -4,6 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
 import { formatAsyncRunList, listAsyncRuns } from "../../src/runs/background/async-status.ts";
+import { LEGACY_ASYNC_DIR, TEMP_ROOT_DIR } from "../../src/shared/types.ts";
+import { createNestedRoute, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
 
 function createAsyncDir(root: string, id: string, status: Record<string, unknown>): string {
 	const dir = path.join(root, id);
@@ -13,6 +15,82 @@ function createAsyncDir(root: string, id: string, status: Record<string, unknown
 }
 
 describe("async status helpers", () => {
+	it("lists duplicate terminal history from the first root without stale repair", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-terminal-history-"));
+		try {
+			const roots = [path.join(root, "persistent"), path.join(root, "legacy")];
+			const status = { runId: "history", state: "complete", mode: "single", startedAt: 1, pid: 99999, steps: [], runtime: { nodeExecPath: "/origin/node", piEntryPath: "/origin/pi/cli.js", piPackageRoot: "/origin/pi" } };
+			const first = createAsyncDir(roots[0], "history", status);
+			const shadowed = createAsyncDir(roots[1], "history", { ...status, state: "running" });
+			const shadowedBefore = fs.readFileSync(path.join(shadowed, "status.json"), "utf-8");
+			const before = fs.readFileSync(path.join(first, "status.json"), "utf-8");
+			const runs = listAsyncRuns(roots, { resultsDir: path.join(root, "results"), kill: () => { throw new Error("terminal history must not probe PID"); } });
+			assert.equal(runs.length, 1);
+			assert.equal(runs[0].asyncDir, first);
+			assert.equal(fs.readFileSync(path.join(shadowed, "status.json"), "utf-8"), shadowedBefore);
+			assert.equal(fs.readFileSync(path.join(first, "status.json"), "utf-8"), before);
+		} finally { fs.rmSync(root, { recursive: true, force: true }); }
+	});
+	for (const legacy of [false, true]) it(`inspects stale nested descendants of a terminal ${legacy ? "legacy" : "persistent"} parent`, () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-terminal-nested-"));
+		const parentId = "terminal-nested-parent";
+		const childId = "stale-nested-child";
+		let route = createNestedRoute(parentId);
+		if (legacy) {
+			const routeRoot = path.join(TEMP_ROOT_DIR, "nested-subagent-events", path.basename(path.dirname(route.eventSink)));
+			fs.mkdirSync(path.dirname(routeRoot), { recursive: true });
+			fs.renameSync(path.dirname(route.eventSink), routeRoot);
+			route = { ...route, eventSink: path.join(routeRoot, "events"), controlInbox: path.join(routeRoot, "controls") };
+		}
+		const asyncRoot = legacy ? LEGACY_ASYNC_DIR : root;
+		const nestedRoot = path.join(TEMP_ROOT_DIR, "nested-subagent-runs", parentId);
+		try {
+			const parentDir = createAsyncDir(asyncRoot, parentId, {
+				runId: parentId, state: "complete", mode: "single", startedAt: 1, pid: 99999,
+				steps: [{ agent: "owner", status: "complete" }],
+			});
+			const childDir = createAsyncDir(nestedRoot, childId, {
+				runId: childId, state: "running", mode: "single", startedAt: 1, pid: 12345,
+				steps: [{ agent: "worker", status: "running" }],
+			});
+			writeNestedEvent(route, {
+				type: "subagent.nested.started", ts: 1, parentRunId: parentId, parentStepIndex: 0,
+				child: { id: childId, parentRunId: parentId, parentStepIndex: 0, depth: 1,
+					path: [{ runId: parentId, stepIndex: 0 }], state: "running", agent: "worker", asyncDir: childDir },
+			});
+			const before = fs.readFileSync(path.join(parentDir, "status.json"), "utf-8");
+			const probed: number[] = [];
+			const childBefore = fs.readFileSync(path.join(childDir, "status.json"), "utf-8");
+			const eventsBefore = fs.readdirSync(route.eventSink).map((file) => [file, fs.readFileSync(path.join(route.eventSink, file), "utf-8")]);
+			const runs = listAsyncRuns(asyncRoot, {
+				resultsDir: path.join(root, "results"), now: () => 200,
+				kill: (pid) => {
+					probed.push(pid);
+					const error = new Error("missing") as NodeJS.ErrnoException;
+					error.code = "ESRCH";
+					throw error;
+				},
+			});
+			assert.equal(runs[0]?.state, "complete");
+			assert.equal(runs[0]?.nestedChildren?.[0]?.state, legacy ? "running" : "failed");
+			assert.equal(runs[0]?.steps[0]?.children?.[0]?.state, legacy ? "running" : "failed");
+			assert.equal(JSON.parse(fs.readFileSync(path.join(childDir, "status.json"), "utf-8")).state, legacy ? "running" : "failed");
+			assert.deepEqual(probed, legacy ? [] : [12345]);
+			if (legacy) {
+				assert.equal(fs.readFileSync(path.join(childDir, "status.json"), "utf-8"), childBefore);
+				assert.deepEqual(fs.readdirSync(route.eventSink).map((file) => [file, fs.readFileSync(path.join(route.eventSink, file), "utf-8")]), eventsBefore);
+				assert.equal(fs.existsSync(path.join(path.dirname(route.eventSink), "registry.json")), false);
+				assert.equal(fs.existsSync(path.join(root, "results")), false);
+			}
+			assert.equal(fs.readFileSync(path.join(parentDir, "status.json"), "utf-8"), before);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+			fs.rmSync(nestedRoot, { recursive: true, force: true });
+			if (legacy) fs.rmSync(path.join(LEGACY_ASYNC_DIR, parentId), { recursive: true, force: true });
+			fs.rmSync(path.dirname(route.eventSink), { recursive: true, force: true });
+		}
+	});
+
 	it("lists only requested states and includes flattened step summaries", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-status-"));
 		try {

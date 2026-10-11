@@ -3,6 +3,8 @@ import * as path from "node:path";
 import { describe, it } from "node:test";
 import {
 	ASYNC_DIR,
+	LEGACY_ASYNC_DIR,
+	RUN_STATE_ROOT_DIR,
 	CHAIN_RUNS_DIR,
 	RESULTS_DIR,
 	TEMP_ARTIFACTS_DIR,
@@ -55,7 +57,8 @@ describe("resolveTempScopeId", () => {
 describe("shared temp paths", () => {
 	it("anchors shared temp directories under one scoped root", () => {
 		assert.equal(path.dirname(RESULTS_DIR), TEMP_ROOT_DIR);
-		assert.equal(path.dirname(ASYNC_DIR), TEMP_ROOT_DIR);
+		assert.equal(path.dirname(LEGACY_ASYNC_DIR), TEMP_ROOT_DIR);
+		assert.equal(path.dirname(ASYNC_DIR), RUN_STATE_ROOT_DIR);
 		assert.equal(path.dirname(CHAIN_RUNS_DIR), TEMP_ROOT_DIR);
 		assert.equal(path.dirname(TEMP_ARTIFACTS_DIR), TEMP_ROOT_DIR);
 		assert.match(path.basename(TEMP_ROOT_DIR), /^pi-cohort-/);

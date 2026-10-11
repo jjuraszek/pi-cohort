@@ -15,7 +15,7 @@ function parentToolEnv(): NodeJS.ProcessEnv {
 }
 
 describe("subagent extension child mode", () => {
-	it("collapses tool detail before direct subagent tool execution", () => {
+	it("retains registration and read-only management when parent capture fails", () => {
 		const script = String.raw`
 			import registerSubagentExtension from "./src/extension/index.ts";
 			const events = { on() { return () => {}; }, emit() {} };
@@ -34,7 +34,10 @@ describe("subagent extension child mode", () => {
 					return () => undefined;
 				},
 			});
+			const originalArgv = process.argv[1];
+			process.argv[1] = "/missing/pi-entry.mjs";
 			registerSubagentExtension(fakePi);
+			process.argv[1] = originalArgv;
 			if (!registeredTool) throw new Error("tool not registered");
 			const calls = [];
 			const ctx = {
@@ -49,7 +52,15 @@ describe("subagent extension child mode", () => {
 				sessionManager: { getSessionId() { return "session-test"; }, getSessionFile() { return null; } },
 				modelRegistry: { getAvailable() { return []; } },
 			};
-			await registeredTool.execute("collapse-check", { action: "list" }, new AbortController().signal, undefined, ctx);
+			for (const action of ["list", "status", "doctor"]) {
+				const result = await registeredTool.execute("inspect", { action }, new AbortController().signal, undefined, ctx);
+				if (action === "list" && result.isError) throw new Error("list unavailable");
+				if (action === "doctor" && !JSON.stringify(result.content).includes("/missing/pi-entry.mjs")) throw new Error("capture failure not retained");
+			}
+			for (let attempt = 0; attempt < 2; attempt++) {
+				const result = await registeredTool.execute("launch", { agent: "worker", task: "go" }, new AbortController().signal, undefined, ctx);
+				if (!result.isError || !JSON.stringify(result.content).includes("/missing/pi-entry.mjs")) throw new Error("capture failure not retained at dispatch");
+			}
 			if (calls[0] !== false) throw new Error("expected setToolsExpanded(false), got " + JSON.stringify(calls));
 		`;
 

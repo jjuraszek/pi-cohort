@@ -51,7 +51,8 @@ const typesMod = await tryImport<TypesModule>("./src/shared/types.ts");
 const available = !!(execution && asyncMod && typesMod);
 
 const runSync = execution?.runSync;
-const isAsyncAvailable = asyncMod?.isAsyncAvailable;
+const availabilityMock = createMockPi();
+const isAsyncAvailable = () => asyncMod!.isAsyncAvailable(availabilityMock.runtime);
 const executeAsyncSingle = asyncMod?.executeAsyncSingle;
 const RESULTS_DIR = typesMod?.RESULTS_DIR;
 
@@ -79,6 +80,7 @@ function readLastMockPiArgs(mockPi: MockPi): string[] {
 describe("parent flag forwarding", { skip: !available ? "pi packages not available" : undefined }, () => {
 	let tempDir: string;
 	let mockPi: MockPi;
+	const runSync = (cwd, agents, agent, task, options) => execution!.runSync(cwd, agents, agent, task, { ...options, runtime: mockPi.runtime });
 
 	before(() => {
 		mockPi = createMockPi();
@@ -158,7 +160,7 @@ describe("parent flag forwarding", { skip: !available ? "pi packages not availab
 			agent: "worker",
 			task: "Do work",
 			agentConfig: makeAgent("worker"),
-			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
+			ctx: { runtime: mockPi.runtime, pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
 			artifactConfig,
 			shareEnabled: false,
 			maxSubagentDepth: 2,

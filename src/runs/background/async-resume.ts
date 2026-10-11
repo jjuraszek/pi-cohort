@@ -1,7 +1,12 @@
-import * as fs from "node:fs";
+import fs from "node:fs";
 import * as path from "node:path";
-import { ASYNC_DIR, RESULTS_DIR, type AsyncStatus } from "../../shared/types.ts";
+import { ASYNC_DIR, LEGACY_ASYNC_DIR, RESULTS_DIR, type AsyncStatus } from "../../shared/types.ts";
 import { reconcileAsyncRun } from "./stale-run-reconciler.ts";
+import { parsePiRuntime, type PiRuntimeIdentity } from "../shared/pi-spawn.ts";
+
+export function isLegacyAsyncDir(asyncDir: string): boolean {
+	try { assertInsideRoot(LEGACY_ASYNC_DIR, asyncDir, "Async run directory"); return true; } catch { return false; }
+}
 
 export interface AsyncResumeParams {
 	id?: string;
@@ -11,7 +16,7 @@ export interface AsyncResumeParams {
 }
 
 export interface AsyncResumeDeps {
-	asyncDirRoot?: string;
+	asyncDirRoot?: string | readonly string[];
 	resultsDir?: string;
 	kill?: (pid: number, signal?: NodeJS.Signals | 0) => boolean;
 	now?: () => number;
@@ -19,6 +24,7 @@ export interface AsyncResumeDeps {
 
 export type AsyncResumeTarget = {
 	kind: "revive";
+	runtime: PiRuntimeIdentity;
 	runId: string;
 	asyncDir?: string;
 	state: AsyncStatus["state"];
@@ -29,6 +35,7 @@ export type AsyncResumeTarget = {
 };
 
 interface AsyncResultFile {
+	runtime?: unknown;
 	id?: string;
 	runId?: string;
 	agent?: string;
@@ -82,6 +89,7 @@ function validateResultFile(value: unknown, resultPath: string): AsyncResultFile
 	const success = data.success;
 	if (success !== undefined && typeof success !== "boolean") throw new Error(`Invalid async result file '${resultPath}': success must be a boolean.`);
 	return {
+		runtime: data.runtime,
 		id: validateOptionalString(data, "id", resultPath),
 		runId: validateOptionalString(data, "runId", resultPath),
 		agent: validateOptionalString(data, "agent", resultPath),
@@ -124,9 +132,16 @@ function assertRunId(value: string | undefined, field: "id" | "runId"): string |
 	return value;
 }
 
+function canonicalPath(value: string): string {
+	const resolved = path.resolve(value);
+	if (fs.existsSync(resolved)) return fs.realpathSync(resolved);
+	const parent = path.dirname(resolved);
+	return parent === resolved ? resolved : path.join(canonicalPath(parent), path.basename(resolved));
+}
+
 function assertInsideRoot(root: string, target: string, label: string): void {
-	const rootPath = path.resolve(root);
-	const targetPath = path.resolve(target);
+	const rootPath = canonicalPath(root);
+	const targetPath = canonicalPath(target);
 	const relative = path.relative(rootPath, targetPath);
 	if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) return;
 	throw new Error(`${label} must be inside ${rootPath}.`);
@@ -146,22 +161,34 @@ function exactResultPath(resultsDir: string, runId: string): string | null {
 	return fs.existsSync(resultPath) ? resultPath : null;
 }
 
-export function findAsyncRunPrefixMatches(prefix: string, asyncDirRoot: string, resultsDir: string): Array<{ id: string; location: AsyncRunLocation }> {
+export function winningAsyncRunEntries(asyncDirRoot: string | readonly string[], prefix = ""): Array<{ id: string; root: string; asyncDir: string }> {
+	const winners = new Map<string, { id: string; root: string; asyncDir: string }>();
+	for (const root of typeof asyncDirRoot === "string" ? [asyncDirRoot] : asyncDirRoot) {
+		for (const id of prefixedRunIds(root, prefix)) {
+			if (!winners.has(id)) winners.set(id, { id, root, asyncDir: path.join(path.resolve(root), id) });
+		}
+	}
+	return [...winners.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+export function findAsyncRunPrefixMatches(prefix: string, asyncDirRoot: string | readonly string[], resultsDir: string): Array<{ id: string; location: AsyncRunLocation }> {
 	const requestedId = assertRunId(prefix, "id");
 	if (!requestedId) return [];
-	const asyncRoot = path.resolve(asyncDirRoot);
+	const entries = winningAsyncRunEntries(asyncDirRoot, requestedId);
+	const byId = new Map(entries.map((entry) => [entry.id, entry]));
 	const resultRoot = path.resolve(resultsDir);
 	const matchingIds = [...new Set([
-		...prefixedRunIds(asyncRoot, requestedId),
+		...byId.keys(),
 		...prefixedRunIds(resultRoot, requestedId, ".json"),
 	])].sort();
 	return matchingIds.map((id) => {
-		const asyncDir = path.join(asyncRoot, id);
-		assertInsideRoot(asyncRoot, asyncDir, "Async run directory");
+		const entry = byId.get(id);
+		const asyncDir = entry?.asyncDir;
+		if (entry) assertInsideRoot(entry.root, entry.asyncDir, "Async run directory");
 		return {
 			id,
 			location: {
-				asyncDir: fs.existsSync(asyncDir) ? asyncDir : null,
+				asyncDir: asyncDir && fs.existsSync(asyncDir) ? asyncDir : null,
 				resultPath: exactResultPath(resultRoot, id),
 				resolvedId: id,
 			},
@@ -169,7 +196,28 @@ export function findAsyncRunPrefixMatches(prefix: string, asyncDirRoot: string, 
 	});
 }
 
-export function resolveAsyncRunLocation(params: AsyncResumeParams, asyncDirRoot: string, resultsDir: string): AsyncRunLocation {
+export function resolveAsyncRunLocation(params: AsyncResumeParams, asyncDirRoot: string | readonly string[], resultsDir: string): AsyncRunLocation {
+	if (typeof asyncDirRoot !== "string") {
+		if (params.dir) {
+			for (const root of asyncDirRoot) {
+				try { assertInsideRoot(root, params.dir, "Async run directory"); } catch { continue; }
+				return resolveAsyncRunLocation(params, root, resultsDir);
+			}
+			throw new Error("Async run directory must be inside an authorized async root.");
+		}
+		const id = assertRunId(params.id, "id") ?? assertRunId(params.runId, "runId");
+		if (!id) return { asyncDir: null, resultPath: null };
+		const exact = winningAsyncRunEntries(asyncDirRoot, id).find((entry) => entry.id === id);
+		if (exact) {
+			assertInsideRoot(exact.root, exact.asyncDir, "Async run directory");
+			return { asyncDir: exact.asyncDir, resultPath: exactResultPath(resultsDir, id), resolvedId: id };
+		}
+		const resultPath = exactResultPath(resultsDir, id);
+		if (resultPath) return { asyncDir: null, resultPath, resolvedId: id };
+		const matches = findAsyncRunPrefixMatches(id, asyncDirRoot, resultsDir);
+		if (matches.length > 1) throw new Error(`Ambiguous async run id prefix '${id}' matched: ${matches.map((match) => match.id).join(", ")}. Provide a longer id.`);
+		return matches[0]?.location ?? { asyncDir: null, resultPath: null, resolvedId: id };
+	}
 	const asyncRoot = path.resolve(asyncDirRoot);
 	const resultRoot = path.resolve(resultsDir);
 	const requestedId = assertRunId(params.id, "id") ?? assertRunId(params.runId, "runId");
@@ -234,23 +282,50 @@ function validateResumeSessionFile(runId: string, sessionFile: string): string {
 }
 
 export function resolveAsyncResumeTarget(params: AsyncResumeParams, deps: AsyncResumeDeps = {}): AsyncResumeTarget {
-	const asyncDirRoot = deps.asyncDirRoot ?? ASYNC_DIR;
+	const asyncDirRoot = deps.asyncDirRoot ?? [ASYNC_DIR, LEGACY_ASYNC_DIR];
 	const resultsDir = deps.resultsDir ?? RESULTS_DIR;
 	const location = resolveAsyncRunLocation(params, asyncDirRoot, resultsDir);
 	if (!location.asyncDir && !location.resultPath) {
 		throw new Error("Async run not found. Provide id or dir.");
 	}
 
-	const reconciliation = location.asyncDir
-		? reconcileAsyncRun(location.asyncDir, { resultsDir, kill: deps.kill, now: deps.now })
-		: undefined;
-	const status = reconciliation?.status ?? null;
+	const statusPath = location.asyncDir ? path.join(location.asyncDir, "status.json") : undefined;
+	let status: AsyncStatus | null = null;
+	if (statusPath) {
+		let present = false;
+		try {
+			fs.lstatSync(statusPath);
+			present = true;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+				throw new Error(`Failed to inspect async status file '${statusPath}': ${getErrorMessage(error)}`, { cause: error });
+			}
+		}
+		if (present) {
+			let value: unknown;
+			try {
+				value = JSON.parse(fs.readFileSync(statusPath, "utf-8"));
+			} catch (error) {
+				throw new Error(`Failed to read or parse async status file '${statusPath}': ${getErrorMessage(error)}`, { cause: error });
+			}
+			status = ensureObject(value, statusPath) as unknown as AsyncStatus;
+		}
+	}
+	if (status && (status.state === "queued" || status.state === "running") && location.asyncDir && !isLegacyAsyncDir(location.asyncDir)) {
+		status = reconcileAsyncRun(location.asyncDir, { resultsDir, kill: deps.kill, now: deps.now }).status ?? status;
+	}
 	validateStatusForResume(status, location.asyncDir ? path.join(location.asyncDir, "status.json") : "status.json");
 	const result = location.resultPath ? readResultFile(location.resultPath) : undefined;
+	const runtime = parsePiRuntime(status ? status.runtime : result?.runtime, statusPath ?? location.resultPath ?? "Async run");
+	if (status && result?.runtime !== undefined) {
+		const other = parsePiRuntime(result.runtime, location.resultPath!);
+		if (runtime.nodeExecPath !== other.nodeExecPath || runtime.piEntryPath !== other.piEntryPath || runtime.piPackageRoot !== other.piPackageRoot) throw new Error("Async status and result runtime identities conflict; a new run is required.");
+	}
 	const runId = status?.runId ?? result?.runId ?? result?.id ?? location.resolvedId ?? (location.asyncDir ? path.basename(location.asyncDir) : "unknown");
 	const state = status?.state ?? (result ? resultState(result) : undefined);
 	if (!state) throw new Error(`Status file not found for async run '${runId}'.`);
 
+	if (state === "queued") throw new Error(`Async run '${runId}' is queued and cannot be revived before startup.`);
 	const statusSteps = status?.steps ?? [];
 	const resultSteps = result?.results ?? [];
 	const stepCount = statusSteps.length || resultSteps.length || (result?.agent ? 1 : 0);
@@ -288,6 +363,7 @@ export function resolveAsyncResumeTarget(params: AsyncResumeParams, deps: AsyncR
 
 	return {
 		kind: "revive",
+		runtime,
 		runId,
 		asyncDir: location.asyncDir ?? undefined,
 		state,

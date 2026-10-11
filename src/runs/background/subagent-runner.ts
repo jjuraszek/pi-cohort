@@ -1,11 +1,12 @@
 import { spawn, spawnSync } from "node:child_process";
+import { PINNED_AGENT_DIR_OVERRIDE } from "../../shared/agent-dir.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Message } from "@earendil-works/pi-ai";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { appendJsonl, getArtifactPaths } from "../../shared/artifacts.ts";
-import { PI_CODING_AGENT_PACKAGE, getPiSpawnCommand, resolveInstalledPiPackageRoot } from "../shared/pi-spawn.ts";
+import { getPiSpawnCommand, parsePiRuntime, PiRuntimeLaunchError, type PiRuntimeIdentity } from "../shared/pi-spawn.ts";
 import { captureSingleOutputSnapshot, finalizeSingleOutput, formatSavedOutputReference, resolveSingleOutput, type SingleOutputSnapshot } from "../shared/single-output.ts";
 import {
 	type ActivityState,
@@ -110,8 +111,7 @@ interface SubagentRunConfig {
 	sessionDir?: string;
 	asyncDir: string;
 	sessionId?: string | null;
-	piPackageRoot?: string;
-	piArgv1?: string;
+	runtime: PiRuntimeIdentity;
 	forwardedFlags?: string[];
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;
@@ -244,21 +244,18 @@ function runPiStreaming(
 	args: string[],
 	cwd: string,
 	outputFile: string,
-	env?: Record<string, string | undefined>,
-	piPackageRoot?: string,
-	piArgv1?: string,
+	env: Record<string, string | undefined> | undefined,
+	runtime: PiRuntimeIdentity,
 	maxSubagentDepth?: number,
 	childEventContext?: ChildEventContext,
 	registerInterrupt?: (interrupt: (() => void) | undefined) => void,
 	onChildEvent?: (event: ChildEvent) => void,
 ): Promise<RunPiStreamingResult> {
-	return new Promise((resolve) => {
+	return new Promise((resolve, reject) => {
+		const spawnSpec = getPiSpawnCommand(args, runtime);
 		const outputStream = fs.createWriteStream(outputFile, { flags: "w" });
 		const spawnEnv = { ...process.env, ...(env ?? {}), ...getSubagentDepthEnv(maxSubagentDepth) };
-		const spawnSpec = getPiSpawnCommand(args, {
-			...(piPackageRoot ? { piPackageRoot } : {}),
-			...(piArgv1 ? { argv1: piArgv1 } : {}),
-		});
+		if (PINNED_AGENT_DIR_OVERRIDE) spawnEnv.PI_CODING_AGENT_DIR = PINNED_AGENT_DIR_OVERRIDE;
 		const child = spawn(spawnSpec.command, spawnSpec.args, {
 			cwd,
 			stdio: ["ignore", "pipe", "pipe"],
@@ -431,6 +428,7 @@ function runPiStreaming(
 			clearDrainTimers();
 		});
 		child.on("close", (exitCode, signal) => {
+			if (settled) return;
 			settled = true;
 			registerInterrupt?.(undefined);
 			clearDrainTimers();
@@ -460,22 +458,13 @@ function runPiStreaming(
 			clearDrainTimers();
 			clearStdioGuard();
 			outputStream.end();
-			const finalOutput = getFinalOutput(messages) || rawStdoutLines.join("\n").trim();
-			const spawnErrorMessage = spawnError instanceof Error ? spawnError.message : String(spawnError);
-			resolve({ stderr, exitCode: 1, messages, usage, model, error: error ?? assistantError ?? spawnErrorMessage, finalOutput, observedMutationAttempt });
+			reject(new PiRuntimeLaunchError(`Failed to spawn selected Pi runtime ${runtime.nodeExecPath} ${runtime.piEntryPath}: ${String(spawnError)}`));
 		});
 	});
 }
 
-function resolvePiPackageRootFallback(): string {
-	const root = resolveInstalledPiPackageRoot();
-	if (root) return root;
-	throw new Error(`Could not resolve ${PI_CODING_AGENT_PACKAGE} package root`);
-}
-
-async function exportSessionHtml(sessionFile: string, outputDir: string, piPackageRoot?: string): Promise<string> {
-	const pkgRoot = piPackageRoot ?? resolvePiPackageRootFallback();
-	const exportModulePath = path.join(pkgRoot, "dist", "core", "export-html", "index.js");
+async function exportSessionHtml(sessionFile: string, outputDir: string, piPackageRoot: string): Promise<string> {
+	const exportModulePath = path.join(piPackageRoot, "dist", "core", "export-html", "index.js");
 	const moduleUrl = pathToFileURL(exportModulePath).href;
 	const mod = await import(moduleUrl);
 	const exportFromFile = (mod as { exportFromFile?: (inputPath: string, options?: { outputPath?: string }) => string })
@@ -587,8 +576,7 @@ export interface SingleStepContext {
 	flatIndex: number;
 	flatStepCount: number;
 	outputFile: string;
-	piPackageRoot?: string;
-	piArgv1?: string;
+	runtime: PiRuntimeIdentity;
 	forwardedFlags?: string[];
 	registerInterrupt?: (interrupt: (() => void) | undefined) => void;
 	nestedRoute?: NestedRouteInfo;
@@ -636,6 +624,7 @@ export async function runSingleStep(
 			output: message,
 			exitCode: 1,
 			error: message,
+			sessionFile: step.sessionFile,
 		};
 	}
 
@@ -673,11 +662,11 @@ export async function runSingleStep(
 	const attemptNotes: string[] = [];
 	const eventsPath = path.join(path.dirname(ctx.outputFile), "events.jsonl");
 	let finalResult: RunPiStreamingResult | undefined;
+	let finalSessionFile = step.sessionFile;
 	let finalOutputSnapshot: SingleOutputSnapshot | undefined;
 	let completionGuardTriggeredFinal = false;
 	let executionSurface: ExecutionSurfaceResult | undefined;
 
-	const asyncDir = path.dirname(ctx.outputFile);
 	let externalOwner: ExternalExecution | undefined;
 
 	if (backendSelection.selection.kind === "external") {
@@ -687,6 +676,7 @@ export async function runSingleStep(
 		const ownerController = new AbortController();
 		try {
 			externalOwner = await createExternalExecution({
+				runtime: ctx.runtime,
 				runId: ctx.id,
 				childId: `${step.agent}-${ctx.flatIndex}`,
 				backend: selection.backend,
@@ -695,8 +685,8 @@ export async function runSingleStep(
 				signal: ownerController.signal,
 			});
 		} catch (startErr) {
-			const message = safeExternalFailure("startup", startErr);
-			return { agent: step.agent, output: message, exitCode: 1, error: message };
+			const message = startErr instanceof PiRuntimeLaunchError ? startErr.message : safeExternalFailure("startup", startErr);
+			return { agent: step.agent, output: message, exitCode: 1, error: message, sessionFile: step.sessionFile };
 		}
 
 		// Bridge registerInterrupt to an AbortController for the current external attempt.
@@ -718,7 +708,9 @@ export async function runSingleStep(
 				// External background: baseArgs=[] (no --mode json or -p); task is the last arg.
 				// Core allocates a trusted session file for every external attempt regardless of sessionEnabled.
 				// Caller owns tempDir cleanup (F1): cleanupTempDir is in finally, not in the helper.
-				const attemptSessionFile = path.join(asyncDir, `session-${ctx.flatIndex}-attempt-${index}.jsonl`);
+				if (!step.sessionFile) fs.mkdirSync(ctx.sessionDir!, { recursive: true });
+				const attemptSessionFile = step.sessionFile ?? path.join(ctx.sessionDir!, `session-${ctx.flatIndex}-attempt-${index}.jsonl`);
+				finalSessionFile = attemptSessionFile;
 				const { args, env, tempDir } = buildPiArgs({
 					baseArgs: [],
 					task,
@@ -754,6 +746,7 @@ export async function runSingleStep(
 				try {
 					try {
 						run = await runExternalBackgroundAttempt({
+							runtime: ctx.runtime,
 							owner: externalOwner,
 							attemptId: `${ctx.id}-${ctx.flatIndex}-attempt-${index}`,
 							args,
@@ -764,6 +757,7 @@ export async function runSingleStep(
 							onChildEvent: ctx.onChildEvent,
 						});
 					} catch (error) {
+						if (error instanceof PiRuntimeLaunchError) throw error;
 						run = {
 							stderr: "",
 							exitCode: 1,
@@ -840,7 +834,7 @@ export async function runSingleStep(
 				attemptNotes.push(formatModelAttemptNote(attempt, candidates[index + 1]));
 			}
 		} catch (error) {
-			const message = safeExternalFailure("attempt", error);
+			const message = error instanceof PiRuntimeLaunchError ? error.message : safeExternalFailure("attempt", error);
 			finalResult = {
 				stderr: "",
 				exitCode: 1,
@@ -854,7 +848,6 @@ export async function runSingleStep(
 			ctx.registerInterrupt?.(undefined);
 		}
 	} else {
-		// Native path: unchanged, uses runPiStreaming.
 	for (let index = 0; index < candidates.length; index++) {
 		const candidate = candidates[index];
 		ctx.onAttemptStart?.({ model: candidate, thinking: resolveEffectiveThinking(candidate, step.thinking) });
@@ -898,13 +891,16 @@ export async function runSingleStep(
 				step.cwd ?? ctx.cwd,
 				ctx.outputFile,
 				env,
-				ctx.piPackageRoot,
-				ctx.piArgv1,
+				ctx.runtime,
 				step.maxSubagentDepth,
 				{ eventsPath, runId: ctx.id, stepIndex: ctx.flatIndex, agent: step.agent },
 				ctx.registerInterrupt,
 				ctx.onChildEvent,
 			);
+		} catch (error) {
+			if (!(error instanceof PiRuntimeLaunchError)) throw error;
+			finalResult = { stderr: "", exitCode: 1, messages: [], usage: emptyUsage(), error: error.message, finalOutput: "" };
+			break;
 		} finally {
 			cleanupTempDir(tempDir); // F1: ensure no prompt-dir leak on throw
 		}
@@ -1086,7 +1082,7 @@ export async function runSingleStep(
 		output: outputForSummary,
 		exitCode: effectiveFinalExitCode,
 		error: effectiveFinalError,
-		sessionFile: step.sessionFile,
+		sessionFile: finalSessionFile ?? (sessionEnabled && sessionDir ? findLatestSessionFile(sessionDir) ?? undefined : undefined),
 		model: finalResult?.model,
 		attemptedModels: attemptedModels.length > 0 ? attemptedModels : undefined,
 		modelAttempts,
@@ -1229,6 +1225,7 @@ function ensureParallelProgressFile(cwd: string, group: Extract<RunnerStep, { pa
 }
 
 async function runSubagent(config: SubagentRunConfig): Promise<void> {
+	config.runtime = parsePiRuntime(config.runtime, `Async run ${config.id}`);
 	const { id, steps, resultPath, cwd, placeholder, taskIndex, totalTasks, maxOutput, artifactsDir, artifactConfig } =
 		config;
 	let previousOutput = "";
@@ -1253,7 +1250,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	let activityTimer: NodeJS.Timeout | undefined;
 	let previousCumulativeTokens: TokenUsage = { input: 0, output: 0, total: 0 };
 	let previousCumulativeCost = 0;
-	let latestSessionFile: string | undefined;
 
 	const parallelGroups: Array<{ start: number; count: number; stepIndex: number }> = [];
 	const initialStatusSteps: RunnerStatusStep[] = [];
@@ -1317,6 +1313,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		|| shareEnabled
 		|| flatSteps.some((step) => Boolean(step.sessionFile));
 	const statusPayload: RunnerStatusPayload = {
+		runtime: config.runtime,
 		runId: id,
 		...(config.sessionId ? { sessionId: config.sessionId } : {}),
 		mode: config.resultMode ?? (flatSteps.length > 1 ? "chain" : "single"),
@@ -1874,8 +1871,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					artifactsDir, artifactConfig, id,
 					flatIndex: fi, flatStepCount: Math.max(statusPayload.steps.length, 1),
 					outputFile: path.join(asyncDir, `output-${fi}.log`),
-					piPackageRoot: config.piPackageRoot,
-					piArgv1: config.piArgv1,
+					runtime: config.runtime,
 					forwardedFlags: config.forwardedFlags,
 					executionBackendCoordinator,
 					executionBackendConfig,
@@ -1891,6 +1887,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				statusPayload.steps[fi].endedAt = taskEndTime;
 				statusPayload.steps[fi].durationMs = taskEndTime - taskStartTime;
 				statusPayload.steps[fi].exitCode = singleResult.exitCode;
+				statusPayload.steps[fi].sessionFile = singleResult.sessionFile;
 				statusPayload.steps[fi].model = singleResult.model;
 				statusPayload.steps[fi].thinking = resolveEffectiveThinking(singleResult.model, statusPayload.steps[fi].thinking);
 				statusPayload.steps[fi].attemptedModels = singleResult.attemptedModels;
@@ -2111,7 +2108,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 						}));
 
 						const taskSessionDir = config.sessionDir
-							? path.join(config.sessionDir, `parallel-${taskIdx}`)
+							? path.join(config.sessionDir, `parallel-${fi}`)
 							: undefined;
 						const { taskForRun, taskCwd } = prepareParallelTaskRun(task, cwd, worktreeSetup, taskIdx);
 
@@ -2122,8 +2119,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 							artifactsDir, artifactConfig, id,
 							flatIndex: fi, flatStepCount: flatSteps.length,
 							outputFile: path.join(asyncDir, `output-${fi}.log`),
-							piPackageRoot: config.piPackageRoot,
-							piArgv1: config.piArgv1,
+							runtime: config.runtime,
 							forwardedFlags: config.forwardedFlags,
 							executionBackendCoordinator,
 							executionBackendConfig,
@@ -2134,9 +2130,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 							onAttemptStart: (attempt) => updateStepModel(fi, attempt.model, attempt.thinking),
 							onChildEvent: (event) => updateStepFromChildEvent(fi, event),
 						});
-						if (task.sessionFile) {
-							latestSessionFile = task.sessionFile;
-						}
 
 						const taskEndTime = Date.now();
 						const taskDuration = taskEndTime - taskStartTime;
@@ -2145,6 +2138,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 						statusPayload.steps[fi].endedAt = taskEndTime;
 						statusPayload.steps[fi].durationMs = taskDuration;
 						statusPayload.steps[fi].exitCode = singleResult.exitCode;
+						statusPayload.steps[fi].sessionFile = singleResult.sessionFile;
 						statusPayload.steps[fi].model = singleResult.model;
 						statusPayload.steps[fi].thinking = resolveEffectiveThinking(singleResult.model, statusPayload.steps[fi].thinking);
 						statusPayload.steps[fi].attemptedModels = singleResult.attemptedModels;
@@ -2186,7 +2180,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				for (let t = 0; t < group.parallel.length; t++) {
 					const fi = groupStartFlatIndex + t;
 					const sessionTokens = config.sessionDir
-						? parseSessionTokens(path.join(config.sessionDir, `parallel-${t}`))
+						? parseSessionTokens(path.join(config.sessionDir, `parallel-${fi}`))
 						: null;
 					const taskTokens = sessionTokens ?? tokenUsageFromAttempts(parallelResults[t]?.modelAttempts);
 					if (!taskTokens) continue;
@@ -2286,12 +2280,11 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			const singleResult = await runSingleStep(seqStep, {
 				previousOutput, placeholder, cwd, sessionEnabled,
 				outputs,
-				sessionDir: config.sessionDir,
+				sessionDir: config.sessionDir ? path.join(config.sessionDir, `parallel-${flatIndex}`) : undefined,
 				artifactsDir, artifactConfig, id,
 				flatIndex, flatStepCount: flatSteps.length,
 				outputFile: path.join(asyncDir, `output-${flatIndex}.log`),
-				piPackageRoot: config.piPackageRoot,
-				piArgv1: config.piArgv1,
+				runtime: config.runtime,
 				forwardedFlags: config.forwardedFlags,
 				executionBackendCoordinator,
 				executionBackendConfig,
@@ -2302,9 +2295,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				onAttemptStart: (attempt) => updateStepModel(flatIndex, attempt.model, attempt.thinking),
 				onChildEvent: (event) => updateStepFromChildEvent(flatIndex, event),
 			});
-			if (seqStep.sessionFile) {
-				latestSessionFile = seqStep.sessionFile;
-			}
 
 			previousOutput = singleResult.output;
 			results.push({
@@ -2333,26 +2323,15 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			}
 			statusPayload.outputs = outputs;
 
-			const cumulativeTokens = config.sessionDir ? parseSessionTokens(config.sessionDir) : null;
-			let stepTokens: TokenUsage | null = cumulativeTokens
-				? {
-						input: cumulativeTokens.input - previousCumulativeTokens.input,
-						output: cumulativeTokens.output - previousCumulativeTokens.output,
-						total: cumulativeTokens.total - previousCumulativeTokens.total,
-					}
-				: null;
-			if (cumulativeTokens) {
-				previousCumulativeTokens = cumulativeTokens;
-				previousCumulativeCost = cumulativeTokens.cost;
-			} else {
-				stepTokens = tokenUsageFromAttempts(singleResult.modelAttempts);
-				if (stepTokens) {
-					previousCumulativeTokens = {
-						input: previousCumulativeTokens.input + stepTokens.input,
-						output: previousCumulativeTokens.output + stepTokens.output,
-						total: previousCumulativeTokens.total + stepTokens.total,
-					};
-				}
+			const sessionTokens = config.sessionDir ? parseSessionTokens(path.join(config.sessionDir, `parallel-${flatIndex}`)) : null;
+			const stepTokens = sessionTokens ?? tokenUsageFromAttempts(singleResult.modelAttempts);
+			if (stepTokens) {
+				previousCumulativeTokens = {
+					input: previousCumulativeTokens.input + stepTokens.input,
+					output: previousCumulativeTokens.output + stepTokens.output,
+					total: previousCumulativeTokens.total + stepTokens.total,
+				};
+				previousCumulativeCost += sessionTokens?.cost ?? 0;
 			}
 
 			const stepEndTime = Date.now();
@@ -2360,6 +2339,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			statusPayload.steps[flatIndex].endedAt = stepEndTime;
 			statusPayload.steps[flatIndex].durationMs = stepEndTime - stepStartTime;
 			statusPayload.steps[flatIndex].exitCode = singleResult.exitCode;
+			statusPayload.steps[flatIndex].sessionFile = singleResult.sessionFile;
 			statusPayload.steps[flatIndex].model = singleResult.model;
 			statusPayload.steps[flatIndex].thinking = resolveEffectiveThinking(singleResult.model, statusPayload.steps[flatIndex].thinking);
 			statusPayload.steps[flatIndex].attemptedModels = singleResult.attemptedModels;
@@ -2427,22 +2407,16 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		: resultMode === "parallel"
 			? `parallel:${flatSteps.map((s) => s.agent).join("+")}`
 			: `chain:${flatSteps.map((s) => s.agent).join("->")}`;
-	let sessionFile: string | undefined;
+	const sessionFile = results.findLast((result) => result.sessionFile)?.sessionFile;
 	let shareUrl: string | undefined;
 	let gistUrl: string | undefined;
 	let shareError: string | undefined;
 
 	if (shareEnabled) {
-		sessionFile = config.sessionDir
-			? (findLatestSessionFile(config.sessionDir) ?? undefined)
-			: undefined;
-		if (!sessionFile && latestSessionFile) {
-			sessionFile = latestSessionFile;
-		}
 		if (sessionFile) {
 			try {
 				const exportDir = config.sessionDir ?? path.dirname(sessionFile);
-				const htmlPath = await exportSessionHtml(sessionFile, exportDir, config.piPackageRoot);
+				const htmlPath = await exportSessionHtml(sessionFile, exportDir, config.runtime.piPackageRoot);
 				const share = createShareLink(htmlPath);
 				if ("error" in share) shareError = share.error;
 				else {
@@ -2461,7 +2435,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		clearInterval(activityTimer);
 		activityTimer = undefined;
 	}
-	const effectiveSessionFile = sessionFile ?? latestSessionFile;
+	const effectiveSessionFile = sessionFile;
 	const runEndedAt = Date.now();
 	statusPayload.state = interrupted ? "paused" : results.every((r) => r.success) ? "complete" : "failed";
 	statusPayload.activityState = undefined;
@@ -2509,6 +2483,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 
 	try {
 		writeAtomicJson(resultPath, {
+			runtime: config.runtime,
 			id,
 			agent: agentName,
 			mode: resultMode,

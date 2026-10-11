@@ -40,8 +40,8 @@
   "scripts": {
     "check:agents-core": "node scripts/check-agents-core.mjs",
     "test": "npm run test:unit",
-    "test:unit": "node --test test/unit/*.test.ts",
-    "test:integration": "node --import ./test/support/register-loader.mjs --test test/integration/*.test.ts",
+    "test:unit": "node --import ./test/support/isolate-test-env.mjs --test test/unit/*.test.ts",
+    "test:integration": "node --import ./test/support/isolate-test-env.mjs --import ./test/support/register-loader.mjs --test test/integration/*.test.ts",
     "test:all": "npm run check:agents-core && npm run test:unit && npm run test:integration"
   },
   "pi": {

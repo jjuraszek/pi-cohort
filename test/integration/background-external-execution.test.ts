@@ -16,11 +16,21 @@ import { after, test } from "node:test";
 import { registerExecutionBackend } from "../../src/execution-backend/registry.ts";
 import { createDetachedExecutionBackendCoordinator } from "../../src/execution-backend/reload.ts";
 import type { ExecutionBackend, ExecutionSurfaceRequest } from "../../src/execution-backend/types.ts";
-import { createExternalExecution } from "../../src/runs/shared/external-execution.ts";
-import { runExternalBackgroundAttempt, type OnSynthesizedChildEvent } from "../../src/runs/background/external-attempt.ts";
-import { runSingleStep } from "../../src/runs/background/subagent-runner.ts";
+import { createExternalExecution as createExternalExecutionImpl } from "../../src/runs/shared/external-execution.ts";
+import { runExternalBackgroundAttempt as runExternalBackgroundAttemptImpl, type OnSynthesizedChildEvent } from "../../src/runs/background/external-attempt.ts";
+import { runSingleStep as runSingleStepImpl } from "../../src/runs/background/subagent-runner.ts";
 import { getArtifactPaths } from "../../src/shared/artifacts.ts";
-import { createTempDir, removeTempDir } from "../support/helpers.ts";
+import { createMockPi, createTempDir, removeTempDir } from "../support/helpers.ts";
+
+const mockPi = createMockPi();
+function fixtureRuntime(cwd: string) {
+	const script = fs.readFileSync(path.join(cwd, "bin", "pi"), "utf8").replace(/^#![^\n]*\n/, "");
+	fs.writeFileSync(mockPi.runtime.piEntryPath, `import { createRequire } from "node:module"; const require = createRequire(import.meta.url);\n${script}`);
+	return mockPi.runtime;
+}
+const createExternalExecution = (options) => createExternalExecutionImpl({ ...options, runtime: fixtureRuntime(options.cwd) });
+const runSingleStep = (step, ctx) => runSingleStepImpl(step, { ...ctx, sessionDir: ctx.sessionDir ?? path.join(ctx.cwd, "sessions"), runtime: fixtureRuntime(ctx.cwd) });
+const runExternalBackgroundAttempt = (options) => runExternalBackgroundAttemptImpl({ ...options, runtime: fixtureRuntime(options.cwd) });
 
 const unixOnly = { skip: process.platform === "win32" };
 

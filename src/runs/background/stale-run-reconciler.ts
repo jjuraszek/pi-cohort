@@ -240,6 +240,9 @@ function buildFailedRepair(status: AsyncStatus, asyncDir: string, now: number, r
 			asyncDir,
 			sessionId: status.sessionId,
 			sessionFile: status.sessionFile,
+			sessionDir: status.sessionDir,
+			runtime: status.runtime,
+			cwd: status.cwd,
 		},
 	};
 }
@@ -326,8 +329,13 @@ export function reconcileAsyncRun(asyncDir: string, options: ReconcileAsyncRunOp
 
 	const runId = effectiveStatus.runId || path.basename(asyncDir);
 	const resultPath = path.join(options.resultsDir ?? RESULTS_DIR, `${runId}.json`);
+	if (effectiveStatus.state === "queued") {
+		return { status: effectiveStatus, repaired: false, resultPath, message: "Unresolved async startup: queued run has not published running status; start a new run." };
+	}
+	if (terminal(effectiveStatus.state)) return { status: effectiveStatus, repaired: false, resultPath };
+
 	if (fs.existsSync(resultPath)) {
-		const terminalStatus = effectiveStatus.state === "running" || effectiveStatus.state === "queued"
+		const terminalStatus = effectiveStatus.state === "running"
 			? terminalStatusFromResult(effectiveStatus, resultPath, now)
 			: undefined;
 		if (terminalStatus) {

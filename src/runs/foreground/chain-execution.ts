@@ -32,6 +32,7 @@ import {
 } from "../../shared/settings.ts";
 import { discoverAvailableSkills, normalizeSkillInput } from "../../agents/skills.ts";
 import { runSync } from "./execution.ts";
+import type { PiRuntimeIdentity } from "../shared/pi-spawn.ts";
 import { buildChainSummary } from "../../shared/formatters.ts";
 import { compactForegroundDetails, getSingleResultOutput, mapConcurrent, resolveChildCwd } from "../../shared/utils.ts";
 import { recordRun } from "../shared/run-history.ts";
@@ -85,6 +86,7 @@ interface ChainExecutionDetailsInput {
 }
 
 interface ParallelChainRunInput {
+	runtime: PiRuntimeIdentity;
 	step: ParallelStep;
 	parallelTemplates: string[];
 	parallelBehaviors: ResolvedStepBehavior[];
@@ -260,6 +262,7 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 				? createStructuredOutputRuntime(task.outputSchema, path.join(input.chainDir, "structured-output"))
 				: undefined;
 			const result = await runSync(input.ctx.cwd, input.agents, task.agent, taskStr, {
+				runtime: input.runtime,
 				cwd: taskCwd,
 				signal: input.signal,
 				interruptSignal: interruptController.signal,
@@ -347,6 +350,7 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 }
 
 interface ChainExecutionParams {
+	runtime: PiRuntimeIdentity;
 	chain: ChainStep[];
 	task?: string;
 	agents: AgentConfig[];
@@ -629,6 +633,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				createParallelDirs(chainDir, stepIndex, step.parallel.length, agentNames);
 
 				const parallelResults = await runParallelChainTasks({
+					runtime: params.runtime,
 					step,
 					parallelTemplates,
 					parallelBehaviors,
@@ -822,6 +827,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 			progressCreated = ensureParallelProgressFile(chainDir, progressCreated, parallelBehaviors);
 			createParallelDirs(chainDir, stepIndex, dynamicParallelStep.parallel.length, dynamicParallelStep.parallel.map((task) => task.agent));
 			const parallelResults = await runParallelChainTasks({
+				runtime: params.runtime,
 				step: dynamicParallelStep,
 				parallelTemplates,
 				parallelBehaviors,
@@ -1021,6 +1027,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				? createStructuredOutputRuntime(seqStep.outputSchema, path.join(chainDir, "structured-output"))
 				: undefined;
 			const r = await runSync(ctx.cwd, agents, seqStep.agent, stepTask, {
+				runtime: params.runtime,
 				cwd: resolveChildCwd(cwd ?? ctx.cwd, seqStep.cwd),
 				signal,
 				interruptSignal: interruptController.signal,

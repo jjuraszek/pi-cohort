@@ -43,6 +43,7 @@ import {
 	type Details,
 	type SubagentState,
 	ASYNC_DIR,
+	RUN_STATE_ROOT_DIR,
 	DEFAULT_ARTIFACT_CONFIG,
 	GRAND_TOTAL_STATUS_KEY,
 	RESULTS_DIR,
@@ -68,7 +69,7 @@ export { loadConfig } from "./config.ts";
  * If parent session is ~/.pi/agent/sessions/abc123.jsonl,
  * returns ~/.pi/agent/sessions/abc123/ as the base.
  * Callers add runId to create the actual session root: abc123/{runId}/
- * Falls back to a unique temp directory if no parent session.
+ * Without a parent, uses the durable sessions base; callers append the run UUID.
  */
 function getSubagentSessionRoot(parentSessionFile: string | null): string {
 	if (parentSessionFile) {
@@ -76,19 +77,19 @@ function getSubagentSessionRoot(parentSessionFile: string | null): string {
 		const sessionsDir = path.dirname(parentSessionFile);
 		return path.join(sessionsDir, baseName);
 	}
-	return fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-session-"));
+	return path.join(RUN_STATE_ROOT_DIR, "sessions");
 }
 
 function expandTilde(p: string): string {
 	return p.startsWith("~/") ? path.join(os.homedir(), p.slice(2)) : p;
 }
 
-/** Create a directory and verify it is actually accessible. */
-function ensureAccessibleDir(dirPath: string): void {
+function ensureAccessibleDir(dirPath: string, durable = false): void {
 	mkdirWithEpermRetry(dirPath);
 	try {
 		fs.accessSync(dirPath, fs.constants.R_OK | fs.constants.W_OK);
-	} catch {
+	} catch (error) {
+		if (durable) throw error;
 		try {
 			fs.rmSync(dirPath, { recursive: true, force: true });
 		} catch {
@@ -255,8 +256,9 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		}
 	}
 
+	ensureAccessibleDir(RUN_STATE_ROOT_DIR, true);
 	ensureAccessibleDir(RESULTS_DIR);
-	ensureAccessibleDir(ASYNC_DIR);
+	ensureAccessibleDir(ASYNC_DIR, true);
 	cleanupOldChainDirs();
 
 	const config = loadConfig();

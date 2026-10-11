@@ -2,6 +2,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
+import { capturePiRuntime, type PiRuntimeIdentity } from "../../src/runs/shared/pi-spawn.ts";
 
 interface MockPiResponse {
 	output?: string;
@@ -16,10 +18,13 @@ interface MockPiResponse {
 		stderr?: string;
 	}>;
 	echoEnv?: string[];
+	echoRuntime?: boolean;
 }
 
 export interface MockPi {
 	readonly dir: string;
+	readonly runtime: PiRuntimeIdentity;
+	captureRuntime(): PiRuntimeIdentity;
 	install(): void;
 	uninstall(): void;
 	onCall(response: MockPiResponse): void;
@@ -59,18 +64,42 @@ export function createMockPi(): MockPi {
 	ensureDir(queueDir);
 	ensureDir(binDir);
 
+	const packageRoot = path.join(rootDir, "pi package");
+	const entryPath = path.join(packageRoot, "dist", "cli.mjs");
+	ensureDir(path.dirname(entryPath));
+	fs.copyFileSync(SCRIPT_PATH, entryPath);
+	fs.writeFileSync(path.join(packageRoot, "package.json"), JSON.stringify({
+		name: "@earendil-works/pi-coding-agent", type: "module", bin: { pi: "dist/cli.mjs" },
+	}));
+	const dependencyDir = path.join(packageRoot, "node_modules");
+	ensureDir(dependencyDir);
+	const require = createRequire(import.meta.url);
+	for (const name of ["jiti", "typebox"]) {
+		let dependencyRoot = path.dirname(require.resolve(name));
+		while (true) {
+			const manifest = path.join(dependencyRoot, "package.json");
+			if (fs.existsSync(manifest) && JSON.parse(fs.readFileSync(manifest, "utf8")).name === name) break;
+			const parent = path.dirname(dependencyRoot);
+			if (parent === dependencyRoot) throw new Error(`Cannot find installed ${name} package root`);
+			dependencyRoot = parent;
+		}
+		fs.symlinkSync(fs.realpathSync.native(dependencyRoot), path.join(dependencyDir, name), process.platform === "win32" ? "junction" : "dir");
+	}
+	const captureRuntime = () => capturePiRuntime({ execPath: process.execPath, argv1: entryPath });
+	const runtime = Object.freeze(captureRuntime());
 	const shellScriptPath = path.join(binDir, "pi");
 	const cmdScriptPath = path.join(binDir, "pi.cmd");
-	writeExecutable(shellScriptPath, `#!/bin/sh\nexec "${process.execPath}" "${SCRIPT_PATH}" "$@"\n`);
-	writeExecutable(cmdScriptPath, `@echo off\r\n"${process.execPath}" "${SCRIPT_PATH}" %*\r\n`);
+	writeExecutable(shellScriptPath, `#!/bin/sh\nexec "${runtime.nodeExecPath}" "${runtime.piEntryPath}" "$@"\n`);
+	writeExecutable(cmdScriptPath, `@echo off\r\n"${runtime.nodeExecPath}" "${runtime.piEntryPath}" %*\r\n`);
 
 	let installed = false;
 	let nextSequence = 0;
 	let originalPath: string | undefined;
-	let originalArgv1: string | undefined;
 	let originalQueueEnv: string | undefined;
 
 	return {
+		runtime,
+		captureRuntime,
 		get dir() {
 			return queueDir;
 		},
@@ -81,10 +110,6 @@ export function createMockPi(): MockPi {
 			originalQueueEnv = process.env.MOCK_PI_QUEUE_DIR;
 			process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
 			process.env.MOCK_PI_QUEUE_DIR = queueDir;
-			if (process.platform === "win32") {
-				originalArgv1 = process.argv[1];
-				process.argv[1] = SCRIPT_PATH;
-			}
 		},
 		uninstall() {
 			if (!installed) return;
@@ -93,10 +118,6 @@ export function createMockPi(): MockPi {
 			else process.env.PATH = originalPath;
 			if (originalQueueEnv === undefined) delete process.env.MOCK_PI_QUEUE_DIR;
 			else process.env.MOCK_PI_QUEUE_DIR = originalQueueEnv;
-			if (process.platform === "win32") {
-				if (originalArgv1 === undefined) delete process.argv[1];
-				else process.argv[1] = originalArgv1;
-			}
 			try {
 				fs.rmSync(rootDir, { recursive: true, force: true });
 			} catch {}

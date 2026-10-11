@@ -8,10 +8,11 @@
  * before the task arg and forwards all other args unchanged.
  */
 import * as path from "node:path";
+import { PINNED_AGENT_DIR_OVERRIDE } from "../../shared/agent-dir.ts";
 import { fileURLToPath } from "node:url";
 import type { Message } from "@earendil-works/pi-ai";
 import type { Usage } from "../../shared/types.ts";
-import { getPiSpawnCommand } from "../shared/pi-spawn.ts";
+import { getPiSpawnCommand, type PiRuntimeIdentity } from "../shared/pi-spawn.ts";
 import { isMutatingTool } from "../shared/long-running-guard.ts";
 import type { ExternalAttemptResult, ExternalExecution } from "../shared/external-execution.ts";
 import type { OnNewSessionMessage } from "../../execution-backend/session-watcher.ts";
@@ -36,6 +37,7 @@ interface SynthesizedChildEvent {
 export type OnSynthesizedChildEvent = (event: SynthesizedChildEvent) => void;
 
 export interface RunExternalBackgroundAttemptInput {
+	readonly runtime: PiRuntimeIdentity;
 	readonly owner: ExternalExecution;
 	readonly attemptId: string;
 	/**
@@ -148,12 +150,14 @@ export async function runExternalBackgroundAttempt(
 	args.push("--extension", REPORTING_EXTENSION_PATH);
 	if (taskArg !== undefined) args.push(taskArg);
 
-	const spawnSpec = getPiSpawnCommand(args);
+	const spawnSpec = getPiSpawnCommand(args, input.runtime);
 
 	const mergedEnv: Record<string, string> = {};
 	for (const [key, value] of Object.entries(environment)) {
 		if (value !== undefined) mergedEnv[key] = value;
 	}
+
+	if (PINNED_AGENT_DIR_OVERRIDE) mergedEnv.PI_CODING_AGENT_DIR = PINNED_AGENT_DIR_OVERRIDE;
 
 	const onNewSessionMessage: OnNewSessionMessage | undefined = onChildEvent
 		? (message) => synthesizeChildEvents(message, onChildEvent)

@@ -9,7 +9,18 @@ export function writeAtomicJson(filePath: string, payload: object): void {
 	);
 	try {
 		fs.writeFileSync(tempPath, JSON.stringify(payload, null, 2), "utf-8");
-		fs.renameSync(tempPath, filePath);
+		for (let retries = 0; ; retries++) {
+			try {
+				fs.renameSync(tempPath, filePath);
+				break;
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException | null)?.code;
+				if (process.platform !== "win32" || !["EPERM", "EACCES", "EBUSY"].includes(code ?? "") || retries >= 5) {
+					throw error;
+				}
+				Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+			}
+		}
 	} finally {
 		fs.rmSync(tempPath, { force: true });
 	}

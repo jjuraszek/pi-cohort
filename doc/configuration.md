@@ -4,16 +4,18 @@
 
 ## `PI_CODING_AGENT_DIR`
 
-Environment variable that relocates the **pi profile root** (where user agents, chains, settings, extension config, run history, and artifacts live). Resolution:
+Environment variable that selects the **pi profile root** (where user agents, chains, settings, extension config, durable run history, and default sessions live). Temporary artifacts use separate storage. Resolution:
 
 | Value | Resolves to |
 |---|---|
 | unset | `~/.pi/agent` |
 | `~` | home directory |
 | `~/sub/dir` | `<home>/sub/dir` |
-| absolute/relative path | used as-is |
+| absolute/relative path | resolved to an absolute path at extension load |
 
-Setting it moves the `<PI_CODING_AGENT_DIR>/agents`, `/chains`, `/settings.json`, etc. roots. It is **not a discovery sandbox**: the global `~/.agents` root is always scanned as the lowest-priority user layer regardless of this variable, and project roots (`<repo>/.agents`, `<repo>/.pi/agents`) are always scanned relative to the workspace. To fully isolate discovery you must also avoid populating `~/.agents`.
+The resolved profile is pinned at extension load for storage under `<PI_CODING_AGENT_DIR>/pi-cohort/`. Only an explicitly configured `PI_CODING_AGENT_DIR` is propagated to children and detached coordinators as that absolute path; an unset variable stays unset. Selecting another profile changes the roots used for new files; existing files are not relocated. A user-selected temporary profile or session base limits durability. There is no runtime-selection or retention setting.
+
+Setting it selects the `<PI_CODING_AGENT_DIR>/agents`, `/chains`, `/settings.json`, etc. roots. It is **not a discovery sandbox**: the global `~/.agents` root is always scanned as the lowest-priority user layer regardless of this variable, and project roots (`<repo>/.agents`, `<repo>/.pi/agents`) are always scanned relative to the workspace. To fully isolate discovery you must also avoid populating `~/.agents`.
 
 ## `asyncByDefault`
 
@@ -50,7 +52,9 @@ Forces depth-0 single, parallel, and chain runs into background mode and bypasse
 { "defaultSessionDir": "~/.pi/agent/sessions/subagent/" }
 ```
 
-Session directory precedence is: `params.sessionDir`, then `config.defaultSessionDir`, then a directory derived from the parent session. Sessions are always enabled.
+Session base precedence is unchanged: `params.sessionDir`, then `config.defaultSessionDir`, then a directory derived from the parent session (beside its file, named after its filename without `.jsonl`). Without a parent session file, the default base is `<PI_CODING_AGENT_DIR>/pi-cohort/sessions/`. Sessions are always enabled.
+
+These settings select a base, not a shared run directory: every new run gets a full-UUID child directory, with per-child directories inside it. New fork snapshots live within that run's scope, not the parent's shared session directory. Existing session files are not relocated. An explicit temporary `sessionDir` or `defaultSessionDir` can disappear independently of retained history; revival still requires the recorded session file.
 
 ## `maxSubagentDepth`
 

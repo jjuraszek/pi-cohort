@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import childProcess from "node:child_process";
+import fileSystem from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import { fileURLToPath } from "node:url";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -6,7 +10,19 @@ import { describe, it } from "node:test";
 import type { AgentConfig } from "../../src/agents/agents.ts";
 import type { ExecutionBackendSelectionResult } from "../../src/execution-backend/selection.ts";
 import type { ExecutionBackend, ExecutionSurfaceHandle } from "../../src/execution-backend/types.ts";
-import { runSync, type RunSyncDependencies } from "../../src/runs/foreground/execution.ts";
+import { runSync as execute, type RunSyncDependencies } from "../../src/runs/foreground/execution.ts";
+import { createMockPi } from "../support/mock-pi.ts";
+import { after } from "node:test";
+import type { RunSyncOptions } from "../../src/shared/types.ts";
+import { PiRuntimeLaunchError } from "../../src/runs/shared/pi-spawn.ts";
+
+const mock = createMockPi();
+mock.install();
+after(() => mock.uninstall());
+const runtime = mock.runtime;
+function runSync(cwd: string, agents: AgentConfig[], name: string, task: string, options: RunSyncOptions, deps: RunSyncDependencies = {}) {
+	return execute(cwd, agents, name, task, { runtime, ...options }, deps);
+}
 import type { ExternalAttemptResult, ExternalExecution, ExternalExecutionOptions } from "../../src/runs/shared/external-execution.ts";
 import type { RunExternalSingleAttemptInput } from "../../src/runs/foreground/external-single-attempt.ts";
 import { snapshotResult } from "../../src/runs/foreground/attempt-finalization.ts";
@@ -74,6 +90,130 @@ const externalSelection: ExecutionBackendSelectionResult = {
 const noAcceptance = { level: "none" as const, reason: "routing test" };
 
 describe("runSync execution backend routing", () => {
+	it("launches selected A through the actual native path despite process and PATH B", async t => {
+		for (const scenario of ["success", "spawn error", "entry disappeared"] as const) await t.test(scenario, async () => {
+			const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "native-runtime-")));
+			const selected = { nodeExecPath: path.join(dir, `node A${path.extname(process.execPath)}`), piEntryPath: path.join(dir, "A", "cli.mjs"), piPackageRoot: path.join(dir, "A") };
+			const otherEntry = path.join(dir, "B", "cli.mjs");
+			fs.copyFileSync(process.execPath, selected.nodeExecPath);
+			fs.chmodSync(selected.nodeExecPath, 0o755);
+			for (const entry of [selected.piEntryPath, otherEntry]) {
+				fs.mkdirSync(path.dirname(entry), { recursive: true });
+				fs.writeFileSync(entry, "");
+				fs.writeFileSync(path.join(path.dirname(entry), "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", bin: { pi: "cli.mjs" } }));
+			}
+			fs.writeFileSync(path.join(dir, "pi"), `#!/bin/sh\nexec "${process.execPath}" "${otherEntry}" "$@"\n`);
+			fs.chmodSync(path.join(dir, "pi"), 0o755);
+			const originalSpawn = childProcess.spawn;
+			const originalMkdtemp = fileSystem.mkdtempSync;
+			const originalPath = process.env.PATH;
+			const originalEntry = process.argv[1];
+			const promptDirs: string[] = [];
+			const launches: Array<{ command: string; args: string[] }> = [];
+			try {
+				process.env.PATH = dir;
+				process.argv[1] = otherEntry;
+				assert.notEqual(selected.nodeExecPath, fs.realpathSync.native(process.execPath));
+				assert.notEqual(selected.piEntryPath, fs.realpathSync.native(process.argv[1]));
+				fileSystem.mkdtempSync = ((prefix, options) => {
+					const created = originalMkdtemp(prefix, options);
+					if (String(prefix).includes("pi-subagent-")) promptDirs.push(String(created));
+					return created;
+				}) as typeof fileSystem.mkdtempSync;
+				childProcess.spawn = ((command, args, options) => {
+					launches.push({ command, args: [...args] });
+					const proc = originalSpawn(command, args, scenario === "spawn error" ? { ...options, cwd: path.join(dir, "missing") } : options);
+					if (scenario === "spawn error") proc.prependListener("error", error => { error.message = `rate limit: ${error.message}`; });
+					return proc;
+				}) as typeof childProcess.spawn;
+				// Native execution imports named builtins; synchronize both installation and restoration.
+				syncBuiltinESMExports();
+				const output = await runSync(dir, [makeAgent("worker", { model: "one/model", fallbackModels: ["two/model"], completionGuard: false })], "worker", "Task", {
+					runtime: selected, runId: "native-real", acceptance: noAcceptance,
+				}, { selectBackend: async () => {
+					if (scenario === "entry disappeared") fs.unlinkSync(selected.piEntryPath);
+					return nativeSelection;
+				} });
+				assert.equal(promptDirs.length, 1);
+				assert.ok(promptDirs.every(promptDir => !fs.existsSync(promptDir)), "native finally removes the prompt directory");
+				assert.equal(output.modelAttempts?.length, 1, "launch failures do not fall back");
+				assert.deepEqual(output.attemptedModels, ["one/model"]);
+				assert.equal(launches.length, scenario === "entry disappeared" ? 0 : 1);
+				if (launches.length) assert.deepEqual(launches[0], {
+					command: selected.nodeExecPath,
+					args: [selected.piEntryPath, "--mode", "json", "-p", "--no-session", "--model", "one/model", "--extension",
+						fileURLToPath(new URL("../../src/runs/shared/subagent-prompt-runtime.ts", import.meta.url)),
+						"--no-skills", "--system-prompt", path.join(promptDirs[0], "worker.md"), "Task: Task"],
+				});
+				assert.equal(output.exitCode, scenario === "success" ? 0 : 1, JSON.stringify(output));
+				if (scenario !== "success") assert.ok(output.error?.includes(selected.piEntryPath));
+				if (scenario === "spawn error") {
+					assert.ok(output.error?.includes(selected.nodeExecPath));
+					assert.ok(output.error?.includes("rate limit:"));
+					assert.deepEqual(output.messages, []);
+				}
+			} finally {
+				childProcess.spawn = originalSpawn;
+				fileSystem.mkdtempSync = originalMkdtemp;
+				syncBuiltinESMExports();
+				if (originalPath === undefined) delete process.env.PATH; else process.env.PATH = originalPath;
+				process.argv[1] = originalEntry;
+				fs.rmSync(dir, { recursive: true, force: true });
+			}
+		});
+	});
+
+	it("preserves typed external startup and ready failures without attempts", async t => {
+		for (const phase of ["startup", "ready"] as const) await t.test(phase, async () => {
+			const h = dependencies(externalSelection);
+			const error = new PiRuntimeLaunchError(`rate limit: selected runtime ${phase}`);
+			if (phase === "startup") h.deps.createExternalOwner = async options => { h.ownerOptions.push(options); throw error; };
+			else h.deps.createExternalOwner = async options => {
+				h.ownerOptions.push(options);
+				Object.defineProperty(h.owner, "ready", { value: Promise.reject(error) });
+				return h.owner;
+			};
+			const output = await runSync("/runtime", [makeAgent("worker", { model: "one/model", fallbackModels: ["two/model"] })], "worker", "Task", { runId: phase, acceptance: noAcceptance }, h.deps);
+			assert.equal(output.exitCode, 1);
+			assert.equal(output.error, error.message);
+			assert.equal(h.ownerOptions.length, 1);
+			assert.equal(h.attempts.length, 0);
+			assert.equal(h.nativeCalls(), 0);
+			assert.equal(output.modelAttempts, undefined);
+			assert.deepEqual(h.finishes, phase === "ready" ? ["retained"] : []);
+		});
+	});
+
+	it("does not retry native runtime failures", async () => {
+		const h = dependencies(nativeSelection);
+		let calls = 0;
+		h.deps.runNativeAttempt = async (_cwd, _agent, _task, _model, options) => {
+			assert.strictEqual(options.runtime, runtime);
+			calls++;
+			throw new PiRuntimeLaunchError("rate limit: selected Node disappeared");
+		};
+		const output = await runSync("/runtime", [makeAgent("worker", { model: "one/model", fallbackModels: ["two/model"] })], "worker", "Task", { runId: "native-runtime", acceptance: noAcceptance }, h.deps);
+		assert.equal(calls, 1);
+		assert.equal(output.error, "rate limit: selected Node disappeared");
+	});
+
+	it("does not retry typed runtime failures and disposes an acquired owner", async () => {
+		const h = dependencies(externalSelection);
+		let calls = 0;
+		h.deps.runExternalAttempt = async () => { calls++; throw new PiRuntimeLaunchError("rate limit: selected runtime disappeared"); };
+		const output = await runSync("/runtime", [makeAgent("worker", { model: "one/model", fallbackModels: ["two/model"] })], "worker", "Task", { runId: "runtime-failure", acceptance: noAcceptance }, h.deps);
+		assert.equal(calls, 1);
+		assert.equal(output.error, "rate limit: selected runtime disappeared");
+		assert.deepEqual(h.finishes, ["retained"]);
+	});
+
+	it("preflights a disappeared entry before external acquisition", async () => {
+		const h = dependencies(externalSelection);
+		const missing = { ...runtime, piEntryPath: path.join(os.tmpdir(), "missing-pi-entry") };
+		const output = await runSync("/runtime", [makeAgent("worker")], "worker", "Task", { runtime: missing, runId: "missing", acceptance: noAcceptance }, h.deps);
+		assert.equal(h.ownerOptions.length, 0);
+		assert.ok(output.error?.includes(missing.piEntryPath));
+	});
 	it("keeps explicit native and auto/no-adapter on the native attempt path without an owner", async () => {
 		for (const executionBackend of ["native", "auto"]) {
 			const h = dependencies(nativeSelection);
@@ -117,6 +257,8 @@ describe("runSync execution backend routing", () => {
 		assert.equal(h.ownerOptions[0].childId, "child-3");
 		assert.equal(h.ownerOptions[0].cwd, "/exact");
 		assert.equal(h.ownerOptions[0].title, "worker");
+		assert.strictEqual(h.ownerOptions[0].runtime, runtime);
+		assert.ok(h.attempts.every(call => call.options.runtime === runtime));
 		assert.deepEqual(h.attempts.map(call => call.attemptId), ["child-3-attempt-0", "child-3-attempt-1"]);
 		assert.ok(h.attempts.every(call => call.owner === h.owner));
 		assert.deepEqual(h.finishes, ["delivered"]);

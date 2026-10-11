@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, test } from "node:test";
+import { createMockPi } from "../support/mock-pi.ts";
 import type { RunnerStep } from "../../src/runs/shared/parallel-utils.ts";
 
 interface PersistedResult {
@@ -127,19 +128,24 @@ function launchRun(
 	fs.mkdirSync(asyncDir);
 	if (barrierDir) fs.mkdirSync(barrierDir);
 	fs.writeFileSync(path.join(bin, "pi"), `#!/bin/sh\nexec "${process.execPath}" "${fixturePi}" "$@"\n`, { mode: 0o755 });
+	const mockPi = createMockPi();
+	fs.copyFileSync(fixturePi, mockPi.runtime.piEntryPath);
 	const configPath = path.join(root, "config.json");
 	fs.writeFileSync(configPath, JSON.stringify({
 		id: name,
+		runtime: mockPi.runtime,
 		steps,
 		resultPath,
 		cwd: root,
 		placeholder: "{previous}",
 		asyncDir,
+		sessionDir: path.join(root, "sessions"),
 		resultMode: options.mode ?? (steps.length === 1 ? "single" : "chain"),
 		dynamicFanoutMaxItems: options.dynamicFanoutMaxItems,
 		executionBackends: backendConfig(),
 	}));
 	const log = fs.openSync(logPath, "w");
+	fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ runId: name, runtime: mockPi.runtime, state: "queued" }));
 	const child = spawn(process.execPath, [jitiCli, runner, configPath], {
 		cwd: root,
 		detached: true,

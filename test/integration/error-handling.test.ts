@@ -114,6 +114,7 @@ describe("detectSubagentError", { skip: !detectSubagentError ? "utils not import
 describe("runSync error handling", { skip: !piAvailable ? "pi packages not available" : undefined }, () => {
 	let tempDir: string;
 	let mockPi: MockPi;
+	const runSync = (cwd, agents, agent, task, options) => execution!.runSync(cwd, agents, agent, task, { ...options, runtime: mockPi.runtime });
 
 	before(() => {
 		mockPi = createMockPi();
@@ -184,6 +185,7 @@ describe("runSync error handling", { skip: !piAvailable ? "pi packages not avail
 describe("chain error propagation", { skip: !chainAvailable ? "chain module not available" : undefined }, () => {
 	let tempDir: string;
 	let mockPi: MockPi;
+	const executeChain = (params) => chainMod!.executeChain({ ...params, runtime: mockPi.runtime });
 
 	before(() => {
 		mockPi = createMockPi();

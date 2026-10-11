@@ -60,8 +60,9 @@ function makeState(cwd: string) {
 	};
 }
 
-function makeExecutor(cwd: string) {
+function makeExecutor(cwd: string, mockPi: MockPi) {
 	return createSubagentExecutor!({
+		captureRuntime: mockPi.captureRuntime,
 		pi: {
 			events: { emit: () => {} },
 			getSessionName: () => undefined,
@@ -159,7 +160,7 @@ describe("foreground result payload compaction", { skip: !available ? "subagent 
 		jsonl.push(events.assistantMessage("Finished the test sweep. Three failures reproduced, two were flaky, and the smallest fix is to retry the image bootstrap before the integration shard starts."));
 		mockPi.onCall({ jsonl });
 
-		const executor = makeExecutor(tempDir);
+		const executor = makeExecutor(tempDir, mockPi);
 		const result = await executor.execute(
 			"id",
 			{ agent: "tester", task: "Run the full noisy test sweep", includeProgress: false },

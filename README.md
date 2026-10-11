@@ -39,6 +39,8 @@ pi install npm:pi-cohort
 
 That is the only required step.
 
+Children and detached coordinators use the originating parent's resolved Node executable and Pi entry path directly, bypassing `PATH`. Revival keeps that original runtime even when requested from a different parent installation. Custom hosts whose entry cannot be identified as the installed Pi package's declared CLI are unsupported. These paths are not a version lock: replacing Node or Pi in place changes what runs. If the original installation is removed, restore it at the recorded paths or start a new run; there is no fallback to the current parent's installation. Legacy records without an original runtime identity remain inspectable but cannot be revived - start a new run.
+
 ## Execution backend extension API
 
 External execution backends are currently unsupported on Windows, for both foreground and background runs. Native execution remains supported.
@@ -154,6 +156,10 @@ Full reference: agent/chain authoring in [doc/agents-and-chains.md](doc/agents-a
 ## Configuration
 
 Most installs need zero configuration. Full env/JSON reference: [doc/configuration.md](doc/configuration.md).
+
+Run history lives under the pinned profile's `pi-cohort/` root and has no automatic age expiry. Status listings can grow without bound as history accumulates. To remove history manually, delete only a terminal top-level run directory after confirming its entire subtree has stopped; never delete queued or running state, individual nested records, or shared route files. This removes that directory's status and resume lookup, not separately stored session files or shared routes. Keep those sessions if you need their context; deleting a run directory is not a complete session purge. Storage details: [doc/observability.md](doc/observability.md#files-logs-and-observability).
+
+A queued start that never publishes running status stays unresolved: pi-cohort does not automatically recover or revive it. Start a new run instead.
 
 Parent extension CLI flags (e.g. pi-lens's `--no-autofix`) are forwarded into spawned children by default, so subagents inherit the same tooling behavior you launched with; toggle with [`forwardParentFlags`](doc/configuration.md#forwardparentflags).
 

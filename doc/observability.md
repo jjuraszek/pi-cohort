@@ -91,10 +91,10 @@ Session files are stored under a per-run session directory. With `context: "fork
 
 Async completions notify only the originating session. The result watcher emits `subagent:async-complete`, and the extension consumes that event to render completion notifications.
 
-Async runs write:
+Durable background records live under the pinned profile, not the temporary notification directory:
 
 ```text
-<tmpdir>/pi-cohort-<scope>/async-subagent-runs/<id>/
+<PI_CODING_AGENT_DIR>/pi-cohort/async-subagent-runs/<id>/
   status.json
   events.jsonl
   output-<n>.log
@@ -102,7 +102,13 @@ Async runs write:
   runner.log
 ```
 
-`runner.log` captures the detached runner's stdout/stderr: crash stacks for deaths that happen before `status.json` exists, and its tail is appended to stale-failure messages. `status.json` powers the widget and `subagent({ action: "status" })` output. `events.jsonl` contains wrapper events plus child Pi JSON events annotated with run and step metadata. Nested fanout status is stored as compact sidecar event/registry metadata and merged into parent status views and result payloads; full recursive status snapshots are not embedded in parent result files. `output-<n>.log` is a live human-readable tail. Fallback information is persisted so background runs are debuggable after completion.
+`runner.log` captures the detached runner's stdout/stderr, including startup crash stacks, and its tail is appended to stale-failure messages. `status.json` powers the widget and `subagent({ action: "status" })` output. `events.jsonl` contains wrapper events plus child Pi JSON events annotated with run and step metadata. Nested fanout status is stored as compact sidecar event/registry metadata under `<PI_CODING_AGENT_DIR>/pi-cohort/nested-subagent-events/`, with nested run records under `nested-subagent-runs/`, and merged into parent status views and result payloads; full recursive status snapshots are not embedded in parent result files. `output-<n>.log` is a live human-readable tail. Fallback information is persisted so background runs are debuggable after completion.
+
+Durable top-level and nested state, shared routes, and default sessions have no automatic age expiry. Sessions normally use a per-run directory derived from the parent session file; without one they use `<PI_CODING_AGENT_DIR>/pi-cohort/sessions/`. Explicit session bases can be outside the profile and have their own retention limits; see [configuration.md](configuration.md#defaultsessiondir).
+
+`RESULTS_DIR` is `<tmpdir>/pi-cohort-<scope>/async-subagent-results/`: a disposable completion-notification queue, not the durable history store. Consuming a notification removes its result file but retains run history and sessions. Runner configs, prompt scratch, chain scratch, and debug artifacts are also disposable; artifact cleanup does not expire durable run records or session files. Legacy temporary run records and routes are inspected in their original paths, not migrated. Records missing the original runtime identity cannot be revived.
+
+Queued runs that never publish running status remain unresolved and cannot be revived; there is no automatic startup recovery. Start a new run. For explicit history removal, follow the [README boundaries](../README.md#configuration): delete only a terminal top-level run directory whose subtree has stopped. Separately stored sessions and shared routes remain, and deleting history removes its resume lookup.
 
 ## Live progress
 

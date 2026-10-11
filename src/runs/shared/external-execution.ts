@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import type { PiRuntimeIdentity } from "./pi-spawn.ts";
 import type { Message } from "@earendil-works/pi-ai";
 import {
 	createChildHostController,
@@ -16,6 +17,7 @@ import { createSessionWatcher, type OnNewSessionMessage, type SessionWatcher } f
 import type { ExecutionBackend, ExecutionSurfaceHandle } from "../../execution-backend/types.ts";
 
 export interface ExternalExecutionOptions {
+	readonly runtime: PiRuntimeIdentity;
 	readonly backend: ExecutionBackend;
 	readonly runId: string;
 	readonly childId: string;

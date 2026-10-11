@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- Children and detached coordinators launch with the originating parent's Node/Pi paths instead of `PATH`; revival keeps that runtime across parent installations. Run records and nested state use durable profile storage without automatic age expiry. Legacy records remain inspectable in their original paths, but revival requires a recorded original runtime and an available session file; missing installations require restoration or a new run. (#19)
+
 ## [7.1.2] - 2026-09-29
 
 ### Fixed

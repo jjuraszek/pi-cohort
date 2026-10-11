@@ -1,16 +1,163 @@
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
+import fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { describe, it } from "node:test";
-import { buildRevivedAsyncTask, resolveAsyncResumeTarget } from "../../src/runs/background/async-resume.ts";
+import { describe, it, mock } from "node:test";
+import { buildRevivedAsyncTask, resolveAsyncResumeTarget, resolveAsyncRunLocation } from "../../src/runs/background/async-resume.ts";
 
 function writeJson(filePath: string, value: object): void {
 	fs.mkdirSync(path.dirname(filePath), { recursive: true });
-	fs.writeFileSync(filePath, JSON.stringify(value, null, 2), "utf-8");
+	fs.writeFileSync(filePath, JSON.stringify({ runtime, ...value }, null, 2), "utf-8");
 }
 
+const runtime = { nodeExecPath: "/origin/node", piEntryPath: "/origin/pi/cli.js", piPackageRoot: "/origin/pi" };
+
 describe("async resume lookup", () => {
+	for (const source of ["status", "result"] as const) it(`returns the original runtime from ${source}-only metadata across two custom roots`, () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-resume-source-"));
+		try {
+			const roots = [path.join(root, "first"), path.join(root, "second")];
+			const sessionFile = path.join(root, "session.jsonl");
+			fs.writeFileSync(sessionFile, "");
+			const resultsDir = path.join(root, "results");
+			if (source === "status") writeJson(path.join(roots[1], "run", "status.json"), { runId: "run", state: "complete", steps: [{ agent: "worker", status: "complete", sessionFile }] });
+			else writeJson(path.join(resultsDir, "run.json"), { id: "run", agent: "worker", sessionFile, success: true });
+			const target = resolveAsyncResumeTarget({ id: "run" }, { asyncDirRoot: roots, resultsDir });
+			assert.deepEqual(target.runtime, runtime);
+			assert.equal(target.agent, "worker");
+			assert.equal(target.sessionFile, sessionFile);
+		} finally { fs.rmSync(root, { recursive: true, force: true }); }
+	});
+
+	for (const fault of ["unreadable", "dangling", "EACCES", "ELOOP"] as const) it(`rejects ${fault} authoritative status despite an otherwise valid result`, () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-resume-status-fault-"));
+		let existsMock: ReturnType<typeof mock.method> | undefined;
+		let readMock: ReturnType<typeof mock.method> | undefined;
+		let lstatMock: ReturnType<typeof mock.method> | undefined;
+		try {
+			const statusPath = path.join(root, "runs", "run", "status.json");
+			const sessionFile = path.join(root, "session.jsonl");
+			fs.writeFileSync(sessionFile, "");
+			writeJson(statusPath, { runId: "run", state: "complete", steps: [{ agent: "worker", status: "complete", sessionFile }] });
+			writeJson(path.join(root, "results", "run.json"), { id: "run", agent: "worker", sessionFile, success: true });
+			if (fault === "dangling") {
+				fs.unlinkSync(statusPath);
+				fs.symlinkSync(path.join(root, "missing-status.json"), statusPath);
+			}
+			if (fault === "EACCES" || fault === "ELOOP") {
+				const lstat = fs.lstatSync;
+				lstatMock = mock.method(fs, "lstatSync", (file, ...args) => {
+					if (String(file) === statusPath) throw Object.assign(new Error(fault), { code: fault });
+					return lstat(file, ...args);
+				});
+			}
+			const exists = fs.existsSync;
+			const read = fs.readFileSync;
+			const code = fault === "unreadable" ? "EACCES" : "ENOENT";
+			// Permission failures must not depend on whether the harness runs as root.
+			existsMock = mock.method(fs, "existsSync", (file) => String(file) === statusPath ? false : exists(file));
+			readMock = mock.method(fs, "readFileSync", (file, ...args) => {
+				if (String(file) === statusPath) throw Object.assign(new Error(code), { code });
+				return read(file, ...args);
+			});
+			assert.throws(() => resolveAsyncResumeTarget({ id: "run" }, { asyncDirRoot: path.join(root, "runs"), resultsDir: path.join(root, "results") }), /status|runtime/i);
+		} finally {
+			lstatMock?.mock.restore();
+			readMock?.mock.restore();
+			existsMock?.mock.restore();
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("prefers an exact ID across roots without inspecting an escaped longer prefix", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-resume-exact-"));
+		try {
+			const roots = [path.join(root, "first"), path.join(root, "second")];
+			const sessionFile = path.join(root, "session.jsonl");
+			fs.writeFileSync(sessionFile, "");
+			for (const [index, runs] of roots.entries()) writeJson(path.join(runs, "run", "status.json"), { runId: "run", state: "complete", steps: [{ agent: index === 0 ? "first" : "second", status: "complete", sessionFile }] });
+			writeJson(path.join(roots[1], "run-long", "status.json"), { runId: "run-long", state: "complete", steps: [] });
+			const deps = { asyncDirRoot: roots, resultsDir: path.join(root, "results") };
+			assert.equal(resolveAsyncResumeTarget({ id: "run" }, deps).agent, "first");
+			assert.throws(() => resolveAsyncResumeTarget({ id: "ru" }, deps), /Ambiguous/);
+			fs.rmSync(path.join(roots[1], "run-long"), { recursive: true });
+			fs.symlinkSync(root, path.join(roots[1], "run-long"), "dir");
+			assert.equal(resolveAsyncResumeTarget({ id: "run" }, deps).agent, "first");
+		} finally { fs.rmSync(root, { recursive: true, force: true }); }
+	});
+	it("rejects identity-less authoritative status despite a valid result", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-authority-"));
+		try {
+			const sessionFile = path.join(root, "session.jsonl");
+			fs.writeFileSync(sessionFile, "");
+			writeJson(path.join(root, "runs", "run", "status.json"), { runtime: undefined, runId: "run", state: "complete", steps: [{ agent: "worker", status: "complete", sessionFile }] });
+			writeJson(path.join(root, "results", "run.json"), { id: "run", runtime, agent: "worker", sessionFile, success: true });
+			assert.throws(() => resolveAsyncResumeTarget({ id: "run" }, { asyncDirRoot: path.join(root, "runs"), resultsDir: path.join(root, "results") }), /original runtime.*not recorded.*new run/i);
+		} finally { fs.rmSync(root, { recursive: true, force: true }); }
+	});
+
+	for (const [name, saved, expected] of [
+		["null", null, /not recorded/], ["array", [], /not recorded/],
+		["partial", { nodeExecPath: "/node" }, /invalid runtime/],
+		["relative", { ...runtime, piEntryPath: "cli.js" }, /invalid runtime/],
+		["conflicting", { ...runtime, piPackageRoot: "/different" }, /conflict/],
+	] as const) it(`rejects ${name} authoritative runtime`, () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-runtime-shape-"));
+		try {
+			writeJson(path.join(root, "runs", "run", "status.json"), { runtime: saved, runId: "run", state: "complete", steps: [] });
+			writeJson(path.join(root, "results", "run.json"), { runtime, id: "run", success: true });
+			assert.throws(() => resolveAsyncResumeTarget({ id: "run" }, { asyncDirRoot: path.join(root, "runs"), resultsDir: path.join(root, "results") }), expected);
+		} finally { fs.rmSync(root, { recursive: true, force: true }); }
+	});
+
+	for (const [name, saved, expected] of [
+		["missing", undefined, /not recorded/], ["null", null, /not recorded/],
+		["array", [], /not recorded/], ["partial", { nodeExecPath: "/node" }, /invalid runtime/],
+		["relative", { ...runtime, nodeExecPath: "node" }, /invalid runtime/],
+	] as const) it(`rejects ${name} result-only runtime before session selection`, () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-runtime-"));
+		try {
+			writeJson(path.join(root, "results", "run.json"), { runtime: saved, id: "run", success: true });
+			assert.throws(() => resolveAsyncResumeTarget({ id: "run" }, { asyncDirRoot: path.join(root, "runs"), resultsDir: path.join(root, "results") }), expected);
+		} finally { fs.rmSync(root, { recursive: true, force: true }); }
+	});
+
+	it("permits canonical contained directories and rejects escaped symlinks", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-canonical-resume-"));
+		try {
+			const runs = path.join(root, "runs");
+			const outside = path.join(root, "outside");
+			fs.mkdirSync(path.join(runs, "run"), { recursive: true });
+			fs.mkdirSync(outside);
+			fs.symlinkSync(outside, path.join(runs, "escape"), "dir");
+			assert.equal(resolveAsyncRunLocation({ dir: path.join(runs, "run") }, [runs], root).resolvedId, "run");
+			assert.throws(() => resolveAsyncRunLocation({ dir: path.join(runs, "escape") }, [runs], root), /inside/);
+		} finally { fs.rmSync(root, { recursive: true, force: true }); }
+	});
+
+	for (const raw of ["null", "[]", "{broken"]) it(`rejects present invalid status ${raw} without result fallback`, () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-invalid-status-"));
+		try {
+			writeJson(path.join(root, "run", "status.json"), {});
+			fs.writeFileSync(path.join(root, "run", "status.json"), raw);
+			const sessionFile = path.join(root, "session.jsonl");
+			fs.writeFileSync(sessionFile, "");
+			writeJson(path.join(root, "results", "run.json"), { id: "run", success: true, agent: "worker", sessionFile });
+			assert.throws(() => resolveAsyncResumeTarget({ id: "run" }, { asyncDirRoot: root, resultsDir: path.join(root, "results") }), /object|parse/);
+		} finally { fs.rmSync(root, { recursive: true, force: true }); }
+	});
+
+	it("rejects queued startup before selecting a child", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-queued-resume-"));
+		try {
+			const statusPath = path.join(root, "run", "status.json");
+			writeJson(statusPath, { runId: "run", state: "queued", steps: [] });
+			const before = fs.readFileSync(statusPath, "utf8");
+			assert.throws(() => resolveAsyncResumeTarget({ id: "run" }, { asyncDirRoot: root, resultsDir: path.join(root, "results") }), /queued/);
+			assert.equal(fs.readFileSync(statusPath, "utf8"), before);
+			assert.deepEqual(fs.readdirSync(path.dirname(statusPath)), ["status.json"]);
+		} finally { fs.rmSync(root, { recursive: true, force: true }); }
+	});
 
 	it("resolves a completed single-child run from persisted status", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-resume-"));
@@ -37,6 +184,7 @@ describe("async resume lookup", () => {
 			assert.equal(target.agent, "worker");
 			assert.equal(target.sessionFile, sessionFile);
 			assert.equal(target.cwd, root);
+			assert.deepEqual(target.runtime, runtime);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
@@ -322,6 +470,7 @@ describe("async resume lookup", () => {
 	it("frames the revived follow-up with original run context", () => {
 		const task = buildRevivedAsyncTask({
 			kind: "revive",
+			runtime,
 			runId: "run-old",
 			state: "complete",
 			agent: "worker",

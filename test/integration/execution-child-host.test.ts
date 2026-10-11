@@ -4,7 +4,10 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
-import { createChildHostController } from "../../src/execution-backend/child-host-controller.ts";
+import { createChildHostController as createChildHostControllerImpl } from "../../src/execution-backend/child-host-controller.ts";
+import { createMockPi } from "../support/mock-pi.ts";
+const mockPi = createMockPi();
+const createChildHostController = (options, deps?) => createChildHostControllerImpl({ ...options, runtime: mockPi.runtime }, deps);
 import type { ExecutionBackend, ExecutionSurfaceRequest } from "../../src/execution-backend/types.ts";
 
 function fakeBackend(): { backend: ExecutionBackend; requests: ExecutionSurfaceRequest[]; hosts: ReturnType<typeof spawn>[]; launched: Promise<void>; releaseCalls: () => number; closeCalls: () => number; reap: () => Promise<void> } {

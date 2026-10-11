@@ -41,7 +41,8 @@ const executorMod = await tryImport<ExecutorModule>("./src/runs/foreground/subag
 const asyncExecutionMod = await tryImport<AsyncExecutionModule>("./src/runs/background/async-execution.ts");
 const available = !!executorMod;
 const createSubagentExecutor = executorMod?.createSubagentExecutor;
-const asyncAvailable = asyncExecutionMod?.isAsyncAvailable?.() === true;
+const availabilityMock = createMockPi();
+const asyncAvailable = asyncExecutionMod?.isAsyncAvailable?.(availabilityMock.runtime) === true;
 const originalHome = process.env.HOME;
 const originalUserProfile = process.env.USERPROFILE;
 
@@ -91,6 +92,7 @@ function makeState(cwd: string) {
 describe("fork context execution wiring", { skip: !available ? "subagent executor not importable" : undefined }, () => {
 	let tempDir: string;
 	let mockPi: MockPi;
+	const createSubagentExecutor = (deps) => executorMod!.createSubagentExecutor({ ...deps, captureRuntime: mockPi.captureRuntime });
 
 	before(() => {
 		mockPi = createMockPi();
@@ -198,13 +200,13 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 			getSessionId: () => "session-123",
 			getSessionFile: () => options.sessionFile,
 			getLeafId: () => options.leafId,
-			openSession: (sessionFile: string) => {
+			openSession: (sessionFile: string, sessionDir: string) => {
 				openedPaths.push(sessionFile);
 				return {
 					createBranchedSession: (leafId: string) => {
 						branchedLeafIds.push(leafId);
 						counter++;
-						const childSessionFile = path.join(tempDir, `fork-${counter}.jsonl`);
+						const childSessionFile = path.join(sessionDir, `fork-${counter}.jsonl`);
 						fs.writeFileSync(childSessionFile, '{"type":"session","version":1,"id":"child","timestamp":"2026-04-16T00:00:00.000Z","cwd":"/tmp"}\n', "utf-8");
 						return childSessionFile;
 					},
@@ -315,7 +317,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		assert.equal(result.details?.context, "fork");
 		assert.deepEqual(openedPaths, [parentSessionFile]);
 		assert.deepEqual(branchedLeafIds, ["leaf-current"]);
-		assert.deepEqual(readSessionArgsFromCalls(), [path.join(tempDir, "fork-1.jsonl")]);
+		assert.deepEqual(readSessionArgsFromCalls(), [path.join(fs.realpathSync.native(tempDir), result.details?.runId, "run-0", "fork-1.jsonl")]);
 	});
 
 	it("keeps default-fork context on run-path errors", async () => {
@@ -392,7 +394,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 
 		assert.equal(result.isError, undefined);
 		assert.equal(result.details?.context, "fork");
-		assert.deepEqual(readSessionArgsFromCalls().sort(), [path.join(tempDir, "fork-1.jsonl"), path.join(tempDir, "fork-2.jsonl")]);
+		assert.deepEqual(readSessionArgsFromCalls().sort(), [0, 1].map(index => path.join(fs.realpathSync.native(tempDir), result.details?.runId, `run-${index}`, `fork-${index + 1}.jsonl`)));
 	});
 
 	it("keeps explicit fresh context over top-level parallel agent defaultContext fork", async () => {
@@ -440,7 +442,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 
 		assert.equal(result.isError, undefined);
 		assert.equal(result.details?.context, "fork");
-		assert.deepEqual(readSessionArgsFromCalls(), [path.join(tempDir, "fork-1.jsonl"), path.join(tempDir, "fork-2.jsonl")]);
+		assert.deepEqual(readSessionArgsFromCalls(), [0, 1].map(index => path.join(fs.realpathSync.native(tempDir), result.details?.runId, `run-${index}`, `fork-${index + 1}.jsonl`)));
 	});
 
 	it("reports unknown top-level parallel agents before default-fork preconditions", async () => {
@@ -940,7 +942,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		assert.equal(result.isError, undefined);
 		assert.deepEqual(openedPaths, Array(6).fill(path.join(tempDir, "parent-chain.jsonl")));
 		assert.deepEqual(branchedLeafIds, Array(6).fill("leaf-chain"));
-		const sessionArgs = readSessionArgsFromCalls().filter((sessionFile) => path.dirname(sessionFile) === tempDir && path.basename(sessionFile).startsWith("fork-"));
+		const sessionArgs = readSessionArgsFromCalls().filter((sessionFile) => path.dirname(path.dirname(sessionFile)) === path.join(fs.realpathSync.native(tempDir), result.details?.runId) && path.basename(sessionFile).startsWith("fork-"));
 		assert.equal(sessionArgs.length, 6, "1 sequential + 4 parallel + 1 sequential");
 		assert.equal(new Set(sessionArgs).size, 6);
 	});

@@ -103,6 +103,8 @@ describe("mapConcurrent", { skip: !mapConcurrent ? "utils not importable" : unde
 describe("parallel agent execution", { skip: !piAvailable ? "pi packages not available" : undefined }, () => {
 	let tempDir: string;
 	let mockPi: MockPi;
+	const runSync = (cwd, agents, agent, task, options) => execution!.runSync(cwd, agents, agent, task, { ...options, runtime: mockPi.runtime });
+	const createSubagentExecutor = (deps) => executorMod!.createSubagentExecutor({ ...deps, captureRuntime: mockPi.captureRuntime });
 
 	before(() => {
 		mockPi = createMockPi();
@@ -522,7 +524,7 @@ function taskArgsForAllCalls(mockPi: MockPi): string[] {
 		.map((name) => JSON.parse(fs.readFileSync(path.join(mockPi.dir, name), "utf-8")).args.at(-1) as string);
 }
 
-function makeExecutorFor(cwd: string, agents = [makeAgent("echo")]) {
+function makeExecutorForImpl(cwd: string, agents, captureRuntime) {
 	const state = {
 		baseCwd: cwd,
 		currentSessionId: null,
@@ -532,6 +534,7 @@ function makeExecutorFor(cwd: string, agents = [makeAgent("echo")]) {
 		lastForegroundControlId: null,
 	};
 	const executor = createSubagentExecutor({
+		captureRuntime,
 		pi: { events: createEventBus(), getSessionName: () => undefined },
 		state,
 		config: {},
@@ -554,6 +557,8 @@ function createTrackedFileMutatingSetupHook(): string {
 
 describe("parallel worktree artifact scoping", { skip: !piAvailable || !createSubagentExecutor || !TEMP_ARTIFACTS_DIR ? "pi packages or executor not available" : undefined }, () => {
 	let mockPi: MockPi;
+	const makeExecutorFor = (cwd, agents = [makeAgent("echo")]) => makeExecutorForImpl(cwd, agents, mockPi.captureRuntime);
+	const createSubagentExecutor = (deps) => executorMod!.createSubagentExecutor({ ...deps, captureRuntime: mockPi.captureRuntime });
 
 	before(() => {
 		mockPi = createMockPi();

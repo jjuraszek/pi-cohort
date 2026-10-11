@@ -3,9 +3,20 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
-import { runExternalSingleAttempt } from "../../src/runs/foreground/external-single-attempt.ts";
+import { runExternalSingleAttempt as runAttempt, type RunExternalSingleAttemptInput } from "../../src/runs/foreground/external-single-attempt.ts";
+import { createMockPi } from "../support/mock-pi.ts";
+import { after } from "node:test";
+
+const mock = createMockPi();
+mock.install();
+after(() => mock.uninstall());
+const runtime = mock.runtime;
+function runExternalSingleAttempt(input: RunExternalSingleAttemptInput) {
+	return runAttempt({ ...input, options: { runtime, ...input.options } });
+}
 import type { ExternalAttemptRequest, ExternalAttemptResult, ExternalExecution } from "../../src/runs/shared/external-execution.ts";
-import { getPiSpawnCommand } from "../../src/runs/shared/pi-spawn.ts";
+import { capturePiRuntime } from "../../src/runs/shared/pi-spawn.ts";
+import { execFileSync } from "node:child_process";
 import { makeAgent, createTempDir, removeTempDir } from "../support/helpers.ts";
 
 const SECRET_SENTINEL = "sk-test-sentinel-do-not-leak";
@@ -68,7 +79,16 @@ describe("runExternalSingleAttempt", () => {
 		const agent = makeAgent("worker", { model: "anthropic/claude-sonnet-4", completionGuard: false });
 		const sessionFile = path.join(os.tmpdir(), "exact-session.jsonl");
 		const tempDir = createTempDir();
+		const selected = createMockPi();
+		const nodePath = path.join(tempDir, "selected-node");
+		fs.copyFileSync(process.execPath, nodePath);
+		fs.chmodSync(nodePath, 0o755);
+		const selectedRuntime = capturePiRuntime({ execPath: nodePath, argv1: selected.runtime.piEntryPath });
 		try {
+			assert.notEqual(selectedRuntime.nodeExecPath, fs.realpathSync.native(process.execPath));
+			assert.notEqual(selectedRuntime.piEntryPath, runtime.piEntryPath);
+			assert.notEqual(selectedRuntime.piPackageRoot, runtime.piPackageRoot);
+			assert.equal(fs.realpathSync.native(path.join(process.env.PATH!.split(path.delimiter)[0], "pi")), path.join(path.dirname(runtime.piPackageRoot), "bin", "pi"));
 			const result = await runExternalSingleAttempt({
 				owner,
 				attemptId: "a1",
@@ -76,7 +96,7 @@ describe("runExternalSingleAttempt", () => {
 				agent,
 				model: agent.model,
 				task: "Task",
-				options: { runId: "run-1", sessionFile, cwd: tempDir },
+				options: { runId: "run-1", sessionFile, cwd: tempDir, runtime: selectedRuntime },
 				shared: { sessionEnabled: true, systemPrompt: "system prompt body", attemptNotes: [] },
 			});
 
@@ -86,9 +106,9 @@ describe("runExternalSingleAttempt", () => {
 			assert.equal(request.cwd, tempDir);
 			assert.equal(request.sessionFile, sessionFile);
 
-			const commandPrefix = getPiSpawnCommand([]).args;
-			assert.deepEqual(request.args.slice(0, commandPrefix.length), commandPrefix);
-			assert.deepEqual(request.args.slice(commandPrefix.length, commandPrefix.length + 2), ["--session", sessionFile]);
+			assert.equal(request.command, selectedRuntime.nodeExecPath);
+			assert.equal(request.args[0], selectedRuntime.piEntryPath);
+			assert.deepEqual(request.args.slice(1, 3), ["--session", sessionFile]);
 			assert.ok(!request.args.includes("--mode"), "must not run in json mode");
 			assert.ok(!request.args.includes("-p"), "must not run in print mode");
 			assert.ok(!request.args.includes("json"));
@@ -103,9 +123,57 @@ describe("runExternalSingleAttempt", () => {
 			assert.ok(request.args.includes("--model"));
 			assert.equal(request.args[request.args.indexOf("--model") + 1], "anthropic/claude-sonnet-4");
 		} finally {
+			fs.rmSync(path.dirname(selected.runtime.piPackageRoot), { recursive: true, force: true });
 			removeTempDir(tempDir);
 		}
 	});
+
+	for (const configured of [true, false]) {
+		it(`propagates ${configured ? "a pinned absolute configured" : "no unset"} agent directory from a fresh process`, () => {
+			const tempDir = createTempDir();
+			const launchCwd = path.join(tempDir, "launch");
+			const childCwd = path.join(tempDir, "child");
+			fs.mkdirSync(launchCwd);
+			fs.mkdirSync(childCwd);
+			const environment = { ...process.env, HOME: tempDir, USERPROFILE: tempDir };
+			delete environment.PI_CODING_AGENT_DIR;
+			if (configured) environment.PI_CODING_AGENT_DIR = "relative-profile";
+			const script = `
+				const { runExternalSingleAttempt } = await import(${JSON.stringify(new URL("../../src/runs/foreground/external-single-attempt.ts", import.meta.url).href)});
+				const { makeAgent } = await import(${JSON.stringify(new URL("../support/helpers.ts", import.meta.url).href)});
+				process.chdir(${JSON.stringify(childCwd)});
+				if (${configured}) process.env.PI_CODING_AGENT_DIR = "changed-after-import";
+				let request;
+				const owner = { async runAttempt(value) {
+					request = value;
+					return ${JSON.stringify(baseAttemptResult())};
+				} };
+				await runExternalSingleAttempt({
+					owner, attemptId: "fresh", runtimeCwd: process.cwd(), agent: makeAgent("worker"),
+					model: undefined, task: "Task",
+					options: { runtime: ${JSON.stringify(runtime)}, runId: "fresh", sessionFile: ${JSON.stringify(SESSION_FILE)} },
+					shared: { sessionEnabled: true, systemPrompt: "", attemptNotes: [] }
+				});
+				console.log(JSON.stringify({ cwd: request.cwd, environment: request.environment }));
+			`;
+			try {
+				const output = execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+					cwd: launchCwd, env: environment, encoding: "utf8", timeout: 10_000,
+				});
+				const request = JSON.parse(output);
+				assert.equal(fs.realpathSync.native(request.cwd), fs.realpathSync.native(childCwd));
+				if (configured) {
+					assert.equal(fs.realpathSync.native(path.dirname(request.environment.PI_CODING_AGENT_DIR)), fs.realpathSync.native(launchCwd));
+					assert.equal(path.basename(request.environment.PI_CODING_AGENT_DIR), "relative-profile");
+					assert.ok(path.isAbsolute(request.environment.PI_CODING_AGENT_DIR));
+				} else {
+					assert.equal(Object.hasOwn(request.environment, "PI_CODING_AGENT_DIR"), false);
+				}
+			} finally {
+				removeTempDir(tempDir);
+			}
+		});
+	}
 
 	it("preserves normal extension discovery when agent extensions are absent", async () => {
 		const { owner, calls } = makeOwner(() => baseAttemptResult());

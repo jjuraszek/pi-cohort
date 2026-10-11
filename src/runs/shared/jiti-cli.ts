@@ -1,10 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createRequire } from "node:module";
-import { resolvePiPackageRoot } from "./pi-spawn.ts";
-
-const require = createRequire(import.meta.url);
-const piPackageRoot = resolvePiPackageRoot();
 
 function resolveJitiCliFromPackageJson(packageJsonPath: string): string | undefined {
 	if (!fs.existsSync(packageJsonPath)) return undefined;
@@ -24,45 +20,18 @@ function resolveJitiCliFromPackageJson(packageJsonPath: string): string | undefi
 	return undefined;
 }
 
-function hostResolveCandidates(specifier: string): Array<() => string | undefined> {
-	return [
-		() => require.resolve(specifier),
-		() => piPackageRoot
-			? createRequire(path.join(piPackageRoot, "package.json")).resolve(specifier)
-			: undefined,
-		() => {
-			if (!process.argv[1]) return undefined;
-			const piEntry = fs.realpathSync(process.argv[1]);
-			return createRequire(piEntry).resolve(specifier);
-		},
-	];
-}
-
-function resolveJitiCliPath(): string | undefined {
+function resolveJitiCliPath(piPackageRoot: string): string | undefined {
+	const require = createRequire(path.join(piPackageRoot, "package.json"));
 	const candidates = [
-		...hostResolveCandidates("jiti/package.json"),
-		() => piPackageRoot ? path.join(piPackageRoot, "node_modules", "jiti", "package.json") : undefined,
+		() => require.resolve("jiti/package.json"),
+		() => path.join(piPackageRoot, "node_modules", "jiti", "package.json"),
 	];
 	for (const candidate of candidates) {
 		try {
-			const packageJsonPath = candidate();
-			if (!packageJsonPath) continue;
-			const cliPath = resolveJitiCliFromPackageJson(packageJsonPath);
+			const cliPath = resolveJitiCliFromPackageJson(candidate());
 			if (cliPath) return cliPath;
 		} catch {
-			// Candidate not available in this install, continue probing.
-		}
-	}
-	return undefined;
-}
-
-function resolveFromHost(specifier: string): string | undefined {
-	for (const candidate of hostResolveCandidates(specifier)) {
-		try {
-			const resolved = candidate();
-			if (resolved) return resolved;
-		} catch {
-			// Candidate not available in this install, continue probing.
+			// Package exports may hide package.json; try the selected install's layout.
 		}
 	}
 	return undefined;
@@ -72,25 +41,25 @@ function resolveFromHost(specifier: string): string | undefined {
 // under the bare jiti CLI, so it gets the same map through JITI_ALIAS.
 const HOST_ALIASED_SPECIFIERS = ["typebox", "typebox/compile", "typebox/value"];
 
-export function resolveHostModuleAliases(): Record<string, string> {
+export function resolveHostModuleAliases(piPackageRoot: string): Record<string, string> {
+	const require = createRequire(path.join(piPackageRoot, "package.json"));
 	const aliases: Record<string, string> = {};
 	for (const specifier of HOST_ALIASED_SPECIFIERS) {
-		const resolved = resolveFromHost(specifier);
-		if (resolved) aliases[specifier] = resolved;
+		try {
+			aliases[specifier] = require.resolve(specifier);
+		} catch (cause) {
+			throw new Error(`Cannot resolve required alias ${specifier} from selected Pi installation ${piPackageRoot}`, { cause });
+		}
 	}
 	return aliases;
 }
 
-export function createJitiCliResolver(deps: { resolve?: () => string | undefined; exists?: (p: string) => boolean } = {}): () => string | undefined {
+export function createJitiCliResolver(deps: { resolve?: (piPackageRoot: string) => string | undefined; exists?: (p: string) => boolean } = {}): (piPackageRoot: string) => string | undefined {
 	const resolve = deps.resolve ?? resolveJitiCliPath;
 	const exists = deps.exists ?? ((p: string) => fs.existsSync(p));
-	let cached = resolve();
-	return () => {
-		if (cached && exists(cached)) return cached;
-		cached = resolve();
-		if (cached && exists(cached)) return cached;
-		cached = undefined;
-		return undefined;
+	return (piPackageRoot) => {
+		const cliPath = resolve(piPackageRoot);
+		return cliPath && exists(cliPath) ? cliPath : undefined;
 	};
 }
 

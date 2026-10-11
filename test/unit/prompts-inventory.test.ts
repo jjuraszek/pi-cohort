@@ -11,9 +11,8 @@ const templatePath = path.join(projectRoot, "doc", "handoff-template.md");
 const workflowVerbs = /\b(produces|runs|dispatches)\b/;
 const briefHeadings = ["## Intent", "## Repo state", "## Decisions", "## Open questions", "## Skills loaded"];
 
-function frontmatter(filePath: string): Record<string, string> {
-	const source = fs.readFileSync(filePath, "utf-8");
-	const match = source.match(/^---\n([\s\S]*?)\n---/);
+function frontmatter(filePath: string, source = fs.readFileSync(filePath, "utf-8")): Record<string, string> {
+	const match = source.match(/^---\r?\n([\s\S]*?)\r?\n---/);
 	assert.ok(match, `${filePath}: missing frontmatter`);
 	const fields: Record<string, string> = {};
 	for (const line of match[1].split("\n")) {
@@ -33,11 +32,11 @@ function assertTriggerDescription(label: string, description: string | undefined
 }
 
 function markdownFences(source: string): string[] {
-	return [...source.matchAll(/```markdown\n([\s\S]*?)```/g)].map((m) => m[1]);
+	return [...source.matchAll(/```markdown\r?\n([\s\S]*?)```/g)].map((m) => m[1]);
 }
 
 function headings(block: string): string[] {
-	return block.match(/^## .+$/gm) ?? [];
+	return block.replace(/\r\n/g, "\n").match(/^## .+$/gm) ?? [];
 }
 
 test("packaged prompts are exactly investigate", () => {
@@ -79,6 +78,15 @@ test("handoff skill carries the producer contract and no flow-specific rules", (
 	}
 	for (const token of ["$@", "phase_tracker", "plan_tracker", "hotfix", "using-git-worktrees", "mktemp", "Process state"]) {
 		assert.ok(!skill.includes(token), `SKILL.md: forbidden token ${token}`);
+	}
+});
+
+test("markdown helpers accept LF and CRLF", () => {
+	for (const newline of ["\n", "\r\n"]) {
+		assert.deepEqual(frontmatter("synthetic", ["---", "name: handoff", "---"].join(newline)), { name: "handoff" });
+		const block = markdownFences(["```markdown", "## Intent", "```"].join(newline));
+		assert.equal(block.length, 1);
+		assert.deepEqual(headings(block[0]), ["## Intent"]);
 	}
 });
 

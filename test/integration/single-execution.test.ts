@@ -129,6 +129,8 @@ function writePackageSkill(packageRoot: string, skillName: string): void {
 describe("single sync execution", { skip: !available ? "pi packages not available" : undefined }, () => {
 	let tempDir: string;
 	let mockPi: MockPi;
+	const runSync = (cwd, agents, agent, task, options) => execution!.runSync(cwd, agents, agent, task, { ...options, runtime: mockPi.runtime });
+	const createSubagentExecutor = (deps) => executorMod!.createSubagentExecutor({ ...deps, captureRuntime: mockPi.captureRuntime });
 
 	before(() => {
 		mockPi = createMockPi();
@@ -171,6 +173,49 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 			discoverAgents: () => ({ agents }),
 		});
 	}
+
+	it("captures once and allocates full-UUID roots beneath an explicit base", async () => {
+		let captures = 0;
+		const state = { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null };
+		const base = path.join(tempDir, "explicit-base");
+		fs.mkdirSync(base);
+		fs.writeFileSync(path.join(base, "existing.jsonl"), "keep existing\n");
+		const executor = executorMod!.createSubagentExecutor({
+			captureRuntime: () => { captures++; return mockPi.captureRuntime(); },
+			pi: { events: createEventBus(), getSessionName: () => undefined }, state, config: {}, asyncByDefault: false,
+			tempArtifactsDir: tempDir, getSubagentSessionRoot: () => tempDir,
+			expandTilde: value => value, discoverAgents: () => ({ agents: [makeAgent("echo")] }),
+		});
+		const roots = new Set<string>();
+		for (let index = 0; index < 2; index++) {
+			mockPi.onCall({ output: "ok" });
+			const result = await executor.execute("launch", { agent: "echo", task: "go", sessionDir: base }, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
+			assert.equal(result.isError, undefined);
+			assert.match(result.details.runId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+			const assigned = path.join(fs.realpathSync.native(base), result.details.runId);
+			roots.add(assigned);
+			assert.equal(path.dirname(path.dirname(result.details.results[0].sessionFile)), assigned);
+			assert.deepEqual(state.foregroundRuns.get(result.details.runId).runtime, mockPi.runtime);
+			assert.equal(state.foregroundRuns.get(result.details.runId).sessionRoot, assigned);
+		}
+		assert.equal(captures, 1);
+		assert.equal(roots.size, 2);
+		assert.equal(fs.readFileSync(path.join(base, "existing.jsonl"), "utf8"), "keep existing\n");
+	});
+
+	it("creates a private default no-parent run root under umask 022", { skip: process.platform === "win32" ? "POSIX directory modes required" : undefined }, async () => {
+		const previousUmask = process.umask(0o022);
+		try {
+			mockPi.onCall({ output: "ok" });
+			const result = await makeExecutor().execute("launch", { agent: "echo", task: "go" }, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
+			assert.equal(result.isError, undefined);
+			const sessionRoot = path.dirname(path.dirname(result.details.results[0].sessionFile));
+			assert.equal(sessionRoot, path.join(fs.realpathSync.native(tempDir), result.details.runId));
+			assert.equal(fs.statSync(sessionRoot).mode & 0o777, 0o700);
+		} finally {
+			process.umask(previousUmask);
+		}
+	});
 
 	it("spawns agent and captures output", async () => {
 		mockPi.onCall({ output: "Hello from mock agent" });

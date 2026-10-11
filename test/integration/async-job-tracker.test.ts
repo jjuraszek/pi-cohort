@@ -24,6 +24,7 @@ interface AsyncJobTrackerModule {
 }
 
 const trackerMod = await tryImport<AsyncJobTrackerModule>("./src/runs/background/async-job-tracker.ts");
+const typesMod = await tryImport<{ LEGACY_ASYNC_DIR: string }>("./src/shared/types.ts");
 const available = !!trackerMod;
 
 function createState() {
@@ -332,6 +333,53 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 			assert.equal(JSON.parse(fs.readFileSync(path.join(resultsDir, "run-stale.json"), "utf-8")).success, false);
 			assert.ok(ui.renderRequests > 0, "expected stale repair cleanup to request a rerender");
 		} finally {
+			removeTempDir(asyncRoot);
+		}
+	});
+
+	it("reconciles a dead tracked legacy runner and publishes its failure", async () => {
+		const asyncRoot = createTempDir("pi-async-job-legacy-");
+		assert.ok(typesMod);
+		fs.mkdirSync(typesMod.LEGACY_ASYNC_DIR, { recursive: true });
+		const runDir = fs.mkdtempSync(path.join(typesMod.LEGACY_ASYNC_DIR, "tracked-legacy-"));
+		const id = path.basename(runDir);
+		const state = createState();
+		let tracker: ReturnType<AsyncJobTrackerModule["createAsyncJobTracker"]> | undefined;
+		try {
+			const resultsDir = path.join(asyncRoot, "results");
+			const statusPath = path.join(runDir, "status.json");
+			const resultPath = path.join(resultsDir, `${id}.json`);
+			fs.writeFileSync(statusPath, JSON.stringify({
+				runId: id,
+				mode: "single",
+				state: "running",
+				pid: 12345,
+				startedAt: 1000,
+				lastUpdate: 1000,
+				steps: [{ agent: "worker", status: "running", startedAt: 1000 }],
+			}), "utf-8");
+			const recorder = createEventRecorder();
+			tracker = trackerMod!.createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
+				completionRetentionMs: 1000,
+				pollIntervalMs: 10,
+				resultsDir,
+				kill: pidGone,
+				now: () => 2000,
+			});
+			tracker.handleStarted({ id, asyncDir: runDir, agent: "worker" });
+
+			await waitForCondition(() => state.asyncJobs.get(id)?.status === "failed" && fs.existsSync(resultPath));
+
+			assert.equal(JSON.parse(fs.readFileSync(statusPath, "utf-8")).state, "failed");
+			const result = JSON.parse(fs.readFileSync(resultPath, "utf-8"));
+			assert.equal(result.success, false);
+			assert.equal(result.id, id);
+			assert.equal(result.asyncDir, runDir);
+			assert.equal(state.asyncJobs.get(id)?.status, "failed");
+		} finally {
+			tracker?.resetJobs();
+			if (state.poller) clearInterval(state.poller);
+			removeTempDir(runDir);
 			removeTempDir(asyncRoot);
 		}
 	});

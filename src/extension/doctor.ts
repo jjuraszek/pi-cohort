@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { discoverAgentsAll, type AgentSource } from "../agents/agents.ts";
+import type { PiRuntimeIdentity } from "../runs/shared/pi-spawn.ts";
 import { isAsyncAvailable } from "../runs/background/async-execution.ts";
 import { discoverAvailableSkills, type SkillSource } from "../agents/skills.ts";
 import {
@@ -20,12 +21,14 @@ interface DoctorPaths {
 }
 
 interface DoctorDeps {
-	isAsyncAvailable: () => boolean;
+	isAsyncAvailable: (runtime: PiRuntimeIdentity) => boolean;
 	discoverAgentsAll: typeof discoverAgentsAll;
 	discoverAvailableSkills: typeof discoverAvailableSkills;
 }
 
 interface DoctorReportInput {
+	runtime?: PiRuntimeIdentity;
+	runtimeError?: string;
 	cwd: string;
 	config: ExtensionConfig;
 	state: SubagentState;
@@ -189,7 +192,8 @@ export function buildDoctorReport(input: DoctorReportInput): string {
 		"",
 		"Runtime",
 		`- cwd: ${input.cwd}`,
-		lineFromCheck("async support", () => `- async support: ${deps.isAsyncAvailable() ? "available" : "unavailable"}`),
+		...(input.runtimeError ? [`- runtime capture: failed - ${input.runtimeError}`] : input.runtime ? [] : ["- runtime capture: not available"]),
+		lineFromCheck("async support", () => `- async support: ${input.runtime && deps.isAsyncAvailable(input.runtime) ? "available" : "unavailable"}`),
 		...formatSessionLines(input),
 		"",
 		"Filesystem",

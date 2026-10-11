@@ -57,6 +57,26 @@ function stateWithNestedRoute(route: ReturnType<typeof createNestedRoute>): Suba
 }
 
 describe("subagent run id resolver", () => {
+	it("deduplicates full IDs with persistent precedence but rejects distinct cross-root prefixes", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-two-roots-"));
+		try {
+			const roots = [path.join(root, "persistent"), path.join(root, "legacy")];
+			for (const dir of roots) fs.mkdirSync(dir, { recursive: true });
+			fs.mkdirSync(path.join(roots[0], "run-one"));
+			fs.symlinkSync(root, path.join(roots[1], "run-one"));
+			const deps = { asyncDirRoot: roots, resultsDir: path.join(root, "results"), nested: { routes: [] } };
+			const exact = resolveSubagentRunId("run-one", deps);
+			assert.equal(exact?.kind, "async");
+			if (exact?.kind === "async") assert.equal(exact.location.asyncDir, path.join(roots[0], "run-one"));
+			assert.equal(resolveSubagentRunId("run-", deps)?.id, "run-one");
+			fs.mkdirSync(path.join(roots[1], "run-two"));
+			assert.throws(() => resolveSubagentRunId("run-", deps), /Ambiguous/);
+			assert.equal(resolveSubagentRunId("run-two", { ...deps, asyncDirRoot: roots[0] }), undefined);
+			fs.rmSync(path.join(roots[0], "run-one"), { recursive: true });
+			fs.symlinkSync(root, path.join(roots[0], "run-one"));
+			assert.throws(() => resolveSubagentRunId("run-one", deps), /must be inside/);
+		} finally { fs.rmSync(root, { recursive: true, force: true }); }
+	});
 	it("prefers exact foreground, then exact async, then exact nested before prefix matches", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-id-resolver-"));
 		try {
@@ -101,6 +121,7 @@ describe("subagent run id resolver", () => {
 			() => resolveSubagentRunId("shared-nested"),
 			/ambiguous across authorized registries|ambiguous across registries/i,
 		);
+		assert.throws(() => resolveSubagentRunId("shared-"), /Ambiguous subagent run id prefix/);
 		assert.equal(resolveSubagentRunId("shared-nested", { state: stateWithForeground("foreground-only") }), undefined);
 		const resolved = resolveSubagentRunId("shared-nested", { state: stateWithNestedRoute(allowed) });
 		assert.equal(resolved?.kind, "nested");

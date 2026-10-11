@@ -10,7 +10,7 @@ import { readNestedControlRequests, resolveNestedRouteFromEnv, writeNestedContro
 import { SubagentParams } from "./schemas.ts";
 import { loadConfig } from "./config.ts";
 import { deriveForwardedFlags } from "../runs/shared/forward-flags.ts";
-import type { Details, SubagentState } from "../shared/types.ts";
+import { RUN_STATE_ROOT_DIR, type Details, type SubagentState } from "../shared/types.ts";
 import { emptyGrandTotal } from "./grand-total.ts";
 
 function getSubagentSessionRoot(parentSessionFile: string | null): string {
@@ -19,7 +19,7 @@ function getSubagentSessionRoot(parentSessionFile: string | null): string {
 		const sessionsDir = path.dirname(parentSessionFile);
 		return path.join(sessionsDir, baseName);
 	}
-	return fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-session-"));
+	return path.join(RUN_STATE_ROOT_DIR, "sessions");
 }
 
 function expandTilde(p: string): string {

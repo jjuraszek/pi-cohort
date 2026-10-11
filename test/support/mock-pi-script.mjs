@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 
 const queueDir = process.env.MOCK_PI_QUEUE_DIR;
 
@@ -109,14 +111,46 @@ function isJsonMode(args) {
 }
 
 function writeSessionFile(args) {
+	if (args.includes("--no-session")) return;
 	for (let i = 0; i < args.length; i++) {
 		if (args[i] !== "--session") continue;
 		const sessionFile = args[i + 1];
 		if (!sessionFile) return;
 		fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
 		fs.writeFileSync(sessionFile, "", { flag: "a" });
-		return;
+		return sessionFile;
 	}
+	const directoryIndex = args.indexOf("--session-dir");
+	const directory = directoryIndex < 0 ? undefined : args[directoryIndex + 1];
+	if (!directory) return;
+	fs.mkdirSync(directory, { recursive: true });
+	const sessionFile = path.join(directory, `${randomUUID()}.jsonl`);
+	fs.writeFileSync(sessionFile, "", { flag: "wx" });
+	return sessionFile;
+}
+
+function sessionWriter(sessionFile) {
+	if (!sessionFile) return () => {};
+	const content = fs.readFileSync(sessionFile, "utf8");
+	let parentId = null;
+	for (const line of content.split("\n")) {
+		try {
+			const entry = JSON.parse(line);
+			if (entry.type !== "session" && typeof entry.id === "string") parentId = entry.id;
+		} catch {
+			// Existing fixture sentinels are retained even when they are not JSONL.
+		}
+	}
+	if (!content) {
+		fs.appendFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: randomUUID(), timestamp: new Date().toISOString(), cwd: process.cwd() })}\n`);
+	} else if (!content.endsWith("\n")) {
+		fs.appendFileSync(sessionFile, "\n");
+	}
+	return (message) => {
+		const id = randomUUID();
+		fs.appendFileSync(sessionFile, `${JSON.stringify({ type: "message", id, parentId, timestamp: new Date().toISOString(), message })}\n`);
+		parentId = id;
+	};
 }
 
 async function writeStdout(text) {
@@ -142,7 +176,7 @@ function extractPlainText(entry) {
 	return "";
 }
 
-async function writeResponseEntries(entries, jsonMode, args) {
+async function writeResponseEntries(entries, jsonMode, args, persistMessage) {
 	let sawProviderError = false;
 	for (const entry of entries) {
 		if (entry?.type === "message_end") {
@@ -153,6 +187,7 @@ async function writeResponseEntries(entries, jsonMode, args) {
 				textPart.text = withAcceptanceReport(textPart.text, args);
 			}
 		}
+		if (entry?.type === "message_end" && entry.message?.role === "assistant") persistMessage(entry.message);
 		if (jsonMode) {
 			await writeJsonlLine(entry);
 			continue;
@@ -188,7 +223,7 @@ async function main() {
 	const args = process.argv.slice(2);
 	const jsonMode = isJsonMode(args);
 	const response = claimNextResponse(queueDir) ?? defaultResponse();
-	writeSessionFile(args);
+	const persistMessage = sessionWriter(writeSessionFile(args));
 	fs.writeFileSync(
 		path.join(queueDir, `call-${Date.now()}-${process.pid}-${Math.random().toString(16).slice(2)}.json`),
 		JSON.stringify({ args }),
@@ -199,30 +234,38 @@ async function main() {
 		await new Promise((resolve) => setTimeout(resolve, response.delay));
 	}
 
+	if (response.echoRuntime) {
+		const observation = {
+			type: "mock_runtime",
+			nodeExecPath: fs.realpathSync.native(process.execPath),
+			piPackageRoot: fs.realpathSync.native(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")),
+		};
+		if (jsonMode) await writeJsonlLine(observation);
+		else await writeStdout(`${JSON.stringify(observation)}\n`);
+	}
+
 	if (Array.isArray(response.steps) && response.steps.length > 0) {
 		for (const step of response.steps) {
 			if (typeof step?.delay === "number" && step.delay > 0) {
 				await new Promise((resolve) => setTimeout(resolve, step.delay));
 				}
 				if (Array.isArray(step?.jsonl) && step.jsonl.length > 0) {
-						await writeResponseEntries(step.jsonl, jsonMode, args);
+						await writeResponseEntries(step.jsonl, jsonMode, args, persistMessage);
 				}
 				if (typeof step?.stderr === "string" && step.stderr.length > 0) {
 					process.stderr.write(step.stderr);
 				}
 			}
 		} else if (Array.isArray(response.jsonl) && response.jsonl.length > 0) {
-				await writeResponseEntries(response.jsonl, jsonMode, args);
+				await writeResponseEntries(response.jsonl, jsonMode, args, persistMessage);
 		} else if (Array.isArray(response.echoEnv) && response.echoEnv.length > 0) {
 			const envSnapshot = Object.fromEntries(response.echoEnv.map((key) => [key, process.env[key] ?? null]));
-				const output = withAcceptanceReport(JSON.stringify(envSnapshot), args);
-				if (jsonMode) await writeJsonlLine(defaultAssistantMessage(output));
-				else await writeStdout(`${output}\n`);
-			} else if (typeof response.output === "string") {
-				const output = withAcceptanceReport(response.output, args);
-				if (jsonMode) await writeJsonlLine(defaultAssistantMessage(output));
-				else await writeStdout(`${output}\n`);
-			}
+			await writeResponseEntries([defaultAssistantMessage(JSON.stringify(envSnapshot))], jsonMode, args, persistMessage);
+		} else if (typeof response.output === "string") {
+			const entry = defaultAssistantMessage(response.output);
+			await writeResponseEntries([entry], jsonMode, args, persistMessage);
+			if (!jsonMode && entry.message.content[0].text === "") await writeStdout("\n");
+		}
 		await maybeWriteStructuredOutput(response, jsonMode);
 
 	if (typeof response.stderr === "string" && response.stderr.length > 0) {

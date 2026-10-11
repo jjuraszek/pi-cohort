@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { describe, it } from "node:test";
 import { createResultWatcher } from "../../src/runs/background/result-watcher.ts";
 import { createNestedRoute, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
-import type { SubagentState } from "../../src/shared/types.ts";
+import { ASYNC_DIR, type SubagentState } from "../../src/shared/types.ts";
 
 function createState(): SubagentState {
 	return {
@@ -31,6 +31,7 @@ function createState(): SubagentState {
 describe("result watcher", () => {
 	it("processes deferred session-scoped results after session identity is restored", async () => {
 		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-session-"));
+		const durableDir = path.join(ASYNC_DIR, "session-run");
 		try {
 			const emitted: Array<{ event: string; data: unknown }> = [];
 			const pi = {
@@ -42,9 +43,14 @@ describe("result watcher", () => {
 				},
 			};
 			const state = createState();
+			fs.mkdirSync(durableDir, { recursive: true });
+			const statusPath = path.join(durableDir, "status.json");
+			const durableStatus = JSON.stringify({ runId: "session-run", runtime: { nodeExecPath: "/origin/node", piEntryPath: "/origin/pi/cli.js", piPackageRoot: "/origin/pi" } });
+			fs.writeFileSync(statusPath, durableStatus);
 			const resultPath = path.join(resultsDir, "session-run.json");
 			fs.writeFileSync(resultPath, JSON.stringify({
 				id: "session-run",
+				asyncDir: durableDir,
 				sessionId: "session-current",
 				success: true,
 				summary: "done",
@@ -66,7 +72,9 @@ describe("result watcher", () => {
 
 			assert.equal(emitted.filter((entry) => entry.event === "subagent:async-complete").length, 1);
 			assert.equal(fs.existsSync(resultPath), false);
+			assert.equal(fs.readFileSync(statusPath, "utf-8"), durableStatus);
 		} finally {
+			fs.rmSync(durableDir, { recursive: true, force: true });
 			fs.rmSync(resultsDir, { recursive: true, force: true });
 		}
 	});

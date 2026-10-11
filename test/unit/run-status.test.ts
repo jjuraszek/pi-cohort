@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { describe, it } from "node:test";
 import { inspectSubagentStatus } from "../../src/runs/background/run-status.ts";
 import { createNestedRoute, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
-import { TEMP_ROOT_DIR } from "../../src/shared/types.ts";
+import { LEGACY_ASYNC_DIR, TEMP_ROOT_DIR } from "../../src/shared/types.ts";
 
 function errno(code: string): NodeJS.ErrnoException {
 	const error = new Error(code) as NodeJS.ErrnoException;
@@ -19,6 +19,69 @@ function textContent(result: ReturnType<typeof inspectSubagentStatus>): string {
 }
 
 describe("async run status inspection", () => {
+	for (const operation of ["nested exact", "root exact", "list"] as const) it(`keeps legacy ${operation} projection current without writes or process probes`, () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-legacy-inspect-"));
+		const id = path.basename(root);
+		const childId = `${id}-child`;
+		const created = createNestedRoute(id);
+		const routeRoot = path.join(TEMP_ROOT_DIR, "nested-subagent-events", path.basename(path.dirname(created.eventSink)));
+		fs.mkdirSync(path.dirname(routeRoot), { recursive: true });
+		fs.renameSync(path.dirname(created.eventSink), routeRoot);
+		const route = { ...created, eventSink: path.join(routeRoot, "events"), controlInbox: path.join(routeRoot, "controls") };
+		const runDir = path.join(LEGACY_ASYNC_DIR, id);
+		const childDir = path.join(TEMP_ROOT_DIR, "nested-subagent-runs", id, childId);
+		const snapshot = () => Object.fromEntries([runDir, childDir, routeRoot].flatMap((dir) => fs.readdirSync(dir, { recursive: true }).map(String).filter((file) => fs.statSync(path.join(dir, file)).isFile()).map((file) => [path.join(dir, file), fs.readFileSync(path.join(dir, file), "utf-8")])));
+		try {
+			for (const [dir, runId] of [[runDir, id], [childDir, childId]]) {
+				fs.mkdirSync(dir, { recursive: true });
+				fs.writeFileSync(path.join(dir, "status.json"), JSON.stringify({ runId, state: "running", mode: "single", pid: 54321, startedAt: 100, lastUpdate: 100, steps: [] }));
+			}
+			fs.writeFileSync(path.join(routeRoot, "registry.json"), JSON.stringify({ rootRunId: id, updatedAt: 0, children: [], processedEvents: [] }));
+			let probes = 0;
+			const deps = { resultsDir: path.join(root, "results"), kill: () => { probes++; throw errno("ESRCH"); }, now: () => 500 };
+			for (const [ts, tool] of [[150, "read"], [200, "grep"]] as const) {
+				writeNestedEvent(route, { type: "subagent.nested.updated", ts, parentRunId: id, child: { id: childId, parentRunId: id, depth: 1, path: [{ runId: id }], state: "running", asyncDir: childDir, currentTool: tool } });
+				const before = snapshot();
+				const result = inspectSubagentStatus(operation === "list" ? {} : { id: operation === "nested exact" ? childId : id }, deps);
+				assert.equal(result.isError, undefined);
+				assert.match(textContent(result), new RegExp(operation === "nested exact" ? "State: running" : `tool ${tool}`));
+				assert.deepEqual(snapshot(), before);
+				assert.equal(probes, 0);
+				assert.equal(fs.existsSync(deps.resultsDir), false);
+			}
+		} finally {
+			for (const dir of [root, runDir, path.dirname(childDir), routeRoot]) fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+	for (const location of ["custom terminal", "default legacy running"] as const) it(`inspects ${location} history without process repair or durable writes`, () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-status-readonly-"));
+		const id = path.basename(root);
+		const legacy = location === "default legacy running";
+		const runDir = path.join(legacy ? LEGACY_ASYNC_DIR : path.join(root, "runs"), id);
+		try {
+			fs.mkdirSync(runDir, { recursive: true });
+			const statusPath = path.join(runDir, "status.json");
+			const state = legacy ? "running" : "complete";
+			const bytes = JSON.stringify({ runId: id, state, mode: "single", pid: 12345, startedAt: 100, lastUpdate: 100, runtime: { nodeExecPath: "/origin/node", piEntryPath: "/origin/pi/cli.js", piPackageRoot: "/origin/pi" }, steps: [{ agent: "worker", status: state }] }, null, 2);
+			fs.writeFileSync(statusPath, bytes);
+			let probes = 0;
+			const resultsDir = path.join(root, "results");
+			const result = inspectSubagentStatus({ id }, {
+				...(legacy ? {} : { asyncDirRoot: path.join(root, "runs") }),
+				resultsDir,
+				kill: () => { probes++; throw errno("ESRCH"); },
+				now: () => 500,
+			});
+			assert.equal(result.isError, undefined);
+			assert.match(textContent(result), new RegExp(`State: ${state}`));
+			assert.equal(probes, 0);
+			assert.equal(fs.readFileSync(statusPath, "utf-8"), bytes);
+			assert.equal(fs.existsSync(path.join(resultsDir, `${id}.json`)), false);
+		} finally {
+			if (legacy) fs.rmSync(runDir, { recursive: true, force: true });
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
 	it("repairs stale running status and reports diagnosis plus result path", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-run-status-stale-"));
 		try {

@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { registerExecutionBackend } from "../../src/execution-backend/registry.ts";
 import type { ExecutionBackend, ExecutionSurfaceRequest } from "../../src/execution-backend/types.ts";
 import { runSync } from "../../src/runs/foreground/execution.ts";
+import { createMockPi } from "../support/mock-pi.ts";
 import { createTempDir, makeAgent, removeTempDir } from "../support/helpers.ts";
 
 const unixOnly = { skip: process.platform === "win32" };
@@ -58,6 +59,8 @@ test("runSync drives one real child host surface through a registered backend", 
 	const fixturePath = path.join(binDir, "pi");
 	fs.mkdirSync(binDir);
 	fs.writeFileSync(fixturePath, PI_FIXTURE, { mode: 0o755 });
+	const mockPi = createMockPi();
+	fs.writeFileSync(mockPi.runtime.piEntryPath, `import { createRequire } from "node:module"; const require = createRequire(import.meta.url);\n${PI_FIXTURE.replace(/^#![^\n]*\n/, "")}`);
 	const requests: ExecutionSurfaceRequest[] = [];
 	const hosts: ReturnType<typeof spawn>[] = [];
 	let releases = 0;
@@ -90,6 +93,7 @@ test("runSync drives one real child host surface through a registered backend", 
 	try {
 		const sessionFile = path.join(tempDir, "session.jsonl");
 		const output = await runSync(tempDir, [makeAgent("worker", { completionGuard: false })], "worker", "Task", {
+			runtime: mockPi.runtime,
 			runId: "external-integration",
 			executionBackend: backend.name,
 			sessionFile,

@@ -41,7 +41,8 @@ import {
 } from "../../shared/utils.ts";
 import { buildSkillInjection, resolveSkillsWithFallback } from "../../agents/skills.ts";
 import { blockedLine } from "../shared/completion-guard.ts";
-import { getPiSpawnCommand } from "../shared/pi-spawn.ts";
+import { getPiSpawnCommand, PiRuntimeLaunchError } from "../shared/pi-spawn.ts";
+import { PINNED_AGENT_DIR_OVERRIDE } from "../../shared/agent-dir.ts";
 import { createJsonlWriter } from "../../shared/jsonl-writer.ts";
 import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
 import { buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
@@ -170,11 +171,11 @@ async function runSingleAttempt(
 	let interruptedByControl = false;
 	let pendingControlEvents: ControlEvent[] = init.pendingControlEvents;
 	const controlConfig = init.controlConfig;
-	const spawnEnv = { ...process.env, ...sharedEnv, ...getSubagentDepthEnv(options.maxSubagentDepth) };
+	const spawnEnv = { ...process.env, ...sharedEnv, ...getSubagentDepthEnv(options.maxSubagentDepth), ...(PINNED_AGENT_DIR_OVERRIDE ? { PI_CODING_AGENT_DIR: PINNED_AGENT_DIR_OVERRIDE } : {}) };
 	let observedMutationAttempt = false;
 
-	const exitCode = await new Promise<number>((resolve) => {
-		const spawnSpec = getPiSpawnCommand(args);
+	const exitCode = await new Promise<number>((resolve, reject) => {
+		const spawnSpec = getPiSpawnCommand(args, options.runtime);
 		const proc = spawn(spawnSpec.command, spawnSpec.args, {
 			cwd: options.cwd ?? runtimeCwd,
 			env: spawnEnv,
@@ -553,6 +554,7 @@ async function runSingleAttempt(
 			if (!result.error) {
 				result.error = error instanceof Error ? error.message : String(error);
 			}
+			reject(new PiRuntimeLaunchError(`${options.runtime.nodeExecPath} ${options.runtime.piEntryPath}: ${error.message}`));
 			finish(1);
 		});
 
@@ -591,7 +593,7 @@ async function runSingleAttempt(
 				removeInterruptListener = () => options.interruptSignal?.removeEventListener("abort", interrupt);
 			}
 		}
-	});
+	}).finally(() => cleanupTempDir(tempDir));
 	result.exitCode = exitCode;
 	return finalizeSingleAttempt(result, progress, {
 		agent,
@@ -638,6 +640,12 @@ export async function runSync(
 			outputMode: options.outputMode,
 			error: outputModeValidationError,
 		};
+	}
+
+	try {
+		getPiSpawnCommand([], options.runtime);
+	} catch (error) {
+		return failedResult(agentName, task, error instanceof Error ? error.message : String(error));
 	}
 
 	const childCwd = options.cwd ?? runtimeCwd;
@@ -717,6 +725,7 @@ export async function runSync(
 		try {
 			externalOwner = await (dependencies.createExternalOwner ?? createExternalExecution)({
 				backend: backendSelection.selection.backend,
+				runtime: options.runtime,
 				runId: options.runId,
 				childId,
 				cwd: childCwd,
@@ -724,8 +733,8 @@ export async function runSync(
 				signal: options.signal ?? NEVER_ABORTED_SIGNAL,
 			});
 			await externalOwner.ready;
-		} catch {
-			lastResult = failedResult(agentName, task, safeExternalFailure("startup"));
+		} catch (error) {
+			lastResult = failedResult(agentName, task, error instanceof PiRuntimeLaunchError ? error.message : safeExternalFailure("startup"));
 		}
 	}
 
@@ -746,6 +755,7 @@ export async function runSync(
 			originalTask: task,
 		};
 		let result: SingleResult;
+		let runtimeFailure = false;
 		if (externalOwner) {
 			try {
 				result = await (dependencies.runExternalAttempt ?? runExternalSingleAttempt)({
@@ -758,13 +768,20 @@ export async function runSync(
 					options,
 					shared,
 				});
-			} catch {
-				result = failedResult(agentName, task, safeExternalFailure("attempt"));
+			} catch (error) {
+				runtimeFailure = error instanceof PiRuntimeLaunchError;
+				result = failedResult(agentName, task, runtimeFailure ? (error as Error).message : safeExternalFailure("attempt"));
 			}
 		} else {
-			result = await (dependencies.runNativeAttempt ?? runSingleAttempt)(
-				runtimeCwd, effectiveAgent, taskWithAcceptance, candidate, options, shared,
-			);
+			try {
+				result = await (dependencies.runNativeAttempt ?? runSingleAttempt)(
+					runtimeCwd, effectiveAgent, taskWithAcceptance, candidate, options, shared,
+				);
+			} catch (error) {
+				if (!(error instanceof PiRuntimeLaunchError)) throw error;
+				runtimeFailure = true;
+				result = failedResult(agentName, task, error.message);
+			}
 		}
 		lastResult = result;
 		sumUsage(aggregateUsage, result.usage);
@@ -782,7 +799,7 @@ export async function runSync(
 		if (attemptSucceeded) {
 			break;
 		}
-		if (blockedLine(result.error ?? "") || !isRetryableModelFailure(result.error) || i === modelsToTry.length - 1) {
+		if (runtimeFailure || blockedLine(result.error ?? "") || !isRetryableModelFailure(result.error) || i === modelsToTry.length - 1) {
 			break;
 		}
 		attemptNotes.push(formatModelAttemptNote(attempt, modelsToTry[i + 1]));

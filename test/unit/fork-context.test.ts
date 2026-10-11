@@ -113,11 +113,13 @@ describe("createForkContextResolver", () => {
 				getSessionFile: () => parentSessionFile,
 				getLeafId: () => leafId,
 				getSessionDir: () => sessionDir,
-			}, "fork");
+			}, "fork", { sessionDirForIndex: (index) => path.join(tempDir, `run-${index}`) });
 
 			const childSessionFile = resolver.sessionFileForIndex(0);
 			assert.ok(childSessionFile);
 			assert.notEqual(childSessionFile, parentSessionFile);
+			assert.equal(path.dirname(childSessionFile), fs.realpathSync.native(path.join(tempDir, "run-0")));
+			assert.equal(resolver.sessionFileForIndex(0), childSessionFile);
 			assert.equal(fs.existsSync(childSessionFile), true);
 		} finally {
 			fs.rmSync(tempDir, { recursive: true, force: true });

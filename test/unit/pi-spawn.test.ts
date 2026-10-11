@@ -2,174 +2,86 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { describe, it } from "node:test";
-import { getPiSpawnCommand, resolveWindowsPiCliScript, type PiSpawnDeps } from "../../src/runs/shared/pi-spawn.ts";
+import { it } from "node:test";
+import * as spawn from "../../src/runs/shared/pi-spawn.ts";
 
-function makeDeps(input: {
-	platform?: NodeJS.Platform;
-	execPath?: string;
-	argv1?: string;
-	existing?: string[];
-	packageJsonPath?: string;
-	packageJsonContent?: string;
-	packageEntry?: string;
-}): PiSpawnDeps {
-	const existing = new Set(input.existing ?? []);
-	const packageJsonPath = input.packageJsonPath;
-	const packageJsonContent = input.packageJsonContent;
-	return {
-		platform: input.platform,
-		execPath: input.execPath,
-		argv1: input.argv1,
-		existsSync: (filePath) => existing.has(filePath),
-		readFileSync: (_filePath, _encoding) => {
-			if (!packageJsonPath || !packageJsonContent) {
-				throw new Error("package json not configured");
-			}
-			return packageJsonContent;
-		},
-		resolvePackageJson: packageJsonPath ? () => packageJsonPath : undefined,
-		resolvePackageEntry: input.packageEntry ? () => input.packageEntry! : undefined,
-	};
+function fixture(t: { after: (fn: () => void) => void }, bin: unknown = { pi: "dist/cli/index.js" }, name = spawn.PI_CODING_AGENT_PACKAGE) {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi runtime ü spaces [literal]+-"));
+	t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+	const entry = path.join(root, "dist", "cli", "index.js");
+	const bundle = path.join(root, "dist", "bundle", "cli.js");
+	for (const file of [entry, bundle]) {
+		fs.mkdirSync(path.dirname(file), { recursive: true });
+		fs.writeFileSync(file, "");
+	}
+	fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name, bin }));
+	return { root: fs.realpathSync.native(root), entry: fs.realpathSync.native(entry), bundle: fs.realpathSync.native(bundle) };
 }
 
-describe("getPiSpawnCommand", () => {
-	it("uses plain pi on non-Windows even when argv1 is a runnable JS file", () => {
-		const argv1 = "/tmp/pi-entry.mjs";
-		const deps = makeDeps({
-			platform: "darwin",
-			execPath: "/usr/local/bin/node",
-			argv1,
-			existing: [argv1],
-		});
-		const args = ["--mode", "json", "Task: check output"];
-		const result = getPiSpawnCommand(args, deps);
-		assert.deepEqual(result, { command: "pi", args });
-	});
-
-	it("uses plain pi on non-Windows even when the CLI script can be resolved from package bin", () => {
-		const packageJsonPath = "/opt/pi/package.json";
-		const cliPath = path.resolve(path.dirname(packageJsonPath), "dist/cli/index.js");
-		const deps = makeDeps({
-			platform: "darwin",
-			execPath: "/usr/local/bin/node",
-			argv1: "/opt/pi/subagent-runner.ts",
-			packageJsonPath,
-			packageJsonContent: JSON.stringify({ bin: { pi: "dist/cli/index.js" } }),
-			existing: [packageJsonPath, cliPath],
-		});
-		const args = ["-p", "Task: hello"];
-		const result = getPiSpawnCommand(args, deps);
-		assert.deepEqual(result, { command: "pi", args });
-	});
-
-	it("falls back to plain pi command on non-Windows when CLI script cannot be resolved", () => {
-		const args = ["--mode", "json", "Task: check output"];
-		const result = getPiSpawnCommand(args, { platform: "darwin" });
-		assert.deepEqual(result, { command: "pi", args });
-	});
-
-	it("uses node + argv1 script on Windows when argv1 is runnable JS", () => {
-		const argv1 = "/tmp/pi-entry.mjs";
-		const deps = makeDeps({
-			platform: "win32",
-			execPath: "/usr/local/bin/node",
-			argv1,
-			existing: [argv1],
-		});
-		const args = ["--mode", "json", 'Task: Read C:/dev/file.md and review "quotes" & pipes | too'];
-		const result = getPiSpawnCommand(args, deps);
-		assert.equal(result.command, "/usr/local/bin/node");
-		assert.equal(result.args[0], argv1);
-		assert.equal(result.args[3], args[2]);
-	});
-
-	it("resolves CLI script from package bin when argv1 is not runnable JS", () => {
-		const packageJsonPath = "/opt/pi/package.json";
-		// Compute expected path the same way the production code does:
-		// path.resolve(path.dirname(packageJsonPath), binPath) — which on Windows
-		// prepends the current drive letter to POSIX absolute paths.
-		const cliPath = path.resolve(path.dirname(packageJsonPath), "dist/cli/index.js");
-		const deps = makeDeps({
-			platform: "win32",
-			execPath: "/usr/local/bin/node",
-			argv1: "/opt/pi/subagent-runner.ts",
-			packageJsonPath,
-			packageJsonContent: JSON.stringify({ bin: { pi: "dist/cli/index.js" } }),
-			existing: [packageJsonPath, cliPath],
-		});
-		const result = getPiSpawnCommand(["-p", "Task: hello"], deps);
-		assert.equal(result.command, "/usr/local/bin/node");
-		assert.equal(result.args[0], cliPath);
-	});
-
-	it("falls back to pi when Windows CLI script cannot be resolved", () => {
-		const deps = makeDeps({
-			platform: "win32",
-			argv1: "/opt/pi/subagent-runner.ts",
-			existing: [],
-		});
-		const args = ["-p", "Task: hello"];
-		const result = getPiSpawnCommand(args, deps);
-		assert.deepEqual(result, { command: "pi", args });
-	});
-
-	it("walks from package main entry to resolve package bin", () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-spawn-package-root-"));
-		try {
-			const packageRoot = path.join(tempDir, "node_modules", "@earendil-works", "pi-coding-agent");
-			const entry = path.join(packageRoot, "dist", "index.js");
-			const cliPath = path.join(packageRoot, "dist", "cli", "index.js");
-			fs.mkdirSync(path.dirname(entry), { recursive: true });
-			fs.mkdirSync(path.dirname(cliPath), { recursive: true });
-			fs.writeFileSync(entry, "export {};\n");
-			fs.writeFileSync(cliPath, "#!/usr/bin/env node\n");
-			fs.writeFileSync(path.join(packageRoot, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", bin: { pi: "dist/cli/index.js" } }));
-			const result = getPiSpawnCommand(["-p", "Task: hello"], {
-				platform: "win32",
-				execPath: "/usr/local/bin/node",
-				argv1: "/opt/pi/subagent-runner.ts",
-				resolvePackageEntry: () => entry,
-			});
-			assert.equal(result.command, "/usr/local/bin/node");
-			assert.equal(result.args[0], cliPath);
-		} finally {
-			fs.rmSync(tempDir, { recursive: true, force: true });
-		}
-	});
-
+it("launches the explicit runtime without PATH and preserves arguments", (t) => {
+	const f = fixture(t);
+	const runtime = { nodeExecPath: fs.realpathSync.native(process.execPath), piEntryPath: f.entry, piPackageRoot: f.root };
+	const args = ["--mode", "json", 'read "quotes" & pipes | ü'];
+	assert.deepEqual(spawn.getPiSpawnCommand(args, runtime), { command: runtime.nodeExecPath, args: [f.entry, ...args] });
 });
 
-describe("getPiSpawnCommand with piPackageRoot", () => {
-	it("resolves CLI script via piPackageRoot when argv1 is not runnable", () => {
-		const packageJsonPath = "/opt/pi/package.json";
-		const cliPath = path.resolve(path.dirname(packageJsonPath), "dist/cli/index.js");
-		const deps = makeDeps({
-			platform: "win32",
-			execPath: "/usr/local/bin/node",
-			argv1: "/opt/pi/subagent-runner.ts",
-			packageJsonPath,
-			packageJsonContent: JSON.stringify({ bin: { pi: "dist/cli/index.js" } }),
-			existing: [packageJsonPath, cliPath],
-		});
-		deps.piPackageRoot = "/opt/pi";
-		const result = getPiSpawnCommand(["-p", "Task: hello"], deps);
-		assert.equal(result.command, "/usr/local/bin/node");
-		assert.equal(result.args[0], cliPath);
+for (const [label, bin, layout] of [
+	["string bundle", "dist/bundle/cli.js", "bundle"],
+	["object pi", { other: "dist/bundle/cli.js", pi: "dist/cli/index.js" }, "entry"],
+] as const) {
+	it(`captures canonical symlink identity from ${label} metadata`, (t) => {
+		const f = fixture(t, bin);
+		const link = path.join(f.root, "linked.js");
+		fs.symlinkSync(f[layout], link);
+		const runtime = spawn.capturePiRuntime({ execPath: process.execPath, argv1: link });
+		assert.deepEqual(runtime, { nodeExecPath: fs.realpathSync.native(process.execPath), piEntryPath: f[layout], piPackageRoot: f.root });
+		assert.deepEqual(spawn.parsePiRuntime(JSON.parse(JSON.stringify(runtime)), "saved runtime"), runtime);
 	});
+}
+
+for (const [label, bin, name, entryName] of [
+	["wrong package", { pi: "dist/cli/index.js" }, "other-package", "entry"],
+	["arbitrary JavaScript", { pi: "dist/bundle/cli.js" }, spawn.PI_CODING_AGENT_PACKAGE, "entry"],
+	["alternate bin only", { other: "dist/cli/index.js" }, spawn.PI_CODING_AGENT_PACKAGE, "entry"],
+] as const) {
+	it(`rejects ${label}`, (t) => {
+		const f = fixture(t, bin, name);
+		assert.throws(() => spawn.capturePiRuntime({ argv1: f[entryName] }), spawn.PiRuntimeLaunchError);
+	});
+}
+
+for (const field of ["nodeExecPath", "piEntryPath"] as const) {
+	it(`rejects missing ${field} during capture and launch`, (t) => {
+		const f = fixture(t);
+		const missing = path.join(f.root, "missing");
+		assert.throws(() => spawn.capturePiRuntime({ execPath: field === "nodeExecPath" ? missing : process.execPath, argv1: field === "piEntryPath" ? missing : f.entry }), (error) => error instanceof spawn.PiRuntimeLaunchError && error.message.includes(missing));
+		const runtime = spawn.capturePiRuntime({ argv1: f.entry });
+		assert.throws(() => spawn.getPiSpawnCommand([], { ...runtime, [field]: missing }), (error) => error instanceof spawn.PiRuntimeLaunchError && error.message.includes(missing));
+	});
+}
+
+it("rejects a captured entry renamed after capture", (t) => {
+	const f = fixture(t);
+	const runtime = spawn.capturePiRuntime({ argv1: f.entry });
+	fs.renameSync(f.entry, `${f.entry}.old`);
+	assert.throws(() => spawn.getPiSpawnCommand([], runtime), (error) => error instanceof spawn.PiRuntimeLaunchError && error.message.includes(f.entry));
 });
 
-describe("resolveWindowsPiCliScript", () => {
-	it("supports package bin as string", () => {
-		const packageJsonPath = "/opt/pi/package.json";
-		const cliPath = path.resolve(path.dirname(packageJsonPath), "dist/cli/index.mjs");
-		const deps = makeDeps({
-			platform: "win32",
-			argv1: "/opt/pi/subagent-runner.ts",
-			packageJsonPath,
-			packageJsonContent: JSON.stringify({ bin: "dist/cli/index.mjs" }),
-			existing: [packageJsonPath, cliPath],
-		});
-		assert.equal(resolveWindowsPiCliScript(deps), cliPath);
-	});
+it("rechecks package ownership before launch", (t) => {
+	const f = fixture(t);
+	const runtime = spawn.capturePiRuntime({ argv1: f.entry });
+	fs.writeFileSync(path.join(f.root, "package.json"), JSON.stringify({ name: "other-package", bin: "dist/cli/index.js" }));
+	assert.throws(() => spawn.getPiSpawnCommand([], runtime), spawn.PiRuntimeLaunchError);
+});
+
+it("parses exact stored strings and rejects malformed serialized fields", () => {
+	const runtime = { nodeExecPath: path.resolve("Node ü"), piEntryPath: path.join(path.resolve("Pi Space"), "CLI.js"), piPackageRoot: path.resolve("Package Ü") };
+	assert.deepEqual(spawn.parsePiRuntime(runtime, "saved runtime"), runtime);
+	const unnormalized = { ...runtime, piEntryPath: `${path.resolve("Pi Space")}${path.sep}..${path.sep}CLI.js` };
+	assert.deepEqual(spawn.parsePiRuntime(unnormalized, "saved runtime"), unnormalized);
+	const invalid: unknown[] = [null, [], {}, { nodeExecPath: runtime.nodeExecPath }];
+	for (const field of Object.keys(runtime)) {
+		for (const value of ["", "relative/path", null, 42]) invalid.push({ ...runtime, [field]: value });
+	}
+	for (const value of invalid) assert.throws(() => spawn.parsePiRuntime(value, "saved runtime"), { name: "PiRuntimeLaunchError", message: /saved runtime/ });
 });

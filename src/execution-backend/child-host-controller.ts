@@ -7,18 +7,20 @@ import { ChildHostFrameDecoder, encodeChildHostMessage, type ChildHostMessage } 
 import { PI_COHORT_CHILD_HOST_CONFIG } from "./child-host-runtime.ts";
 import { ensureJitiCliPath } from "../runs/shared/jiti-cli.ts";
 import type { ExecutionBackend, ExecutionBackendLease } from "./types.ts";
+import { getPiSpawnCommand, PiRuntimeLaunchError, type PiRuntimeIdentity } from "../runs/shared/pi-spawn.ts";
 
 export interface ChildHostAttempt { readonly attemptId: string; readonly command: string; readonly args: readonly string[]; readonly cwd: string; readonly environment: Readonly<Record<string, string>>; }
 export interface ChildHostExit { readonly status: number | null; readonly signal: string | null; }
 export interface ChildHostController { readonly lease: ExecutionBackendLease; readonly ready: Promise<void>; startAttempt(attempt: ChildHostAttempt): Promise<ChildHostExit>; shutdown(): Promise<void>; releaseObserver(): Promise<void>; }
-export interface ChildHostControllerOptions { readonly backend: ExecutionBackend; readonly runId: string; readonly childId: string; readonly cwd: string; readonly title?: string; readonly signal: AbortSignal; }
-export interface ChildHostControllerDependencies { readonly fs?: typeof fs; readonly ensureJiti?: () => string | undefined; readonly childHostCommand?: () => { command: string; args: readonly string[] }; readonly platform?: NodeJS.Platform; readonly createServer?: typeof net.createServer; }
+export interface ChildHostControllerOptions { readonly runtime: PiRuntimeIdentity; readonly backend: ExecutionBackend; readonly runId: string; readonly childId: string; readonly cwd: string; readonly title?: string; readonly signal: AbortSignal; }
+export interface ChildHostControllerDependencies { readonly fs?: typeof fs; readonly ensureJiti?: (root: string) => string | undefined; readonly childHostCommand?: () => { command: string; args: readonly string[] }; readonly platform?: NodeJS.Platform; readonly createServer?: typeof net.createServer; }
 
 const HOST_ENVIRONMENT_KEYS = ["PATH", "HOME", "TMPDIR", "SystemRoot"] as const;
-function childHostCommand(ensureJiti: () => string | undefined): { command: string; args: readonly string[] } {
-	const jiti = ensureJiti();
-	if (!jiti) throw new Error("upstream jiti for TypeScript execution could not be found; ensure package dependencies are installed");
-	return { command: process.execPath, args: [jiti, path.resolve(path.dirname(fileURLToPath(import.meta.url)), "child-host-runtime.ts")] };
+function childHostCommand(runtime: PiRuntimeIdentity, ensureJiti: (root: string) => string | undefined): { command: string; args: readonly string[] } {
+	getPiSpawnCommand([], runtime);
+	const jiti = ensureJiti(runtime.piPackageRoot);
+	if (!jiti) throw new PiRuntimeLaunchError(`jiti for selected Pi installation ${runtime.piPackageRoot} could not be found`);
+	return { command: runtime.nodeExecPath, args: [jiti, path.resolve(path.dirname(fileURLToPath(import.meta.url)), "child-host-runtime.ts")] };
 }
 function disconnected(phase: string): Error { return new Error(`child host disconnected ${phase}`); }
 function aborted(): Error { return new Error("child host launch aborted"); }
@@ -90,7 +92,7 @@ export async function createChildHostController(options: ChildHostControllerOpti
 					}
 					if (message.kind === "attempt_started" && active?.attemptId === message.attemptId && !active.started) { active.started = true; continue; }
 					if (message.kind === "attempt_spawn_error" && active?.attemptId === message.attemptId) {
-						const pending = active; active = undefined; pending.reject(new Error("child host attempt spawn error")); continue;
+						const pending = active; active = undefined; pending.reject(new PiRuntimeLaunchError(`child host attempt spawn error for ${options.runtime.nodeExecPath} ${options.runtime.piEntryPath}`)); continue;
 					}
 					if (message.kind === "attempt_exited" && active?.attemptId === message.attemptId && active.started) {
 						const pending = active; active = undefined; pending.resolve({ status: message.status, signal: message.signal }); continue;
@@ -115,9 +117,9 @@ export async function createChildHostController(options: ChildHostControllerOpti
 		await new Promise<void>((resolve, reject) => server!.listen(socketPath!, () => resolve()).once("error", reject));
 		fileSystem.chmodSync(socketPath, 0o600);
 		if (options.signal.aborted) throw aborted();
-		const host = dependencies.childHostCommand?.() ?? childHostCommand(dependencies.ensureJiti ?? ensureJitiCliPath);
 		const environment: Record<string, string> = { [PI_COHORT_CHILD_HOST_CONFIG]: configPath };
 		for (const key of HOST_ENVIRONMENT_KEYS) if (process.env[key]) environment[key] = process.env[key]!;
+		const host = dependencies.childHostCommand?.() ?? childHostCommand(options.runtime, dependencies.ensureJiti ?? ensureJitiCliPath);
 		lease = await options.backend.launch({
 			command: host.command,
 			args: host.args,

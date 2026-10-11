@@ -42,6 +42,7 @@ const runSync = execution?.runSync;
 describe("foreground in-flight turn control", { skip: !available ? "pi packages not available" : undefined }, () => {
 	let tempDir: string;
 	let mockPi: MockPi;
+	const runSync = (cwd, agents, agent, task, options) => execution!.runSync(cwd, agents, agent, task, { ...options, runtime: mockPi.runtime });
 
 	before(() => {
 		mockPi = createMockPi();

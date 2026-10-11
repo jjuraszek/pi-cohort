@@ -1,8 +1,19 @@
 import assert from "node:assert/strict";
 import * as path from "node:path";
-import { describe, it } from "node:test";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import childProcess, * as childProcessNamespace from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+import { runSingleStep } from "../../src/runs/background/subagent-runner.ts";
+import { PiRuntimeLaunchError } from "../../src/runs/shared/pi-spawn.ts";
+import { after, describe, it } from "node:test";
 import type { ExternalAttemptRequest, ExternalAttemptResult, ExternalExecution } from "../../src/runs/shared/external-execution.ts";
 import { runExternalBackgroundAttempt, type RunExternalBackgroundAttemptInput, type OnSynthesizedChildEvent } from "../../src/runs/background/external-attempt.ts";
+
+import { createMockPi } from "../support/mock-pi.ts";
+const mockPi = createMockPi();
+const runtime = mockPi.runtime;
+after(() => { mockPi.install(); mockPi.uninstall(); });
 
 const SESSION_FILE = "/tmp/background-session.jsonl";
 const REPORTING_EXTENSION_SUFFIX = path.join("execution-backend", "reporting-extension.ts");
@@ -57,6 +68,7 @@ function makeInput(overrides: Partial<RunExternalBackgroundAttemptInput> = {}): 
 	// Do NOT pass getPiSpawnCommand output as input: runExternalBackgroundAttempt calls
 	// getPiSpawnCommand internally, causing a double prefix on Windows.
 	return {
+		runtime,
 		owner,
 		attemptId: "attempt-1",
 		args: ["--model", "test/model", "Task: do something"],
@@ -68,9 +80,87 @@ function makeInput(overrides: Partial<RunExternalBackgroundAttemptInput> = {}): 
 }
 
 describe("runExternalBackgroundAttempt", () => {
+	it("native success observes the selected Node A and Pi root rather than process B", async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "native-selected-"));
+		const nodeA = path.join(dir, path.basename(process.execPath));
+		fs.copyFileSync(process.execPath, nodeA);
+		fs.chmodSync(nodeA, 0o755);
+		const selectedRuntime = { ...runtime, nodeExecPath: fs.realpathSync.native(nodeA) };
+		assert.notEqual(selectedRuntime.nodeExecPath, fs.realpathSync.native(process.execPath));
+		mockPi.install();
+		mockPi.onCall({ echoRuntime: true, output: "done" });
+		const outputFile = path.join(dir, "output.log");
+		const result = await runSingleStep({ agent: "test", task: "test", maxSubagentDepth: 0 } as any, { runtime: selectedRuntime, cwd: dir, outputFile, id: "native", flatIndex: 0, flatStepCount: 1, placeholder: "{previous}", previousOutput: "", sessionEnabled: false } as any);
+		assert.equal(result.exitCode, 0);
+		const observation = fs.readFileSync(path.join(dir, "events.jsonl"), "utf8").split("\n").map((line) => { try { return JSON.parse(line); } catch { return undefined; } }).find((event) => event?.type === "mock_runtime");
+		assert.equal(observation.nodeExecPath, selectedRuntime.nodeExecPath);
+		assert.equal(observation.piPackageRoot, selectedRuntime.piPackageRoot);
+		mockPi.reset();
+	});
+	it("rejects a typed launch failure without calling the owner", async () => {
+		const { owner, calls } = makeOwner(() => baseAttemptResult());
+		await assert.rejects(runExternalBackgroundAttempt(makeInput({ owner, runtime: { ...runtime, piEntryPath: path.join(runtime.piPackageRoot, "missing.mjs") } })), PiRuntimeLaunchError);
+		assert.equal(calls.length, 0);
+	});
+	it("native typed launch failure cleans prompt files without retry or child launch", async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "launch-cleanup-"));
+		const before = fs.readdirSync(os.tmpdir()).sort();
+		const result = await runSingleStep({ agent: "test", task: "test", systemPrompt: "prompt", modelCandidates: ["first", "second"] } as any, { runtime: { ...runtime, piEntryPath: path.join(runtime.piPackageRoot, "missing.mjs") }, cwd: dir, outputFile: path.join(dir, "output.log"), id: "typed", flatIndex: 0, flatStepCount: 1, placeholder: "{previous}", previousOutput: "", sessionEnabled: false } as any);
+		assert.equal(result.exitCode, 1);
+		assert.match(result.error ?? "", /missing.mjs/);
+		assert.equal(result.modelAttempts?.length ?? 0, 0);
+		assert.equal(mockPi.callCount(), 0);
+		assert.deepEqual(fs.readdirSync(os.tmpdir()).sort(), before);
+	});
+	it("native spawn error with retry-looking text stops after one launch and cleans prompts", async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "native-spawn-error-"));
+		const node = path.join(dir, "quota-node");
+		fs.writeFileSync(node, "synthetic executable removed before spawn\n");
+		fs.chmodSync(node, 0o755);
+		const selectedRuntime = { ...runtime, nodeExecPath: node };
+		const before = fs.readdirSync(os.tmpdir()).sort();
+		let launches = 0;
+		const interrupts: Array<(() => void) | undefined> = [];
+		const realSpawn = childProcess.spawn;
+		let spawnCalls = 0;
+		const disappearingSpawn: typeof realSpawn = ((command, ...args) => {
+			if (command === node) {
+				spawnCalls++;
+				assert.ok(fs.statSync(node).isFile());
+				fs.unlinkSync(node);
+			}
+			return realSpawn(command, ...args);
+		}) as typeof realSpawn;
+		let result: Awaited<ReturnType<typeof runSingleStep>>;
+		try {
+			childProcess.spawn = disappearingSpawn;
+			syncBuiltinESMExports();
+			assert.equal(childProcessNamespace.spawn, disappearingSpawn);
+			result = await runSingleStep({ agent: "test", task: "test", systemPrompt: "prompt", modelCandidates: ["first", "second"] } as any, {
+				runtime: selectedRuntime, cwd: dir, outputFile: path.join(dir, "output.log"), id: "spawn", flatIndex: 0, flatStepCount: 1, placeholder: "{previous}", previousOutput: "", sessionEnabled: false,
+				onAttemptStart: () => { launches++; }, registerInterrupt: (interrupt: (() => void) | undefined) => interrupts.push(interrupt),
+			} as any);
+		} finally {
+			childProcess.spawn = realSpawn;
+			syncBuiltinESMExports();
+			assert.equal(childProcessNamespace.spawn, realSpawn);
+		}
+		assert.equal(spawnCalls, 1);
+		assert.equal(fs.existsSync(node), false);
+		assert.equal(launches, 1);
+		assert.equal(result.exitCode, 1);
+		assert.ok(result.error?.includes(node));
+		assert.ok(result.error?.includes(runtime.piEntryPath));
+		assert.match(result.error ?? "", /^Failed to spawn selected Pi runtime .*Error: spawn .*ENOENT/);
+		assert.equal(result.modelAttempts?.length ?? 0, 0);
+		assert.equal(typeof interrupts[0], "function");
+		assert.equal(interrupts.at(-1), undefined);
+		assert.deepEqual(fs.readdirSync(os.tmpdir()).sort(), before);
+	});
 	it("interactive argv: does not include -p or --mode json in owner request", async () => {
 		const { owner, calls } = makeOwner(() => baseAttemptResult());
 		await runExternalBackgroundAttempt({
+			runtime,
 			owner,
 			attemptId: "attempt-1",
 			args: ["Task: test"],
@@ -79,6 +169,8 @@ describe("runExternalBackgroundAttempt", () => {
 			sessionFile: SESSION_FILE,
 		});
 		assert.equal(calls.length, 1);
+		assert.equal(calls[0].command, runtime.nodeExecPath);
+		assert.equal(calls[0].args[0], runtime.piEntryPath);
 		assert.ok(!calls[0].args.includes("-p"), "must not include -p (print mode)");
 		assert.ok(!calls[0].args.includes("--mode"), "must not include --mode flag");
 		assert.ok(!calls[0].args.includes("json"), "must not include json mode arg");

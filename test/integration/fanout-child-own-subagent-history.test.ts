@@ -4,9 +4,9 @@
  * via the real pi engine must retain its own `subagent` call/result across its
  * own next turn, so it finishes instead of repeating the completed delegation.
  *
- * Uses the real `pi` CLI (a devDependency, resolved from this worktree's
- * node_modules/.bin) for the lead and grandchild hops - the bug lives inside
- * pi's own "context" event handling for the lead's own running session, which
+ * Uses the real `pi` CLI (a devDependency, resolved from the installed
+ * package's declared CLI entry) for the lead and grandchild hops - the bug
+ * lives inside pi's own "context" event handling for the lead's session, which
  * a fake CLI (see test/support/mock-pi.ts) cannot exercise. The outer
  * "dispatcher" role is played in-process, exactly like
  * nested-child-grand-total.test.ts, via the same fanout-child tool.
@@ -36,6 +36,9 @@ interface FanoutChildModule {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const fanoutChild = await tryImport<FanoutChildModule>("./src/extension/fanout-child.ts");
 const realPiBinDir = process.env.PI_TEST_PI_BIN_DIR ?? path.resolve(__dirname, "..", "..", "node_modules", ".bin");
+const realPiPackageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))), "..");
+const realPiManifest = JSON.parse(fs.readFileSync(path.join(realPiPackageRoot, "package.json"), "utf-8"));
+const realPiEntry = path.resolve(realPiPackageRoot, realPiManifest.bin.pi);
 const available = !!fanoutChild;
 
 interface FixtureLogRow {
@@ -57,10 +60,13 @@ describe("fanout child retains its own delegation history across a real pi run",
 	let originalCwd: string;
 	let originalEnv: Map<string, string | undefined>;
 	let fixtureLog: string;
+	let originalArgv1: string | undefined;
 
 	const environmentKeys = ["HOME", "USERPROFILE", "PI_CODING_AGENT_DIR", "PATH", SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV, "PI_SUBAGENT_DEPTH", "PI_SUBAGENT_MAX_DEPTH", "FANOUT_FIXTURE_LOG"] as const;
 
 	beforeEach(() => {
+		originalArgv1 = process.argv[1];
+		process.argv[1] = fs.realpathSync.native(realPiEntry);
 		tempDir = createTempDir("pi-fanout-own-history-");
 		originalCwd = process.cwd();
 		originalEnv = new Map(environmentKeys.map((key) => [key, process.env[key]]));
@@ -98,6 +104,7 @@ describe("fanout child retains its own delegation history across a real pi run",
 	});
 
 	afterEach(() => {
+		process.argv[1] = originalArgv1;
 		process.chdir(originalCwd);
 		for (const [key, value] of originalEnv) {
 			if (value === undefined) delete process.env[key];
