@@ -5,7 +5,16 @@ import registerSubagentNotify from "../../src/runs/background/notify.ts";
 import { SUBAGENT_ASYNC_COMPLETE_EVENT } from "../../src/shared/types.ts";
 
 function createPi() {
-	const events = new EventEmitter();
+	const emitter = new EventEmitter();
+	const events = {
+		on(channel: string, handler: (payload: unknown) => void) {
+			emitter.on(channel, handler);
+			return () => emitter.off(channel, handler);
+		},
+		emit(channel: string, payload: unknown) {
+			emitter.emit(channel, payload);
+		},
+	};
 	const sent: Array<{ message: unknown; options: unknown }> = [];
 	const pi = {
 		events,
@@ -14,9 +23,9 @@ function createPi() {
 		},
 	};
 
-	registerSubagentNotify(pi as never);
+	const unsubscribe = registerSubagentNotify(pi as never);
 
-	return { events, sent };
+	return { events, sent, unsubscribe };
 }
 
 describe("registerSubagentNotify", () => {
@@ -113,5 +122,21 @@ describe("registerSubagentNotify", () => {
 			},
 			options: { triggerTurn: true },
 		});
+	});
+
+	it("stops notifying once the returned unsubscribe is called", () => {
+		const { events, sent, unsubscribe } = createPi();
+
+		unsubscribe();
+		events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+			id: "notify-unsubscribed-1",
+			agent: "worker",
+			success: true,
+			summary: "Done",
+			exitCode: 0,
+			timestamp: 999,
+		});
+
+		assert.equal(sent.length, 0);
 	});
 });

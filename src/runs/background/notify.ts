@@ -40,18 +40,7 @@ interface SubagentResult {
 	totalTasks?: number;
 }
 
-export default function registerSubagentNotify(pi: ExtensionAPI): void {
-	const unsubscribeStoreKey = "__pi_subagents_notify_unsubscribe__";
-	const globalStore = globalThis as Record<string, unknown>;
-	const previousUnsubscribe = globalStore[unsubscribeStoreKey];
-	if (typeof previousUnsubscribe === "function") {
-		try {
-			previousUnsubscribe();
-		} catch {
-			// Best effort cleanup for stale handlers from an older reload.
-		}
-	}
-
+export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 	const seen = getGlobalSeenMap("__pi_subagents_notify_seen__");
 	const ttlMs = 10 * 60 * 1000;
 
@@ -104,5 +93,5 @@ export default function registerSubagentNotify(pi: ExtensionAPI): void {
 		);
 	};
 
-	globalStore[unsubscribeStoreKey] = pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, handleComplete);
+	return pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, handleComplete);
 }

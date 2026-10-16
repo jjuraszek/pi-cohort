@@ -246,15 +246,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		return;
 	}
 	const globalStore = globalThis as Record<string, unknown>;
-	const runtimeCleanupStoreKey = "__piSubagentRuntimeCleanup";
-	const previousRuntimeCleanup = globalStore[runtimeCleanupStoreKey];
-	if (typeof previousRuntimeCleanup === "function") {
-		try {
-			previousRuntimeCleanup();
-		} catch {
-			// Best effort cleanup for stale timers from an older reload.
-		}
-	}
 
 	ensureAccessibleDir(RUN_STATE_ROOT_DIR, true);
 	ensureAccessibleDir(RESULTS_DIR);
@@ -295,16 +286,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	);
 	startResultWatcher();
 	primeExistingResults();
-
-	const runtimeCleanup = () => {
-		stopResultWatcher();
-		clearPendingForegroundControlNotices(state);
-		if (state.poller) {
-			clearInterval(state.poller);
-			state.poller = null;
-		}
-	};
-	globalStore[runtimeCleanupStoreKey] = runtimeCleanup;
 
 	const { ensurePoller, handleStarted, handleComplete, resetJobs } = createAsyncJobTracker(pi, state, ASYNC_DIR);
 	const executor = createSubagentExecutor({
@@ -491,20 +472,8 @@ DIAGNOSTICS:
 	pi.registerTool(tool);
 	registerSlashCommands(pi, state);
 
-	const eventUnsubscribeStoreKey = "__piSubagentEventUnsubscribes";
 	const controlNoticeSeenStoreKey = "__piSubagentVisibleControlNotices";
-	const previousEventUnsubscribes = globalStore[eventUnsubscribeStoreKey];
-	if (Array.isArray(previousEventUnsubscribes)) {
-		for (const unsubscribe of previousEventUnsubscribes) {
-			if (typeof unsubscribe !== "function") continue;
-			try {
-				unsubscribe();
-			} catch {
-				// Best effort cleanup for stale handlers from an older reload.
-			}
-		}
-	}
-	registerSubagentNotify(pi);
+	const unsubscribeNotify = registerSubagentNotify(pi);
 
 	const existingVisibleControlNotices = globalStore[controlNoticeSeenStoreKey];
 	const visibleControlNotices = existingVisibleControlNotices instanceof Set ? existingVisibleControlNotices as Set<string> : new Set<string>();
@@ -518,6 +487,7 @@ DIAGNOSTICS:
 		});
 	};
 	const eventUnsubscribes = [
+		unsubscribeNotify,
 		pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, handleStarted),
 		pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, handleComplete),
 		pi.events.on(SUBAGENT_CONTROL_EVENT, controlEventHandler),
@@ -527,7 +497,6 @@ DIAGNOSTICS:
 			}
 		}),
 	];
-	globalStore[eventUnsubscribeStoreKey] = eventUnsubscribes;
 
 	pi.on("message_end", (event, ctx) => {
 		if (event.message.role !== "assistant") return;
@@ -591,9 +560,6 @@ DIAGNOSTICS:
 				// Best effort cleanup during shutdown.
 			}
 		}
-		if (globalStore[eventUnsubscribeStoreKey] === eventUnsubscribes) {
-			delete globalStore[eventUnsubscribeStoreKey];
-		}
 		stopResultWatcher();
 		if (state.poller) clearInterval(state.poller);
 		state.poller = null;
@@ -608,9 +574,6 @@ DIAGNOSTICS:
 		slashBridge.dispose();
 		promptTemplateBridge.cancelAll();
 		promptTemplateBridge.dispose();
-		if (globalStore[runtimeCleanupStoreKey] === runtimeCleanup) {
-			delete globalStore[runtimeCleanupStoreKey];
-		}
 		try {
 			if (state.lastUiContext?.hasUI) {
 				state.lastUiContext.ui.setWidget(WIDGET_KEY, undefined);

@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- A second pi-cohort instance loaded into the same Node process no longer stops the first instance's result watcher or drops its event subscriptions. The extension factory and `registerSubagentNotify` used to call cleanup callbacks a previous instance stored on `globalThis` (`__piSubagentRuntimeCleanup`, `__piSubagentEventUnsubscribes`, `__pi_subagents_notify_unsubscribe__`), which also retired a live session in another SDK runtime; those hooks are gone and each instance now tears down only itself in its own `session_shutdown` handler, which pi emits on reload, new, resume, fork, and quit. (#20)
+
 ## [7.2.0] - 2026-10-11
 
 ### Changed
