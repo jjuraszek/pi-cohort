@@ -21,6 +21,7 @@ function makeState(overrides: Partial<SubagentState> = {}): SubagentState {
 		completionSeen: new Map(),
 		watcher: null,
 		watcherRestartTimer: null,
+		safetyRescanTimer: null,
 		resultFileCoalescer: { schedule: () => false, clear: () => {} },
 		...overrides,
 	};

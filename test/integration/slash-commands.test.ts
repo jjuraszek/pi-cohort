@@ -39,6 +39,7 @@ interface RegisterSlashCommandsModule {
 			completionSeen: Map<string, number>;
 			watcher: unknown;
 			watcherRestartTimer: ReturnType<typeof setTimeout> | null;
+			safetyRescanTimer: ReturnType<typeof setInterval> | null;
 			resultFileCoalescer: { schedule(file: string, delayMs?: number): boolean; clear(): void };
 		},
 	) => void;
@@ -94,6 +95,7 @@ function createState(cwd: string) {
 		completionSeen: new Map(),
 		watcher: null,
 		watcherRestartTimer: null,
+		safetyRescanTimer: null,
 		resultFileCoalescer: {
 			schedule: () => false,
 			clear: () => {},

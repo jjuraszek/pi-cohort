@@ -23,6 +23,7 @@ function makeState(cwd: string): SubagentState {
 		completionSeen: new Map(),
 		watcher: null,
 		watcherRestartTimer: null,
+		safetyRescanTimer: null,
 		resultFileCoalescer: { schedule: () => false, clear: () => {} },
 	};
 }

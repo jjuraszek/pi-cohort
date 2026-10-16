@@ -106,7 +106,6 @@ function publish(sessionId: string): string {
 
 const SETTLE_MS = 2000;
 const STEP_MS = 20;
-const REPUBLISH_MS = 250;
 
 async function waitFor(predicate: () => boolean, budgetMs = SETTLE_MS): Promise<boolean> {
 	const deadline = Date.now() + budgetMs;
@@ -129,24 +128,13 @@ function assertConsumed(runtime: FakeRuntime, file: string, expectedCount: numbe
 	assert.deepEqual(last.options, { triggerTurn: true }, `${label}: options`);
 }
 
-// macOS FSEvents drops events for files written while libuv re-arms its stream after a new fs.watch;
-// re-publishing the same id is idempotent because completion dedupe keys on id.
+// A write the native watcher misses (macOS FSEvents re-arm) is picked up by the watcher's 1 s safety rescan.
 async function publishAndAwait(runtime: FakeRuntime, sessionId: string, expectedCount: number, label: string): Promise<void> {
 	const id = randomUUID();
 	const file = path.join(RESULTS_DIR, `${id}.json`);
-	const body = JSON.stringify({ id, sessionId, cwd: process.cwd(), agent: "worker", success: true, summary: "done" });
-	const deadline = Date.now() + SETTLE_MS;
-	for (;;) {
-		fs.writeFileSync(file, body);
-		const consumed = await waitFor(() => runtime.sent.length >= expectedCount && !fs.existsSync(file), REPUBLISH_MS);
-		if (consumed) break;
-		assert.ok(Date.now() < deadline, `${label}: not consumed within ${SETTLE_MS} ms`);
-		try {
-			fs.unlinkSync(file);
-		} catch {
-			// consumed between the check and the unlink; the next write is deduped
-		}
-	}
+	fs.writeFileSync(file, JSON.stringify({ id, sessionId, cwd: process.cwd(), agent: "worker", success: true, summary: "done" }));
+	const consumed = await waitFor(() => runtime.sent.length >= expectedCount && !fs.existsSync(file));
+	assert.ok(consumed, `${label}: not consumed within ${SETTLE_MS} ms`);
 	assertConsumed(runtime, file, expectedCount, label);
 }
 

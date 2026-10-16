@@ -718,6 +718,7 @@ export interface SubagentState {
 	completionSeen: Map<string, number>;
 	watcher: FSWatcher | null;
 	watcherRestartTimer: ReturnType<typeof setTimeout> | null;
+	safetyRescanTimer: ReturnType<typeof setInterval> | null;
 	resultFileCoalescer: {
 		schedule(file: string, delayMs?: number): boolean;
 		clear(): void;

@@ -21,6 +21,7 @@ function createState(): SubagentState {
 		completionSeen: new Map(),
 		watcher: null,
 		watcherRestartTimer: null,
+		safetyRescanTimer: null,
 		resultFileCoalescer: {
 			schedule: () => false,
 			clear: () => {},
@@ -163,10 +164,12 @@ describe("result watcher", () => {
 			try {
 				watcher.startResultWatcher();
 				assert.equal(state.watcher, fakeWatcher);
+				assert.notEqual(state.safetyRescanTimer, null);
 				const enospc = new Error("inotify limit reached") as NodeJS.ErrnoException;
 				enospc.code = "ENOSPC";
 				emitWatcherError?.(enospc);
 				assert.equal(state.watcher, null);
+				assert.equal(state.safetyRescanTimer, null);
 				assert.notEqual(state.watcherRestartTimer, null);
 
 				fs.writeFileSync(path.join(resultsDir, "done.json"), JSON.stringify({ sessionId: "session-1", summary: "done" }), "utf-8");

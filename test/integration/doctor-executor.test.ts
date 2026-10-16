@@ -36,6 +36,7 @@ function makeState(cwd: string) {
 		completionSeen: new Map(),
 		watcher: null,
 		watcherRestartTimer: null,
+		safetyRescanTimer: null,
 		resultFileCoalescer: { schedule: () => false, clear: () => {} },
 	};
 }

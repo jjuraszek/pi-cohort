@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- A background job's result file written while macOS re-arms its FSEvents stream is no longer missed until the next `session_start`. libuv rebuilds one process-wide stream on every new directory `fs.watch` (the watcher's own start, a sibling SDK session's watcher, pi's footer git watchers), and rename events in that gap were lost. The result watcher now rescans the results directory once per second while the native watcher is healthy and consumes any file it never reported; the id-based dedup makes a duplicate hit a no-op and the EMFILE/ENOSPC polling fallback is unchanged. `test/unit/multi-session.test.ts` writes each result once instead of re-publishing it every 250 ms. (#21)
+
 ## [7.2.1] - 2026-10-16
 
 ### Fixed

@@ -14,6 +14,7 @@ import { projectNestedRegistryForRoot, sanitizeSummary } from "../shared/nested-
 
 const WATCHER_RESTART_DELAY_MS = 3000;
 const POLL_INTERVAL_MS = 3000;
+const SAFETY_RESCAN_INTERVAL_MS = 1000;
 
 type ResultWatcherFs = Pick<typeof fs, "existsSync" | "readFileSync" | "unlinkSync" | "readdirSync" | "mkdirSync" | "watch">;
 
@@ -196,9 +197,15 @@ export function createResultWatcher(
 		}
 	};
 
+	const clearSafetyRescan = () => {
+		if (state.safetyRescanTimer) timers.clearInterval(state.safetyRescanTimer);
+		state.safetyRescanTimer = null;
+	};
+
 	const startPollingFallback = (reason: unknown) => {
 		state.watcher?.close();
 		state.watcher = null;
+		clearSafetyRescan();
 		if (state.watcherRestartTimer) return;
 
 		console.error(
@@ -250,9 +257,14 @@ export function createResultWatcher(
 				console.error(`Subagent result watcher failed for '${resultsDir}':`, error);
 				state.watcher?.close();
 				state.watcher = null;
+				clearSafetyRescan();
 				scheduleRestart();
 			});
 			state.watcher.unref?.();
+			if (!state.safetyRescanTimer) {
+				state.safetyRescanTimer = timers.setInterval(primeExistingResults, SAFETY_RESCAN_INTERVAL_MS);
+				state.safetyRescanTimer.unref?.();
+			}
 		} catch (error) {
 			if (shouldFallBackToPolling(error)) {
 				startPollingFallback(error);
@@ -267,6 +279,7 @@ export function createResultWatcher(
 	const stopResultWatcher = () => {
 		state.watcher?.close();
 		state.watcher = null;
+		clearSafetyRescan();
 		if (state.watcherRestartTimer) {
 			timers.clearTimeout(state.watcherRestartTimer);
 			timers.clearInterval(state.watcherRestartTimer);

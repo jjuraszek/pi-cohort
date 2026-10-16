@@ -271,6 +271,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		completionSeen: new Map(),
 		watcher: null,
 		watcherRestartTimer: null,
+		safetyRescanTimer: null,
 		resultFileCoalescer: {
 			schedule: () => false,
 			clear: () => {},
