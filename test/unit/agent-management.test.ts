@@ -24,6 +24,40 @@ describe("agent management config parsing", () => {
 		fs.rmSync(tempDir, { recursive: true, force: true });
 	});
 
+	it("rejects malformed stopOn fields in config.steps", () => {
+		for (const [stopOn, error] of [
+			[{ path: "bad", in: ["FAIL"] }, `config.steps[0].stopOn.path 'bad' is not a JSON Pointer (must be "" or start with "/").`],
+			[{ path: "/verdict", in: [] }, "config.steps[0].stopOn.in must be a non-empty array of strings."],
+		] as const) {
+			const result = handleCreate(
+				{ config: { name: "verdict-flow", description: "Review", scope: "project", steps: [{ agent: "reviewer", outputSchema: "schemas/v.json", stopOn }] } },
+				{ cwd: tempDir, modelRegistry: { getAvailable: () => [] } },
+			);
+			assert.equal(result.isError, true);
+			assert.equal(readText(result), error);
+		}
+	});
+
+	it("rejects stopOn without outputSchema before writing a chain", () => {
+		const result = handleCreate(
+			{ config: { name: "verdict-flow", description: "Review", scope: "project", steps: [{ agent: "reviewer", stopOn: { path: "/verdict", in: ["FAIL"] } }] } },
+			{ cwd: tempDir, modelRegistry: { getAvailable: () => [] } },
+		);
+		assert.equal(result.isError, true);
+		assert.match(readText(result), /Chain step 1 has stopOn but no outputSchema\./);
+		assert.equal(fs.existsSync(path.join(tempDir, ".pi", "chains", "verdict-flow.chain.md")), false);
+	});
+
+	it("keeps a valid stopOn on created chain steps", () => {
+		const result = handleCreate(
+			{ config: { name: "verdict-flow", description: "Review", scope: "project", steps: [{ agent: "reviewer", outputSchema: "schemas/v.json", stopOn: { path: "/verdict", in: ["FAIL"] } }] } },
+			{ cwd: tempDir, modelRegistry: { getAvailable: () => [] } },
+		);
+		assert.equal(result.isError, false);
+		const content = fs.readFileSync(path.join(tempDir, ".pi", "chains", "verdict-flow.chain.md"), "utf-8");
+		assert.ok(content.includes('stopOn: {"path":"/verdict","in":["FAIL"]}'));
+	});
+
 	it("surfaces JSON parse errors for create config strings", () => {
 		const result = handleCreate(
 			{ config: '{"name":' },

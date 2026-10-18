@@ -4,6 +4,8 @@ import { parseFrontmatter } from "./frontmatter.ts";
 import { ChainOutputValidationError, validateChainOutputBindings } from "../runs/shared/chain-outputs.ts";
 import { validateAcceptanceInput } from "../runs/shared/acceptance.ts";
 import type { ChainStep } from "../shared/settings.ts";
+import { stopConditionShapeError } from "../runs/shared/stop-conditions.ts";
+import type { StopCondition } from "../shared/types.ts";
 
 function parseStepBody(agent: string, sectionBody: string): ChainStepConfig {
 	const lines = sectionBody.split("\n");
@@ -77,6 +79,17 @@ function parseStepBody(agent: string, sectionBody: string): ChainStepConfig {
 		if (key === "progress") {
 			if (rawValue === "true") step.progress = true;
 			else if (rawValue === "false") step.progress = false;
+		}
+		if (key === "stopon") {
+			const invalid = `stopOn line '${line.trim()}' must be a JSON object {"path": "<json-pointer>", "in": ["<value>", ...]}.`;
+			let parsed: unknown;
+			try {
+				parsed = JSON.parse(rawValue);
+			} catch {
+				throw new Error(invalid);
+			}
+			if (stopConditionShapeError(parsed, "stopOn")) throw new Error(invalid);
+			step.stopOn = parsed as StopCondition;
 		}
 	}
 
@@ -242,6 +255,7 @@ export function serializeChain(config: ChainConfig): string {
 		if (step.skills === false) lines.push("skills: false");
 		else if (Array.isArray(step.skills) && step.skills.length > 0) lines.push(`skills: ${step.skills.join(", ")}`);
 		if (step.progress !== undefined) lines.push(`progress: ${step.progress ? "true" : "false"}`);
+		if (step.stopOn) lines.push(`stopOn: ${JSON.stringify(step.stopOn)}`);
 		lines.push("");
 		lines.push(step.task ?? "");
 		if (i < config.steps.length - 1) lines.push("");

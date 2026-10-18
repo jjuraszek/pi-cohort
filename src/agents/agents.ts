@@ -6,7 +6,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AcceptanceInput, OutputMode } from "../shared/types.ts";
+import type { AcceptanceInput, OutputMode, StopCondition } from "../shared/types.ts";
 import { getAgentDir } from "../shared/utils.ts";
 import { KNOWN_FIELDS } from "./agent-serializer.ts";
 import { parseChain, parseJsonChain } from "./chain-serializer.ts";
@@ -142,6 +142,7 @@ export interface ChainStepConfig {
 	failFast?: boolean;
 	worktree?: boolean;
 	acceptance?: AcceptanceInput;
+	stopOn?: StopCondition;
 }
 
 export interface ChainConfig {

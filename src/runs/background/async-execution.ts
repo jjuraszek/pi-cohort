@@ -519,6 +519,7 @@ export function executeAsyncChain(
 				async: true,
 				dynamic: false,
 			}),
+			...(s.stopOn ? { stopOn: s.stopOn } : {}),
 			...(s.outputSchema ? { structuredOutputSchema: s.outputSchema } : {}),
 			...(s.outputSchema ? { structuredOutput: createStructuredOutputRuntime(s.outputSchema, path.join(asyncDir, "structured-output")) } : {}),
 		};
@@ -566,6 +567,7 @@ export function executeAsyncChain(
 					concurrency: s.concurrency,
 					failFast: s.failFast,
 					worktree: s.worktree,
+					stopOn: s.stopOn,
 				};
 			}
 			if (isDynamicParallelStep(s)) {
@@ -584,6 +586,7 @@ export function executeAsyncChain(
 					failFast: s.failFast,
 					phase: s.phase,
 					label: s.label,
+					stopOn: s.stopOn,
 					effectiveAcceptance: resolveEffectiveAcceptance({
 						explicit: s.acceptance,
 						agentName: s.parallel.agent,

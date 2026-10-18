@@ -29,6 +29,45 @@ function createPi() {
 }
 
 describe("registerSubagentNotify", () => {
+	const stop = {
+		reason: "condition",
+		stepIndex: 1,
+		condition: { path: "/verdict", in: ["FAIL"] },
+		matches: [{ stepIndex: 1, taskIndex: 0, as: "sr_1", agent: "spec-reviewer", value: "FAIL" }],
+	};
+
+	it("renders a stopped header and the Stop block from result.stop", () => {
+		const { events, sent } = createPi();
+		events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+			id: "notify-stop-1", agent: "chain:implementer->spec-reviewer->code-reviewer", success: true, summary: "spec-reviewer:\nMissing edge case.", exitCode: 0, state: "complete", timestamp: Date.now(), stop,
+		});
+		const content = (sent[0]!.message as { content: string }).content;
+		assert.match(content, /^Background task stopped: \*\*chain:implementer->spec-reviewer->code-reviewer\*\*/);
+		assert.match(content, /Missing edge case\./);
+		const block = content.slice(content.indexOf("## Stop"));
+		assert.deepEqual(JSON.parse(block.split("```json\n")[1]!.split("\n```")[0]!), stop);
+	});
+
+	it("keeps the failed header and still renders the Stop block when a sibling failed", () => {
+		const { events, sent } = createPi();
+		events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+			id: "notify-stop-2", agent: "chain:a->b", success: false, summary: "a:\nx", exitCode: 1, state: "failed", timestamp: Date.now(), stop,
+		});
+		const content = (sent[0]!.message as { content: string }).content;
+		assert.match(content, /^Background task failed: /);
+		assert.match(content, /## Stop\n```json/);
+	});
+
+	it("renders the Stop block even when summary was truncated", () => {
+		const { events, sent } = createPi();
+		events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+			id: "notify-stop-3", agent: "chain:a->b", success: true, summary: "[truncated]", exitCode: 0, state: "complete", timestamp: Date.now(), truncated: true, stop,
+		});
+		const content = (sent[0]!.message as { content: string }).content;
+		assert.match(content, /\[truncated\]/);
+		assert.match(content, /"value": "FAIL"/);
+	});
+
 	it("uses a fallback summary when a background completion is empty", () => {
 		const { events, sent } = createPi();
 

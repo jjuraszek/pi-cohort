@@ -174,6 +174,7 @@ const mapSavedChainSteps = (chain: ChainConfig, worktree = false): ChainStep[] =
 			progress: step.progress,
 			skill: step.skill ?? step.skills,
 			model: step.model,
+			...(step.stopOn ? { stopOn: step.stopOn } : {}),
 		};
 	});
 };

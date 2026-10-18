@@ -289,6 +289,26 @@
 					},
 					"worktree": {
 						"type": "boolean"
+					},
+					"stopOn": {
+						"type": "object",
+						"required": [
+							"path",
+							"in"
+						],
+						"properties": {
+							"path": {
+								"type": "string"
+							},
+							"in": {
+								"type": "array",
+								"items": {
+									"type": "string"
+								},
+								"minItems": 1
+							}
+						},
+						"additionalProperties": false
 					}
 				},
 				"additionalProperties": false

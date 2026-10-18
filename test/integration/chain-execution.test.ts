@@ -10,6 +10,7 @@
 
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { MockPi } from "../support/helpers.ts";
@@ -26,6 +27,7 @@ import {
 } from "../support/helpers.ts";
 
 interface TestSequentialStep {
+	stopOn?: { path: string; in: string[] };
 	agent: string;
 	task?: string;
 	phase?: string;
@@ -62,6 +64,7 @@ interface TestParallelTask {
 type TestChainStep = TestSequentialStep | {
 	parallel: TestParallelTask[];
 	concurrency?: number;
+	stopOn?: { path: string; in: string[] };
 	failFast?: boolean;
 	worktree?: boolean;
 	cwd?: string;
@@ -76,6 +79,7 @@ type TestChainStep = TestSequentialStep | {
 	parallel: TestParallelTask;
 	collect: { as: string; outputSchema?: Record<string, unknown> };
 	concurrency?: number;
+	stopOn?: { path: string; in: string[] };
 	failFast?: boolean;
 	label?: string;
 	acceptance?: unknown;
@@ -103,7 +107,8 @@ interface ChainExecutionResult {
 			nodes: Array<{ kind?: string; outputName?: string; status?: string; error?: string; acceptanceStatus?: string; children?: Array<{ itemKey?: string; label?: string; status?: string; acceptanceStatus?: string }> }>;
 		};
 		currentStepIndex?: number;
-		outputs?: Record<string, { text: string; structured?: unknown }>;
+		stop?: unknown;
+		outputs?: Record<string, { text: string; structured?: unknown; patchPath?: string }>;
 	};
 }
 
@@ -595,7 +600,7 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 		assert.deepEqual(dynamicNode?.children?.map((child) => child.acceptanceStatus), ["checked", "checked"]);
 	});
 
-	it("does not expose collected dynamic output when a child fails", async () => {
+	it("preserves collected dynamic output when a child fails", async () => {
 		mockPi.onCall({
 			output: "targets",
 			structuredOutput: { items: [{ path: "src/a.ts" }, { path: "src/b.ts" }] },
@@ -621,7 +626,7 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 
 		assert.equal(result.isError, true);
 		assert.equal(mockPi.callCount(), 3);
-		assert.equal(result.details.outputs?.reviews, undefined);
+		assert.equal((result.details.outputs?.reviews?.structured as unknown[]).length, 2);
 		assert.equal(result.details.results.some((entry) => entry.exitCode === 1), true);
 	});
 
@@ -724,7 +729,7 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 
 		assert.equal(result.isError, true);
 		assert.match(result.content[0]?.text ?? "", /Collected output validation failed/);
-		assert.equal(result.details.outputs?.reviews, undefined);
+		assert.ok(Array.isArray(result.details.outputs?.reviews?.structured));
 		assert.equal(result.details.workflowGraph?.nodes[1]?.status, "failed");
 		assert.match(result.details.workflowGraph?.nodes[1]?.error ?? "", /Collected output validation failed/);
 		assert.equal(result.details.workflowGraph?.nodes[1]?.children?.[0]?.status, "completed");
@@ -1053,6 +1058,77 @@ describe("chain execution — parallel steps", { skip: !available ? "pi packages
 		const callFile = callFiles[index];
 		assert.ok(callFile, `expected call ${index}`);
 		return JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")).args as string[];
+	}
+
+	for (const changes of [true, false]) {
+		it(changes ? "binds patchPath and resolves it in the next task" : "keeps producers when a missing patch reference fails", { skip: process.platform === "win32" }, async () => {
+			const repoDir = path.join(tempDir, "repo");
+			fs.mkdirSync(repoDir);
+			const git = (...args: string[]) => execFileSync("git", args, { cwd: repoDir, stdio: "pipe" });
+			git("init");
+			git("config", "user.email", "tests@example.com");
+			git("config", "user.name", "Parallel Worktree Tests");
+			fs.writeFileSync(path.join(repoDir, "input.md"), "input\n");
+			git("add", "-A");
+			git("commit", "-m", "initial commit");
+			const hook = path.join(tempDir, "hook.sh");
+			fs.writeFileSync(hook, changes
+				? '#!/bin/sh\ninput=$(cat)\ncase "$input" in *"\\"index\\":0"*) echo patched >> input.md ;; esac\necho "{}"\n'
+				: '#!/bin/sh\ncat > /dev/null\necho "{}"\n');
+			fs.chmodSync(hook, 0o755);
+			mockPi.onCall({ output: "done" });
+			mockPi.onCall({ output: "noop" });
+			mockPi.onCall({ output: "reviewed" });
+			const result = await executeChain(makeChainParams([
+				{ parallel: [{ agent: "impl", as: "impl_1", task: "edit" }, { agent: "impl", as: "impl_2", task: "noop" }], worktree: true, concurrency: 1 },
+				{ agent: "reviewer", task: "Review {outputs.impl_1.patchPath}" },
+			], [makeAgent("impl", { completionGuard: false }), makeAgent("reviewer")], { cwd: repoDir, ctx: makeMinimalCtx(repoDir), worktreeSetupHook: hook, chainDir: path.join(tempDir, "chain") }));
+			assert.equal(result.details.outputs?.impl_2?.patchPath, undefined);
+			if (changes) {
+				assert.ok(!result.isError, result.content[0].text);
+				const patch = result.details.outputs?.impl_1?.patchPath ?? "";
+				assert.match(patch, /worktree-diffs\/step-0\/task-0-impl\.patch$/);
+				assert.ok(fs.existsSync(patch));
+				assert.ok(readCallArgs(2).at(-1)?.includes(patch));
+			} else {
+				assert.equal(result.isError, true);
+				assert.match(result.content[0].text, /Output 'impl_1' has no patch \(no changes\)./);
+				assert.equal(result.details.results.length, 2);
+			}
+		});
+	}
+
+	for (const concurrency of [1, 2]) {
+		it(`keeps sibling results when a parallel patch reference fails at concurrency ${concurrency}`, { skip: process.platform === "win32" }, async () => {
+			const repoDir = path.join(tempDir, "repo");
+			fs.mkdirSync(repoDir);
+			const git = (...args: string[]) => execFileSync("git", args, { cwd: repoDir, stdio: "pipe" });
+			git("init");
+			git("config", "user.email", "tests@example.com");
+			git("config", "user.name", "Parallel Worktree Tests");
+			fs.writeFileSync(path.join(repoDir, "input.md"), "input\n");
+			git("add", "-A");
+			git("commit", "-m", "initial commit");
+			const hook = path.join(tempDir, "hook.sh");
+			fs.writeFileSync(hook, '#!/bin/sh\ninput=$(cat)\ncase "$input" in *"\\"index\\":0"*) echo patched >> input.md ;; esac\necho "{}"\n');
+			fs.chmodSync(hook, 0o755);
+			mockPi.onCall({ output: "done" });
+			mockPi.onCall({ output: "noop" });
+			mockPi.onCall({ output: "valid consumer finished" });
+			const result = await executeChain(makeChainParams([
+				{ parallel: [{ agent: "impl", as: "impl_1", task: "edit" }, { agent: "impl", as: "impl_2", task: "noop" }], worktree: true, concurrency: 1 },
+				{ parallel: [
+					{ agent: "reviewer", as: "review", task: "Review {outputs.impl_1.patchPath}" },
+					{ agent: "reviewer", task: "Review {outputs.impl_2.patchPath}" },
+				], concurrency },
+			], [makeAgent("impl", { completionGuard: false }), makeAgent("reviewer")], { cwd: repoDir, ctx: makeMinimalCtx(repoDir), worktreeSetupHook: hook, chainDir: path.join(tempDir, "chain") }));
+			assert.equal(result.isError, true);
+			assert.match(result.content[0].text, /Output 'impl_2' has no patch \(no changes\)./);
+			assert.equal(result.details.results.length, 4);
+			assert.equal(result.details.results[2].finalOutput, "valid consumer finished");
+			assert.equal(result.details.results[3].exitCode, 1);
+			assert.equal(result.details.outputs?.review?.text, "valid consumer finished");
+		});
 	}
 
 	it("runs parallel tasks within a chain step", async () => {
@@ -1480,5 +1556,257 @@ describe("chain execution - clarify boundary", { skip: !available ? "pi packages
 
 		assert.ok(!result.isError, `chain should succeed: ${JSON.stringify(result.content)}`);
 		assert.equal(spy.calls.length, 0, "clarify TUI should not be opened when hasUI is false");
+	});
+});
+
+
+describe("chain execution - stopOn", { skip: !available }, () => {
+	let tempDir: string;
+	let artifactsDir: string;
+	let mockPi: MockPi;
+
+	before(() => {
+		mockPi = createMockPi();
+		mockPi.install();
+	});
+
+	after(() => {
+		mockPi.uninstall();
+	});
+
+	beforeEach(() => {
+		tempDir = createTempDir();
+		artifactsDir = path.join(tempDir, "artifacts");
+		mockPi.reset();
+	});
+
+	afterEach(() => {
+		removeTempDir(tempDir);
+	});
+
+	function makeChainParams(
+		chain: TestChainStep[],
+		agents: ReturnType<typeof makeAgent>[],
+		overrides: Record<string, unknown> = {},
+	) {
+		return {
+			chain,
+			agents,
+			ctx: makeMinimalCtx(tempDir),
+			runtime: mockPi.runtime,
+			runId: `test-${Date.now().toString(36)}`,
+			shareEnabled: false,
+			sessionDirForIndex: () => undefined,
+			artifactsDir,
+			artifactConfig: { enabled: false },
+			clarify: false,
+			...overrides,
+		};
+	}
+
+	function readCallArgs(index: number): string[] {
+		const callFiles = fs.readdirSync(mockPi.dir)
+			.filter((name) => name.startsWith("call-") && name.endsWith(".json"))
+			.sort();
+		const callFile = callFiles[index];
+		assert.ok(callFile, `expected call ${index}`);
+		return JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")).args as string[];
+	}
+
+	const verdictSchema = { type: "object", properties: { verdict: { type: "string" } }, required: ["verdict"] };
+	const stopRecordOf = (text: string) => JSON.parse(text.slice(text.indexOf("## Stop")).split("```json\n")[1]!.split("\n```")[0]!);
+
+	it("stops after a sequential step whose structured output matches", async () => {
+		mockPi.onCall({ output: "Reviewed; missing edge case.", structuredOutput: { verdict: "FAIL" } });
+		mockPi.onCall({ output: "never runs" });
+		const result = await executeChain(makeChainParams([
+			{ agent: "reviewer", task: "Review", as: "sr", outputSchema: verdictSchema, stopOn: { path: "/verdict", in: ["FAIL"] } },
+			{ agent: "writer", task: "Fix {outputs.sr}" },
+		], [makeAgent("reviewer"), makeAgent("writer")]));
+		assert.ok(!result.isError);
+		assert.equal(mockPi.callCount(), 1);
+		const text = result.content[0]!.text;
+		assert.match(text, /^⏹ Chain stopped at step 1\/2 by condition \/verdict in \[FAIL\]/);
+		assert.deepEqual(stopRecordOf(text), { reason: "condition", stepIndex: 0, condition: { path: "/verdict", in: ["FAIL"] }, matches: [{ stepIndex: 0, as: "sr", agent: "reviewer", value: "FAIL" }] });
+		assert.deepEqual(result.details.stop, stopRecordOf(text));
+		assert.match(text, /## Outputs\n### Step 1\n#### Task 1 \(reviewer, as sr\)\nReviewed; missing edge case\.\n```json\n\{"verdict":"FAIL"\}\n```/);
+		assert.equal(result.details.workflowGraph?.nodes[0]?.status, "completed");
+		assert.equal(result.details.workflowGraph?.nodes[1]?.status, "pending");
+	});
+
+	it("omits stop sections when a stopOn step fails without a match", async () => {
+		mockPi.onCall({ output: "boom", exitCode: 1 });
+		const result = await executeChain(makeChainParams([
+			{ agent: "reviewer", task: "Review", outputSchema: verdictSchema, stopOn: { path: "/verdict", in: ["FAIL"] } },
+		], [makeAgent("reviewer")]));
+		assert.equal(result.isError, true);
+		assert.match(result.content[0]!.text, /^❌ Chain failed/);
+		assert.doesNotMatch(result.content[0]!.text, /## Stop|## Outputs/);
+		assert.equal(result.details.stop, undefined);
+	});
+
+	it("fails but keeps the record when dynamic group acceptance rejects", async () => {
+		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }] } });
+		mockPi.onCall({ output: "a bad", structuredOutput: { verdict: "FAIL" } });
+		const result = await executeChain(makeChainParams([
+			{ agent: "scout", task: "Targets", as: "targets", outputSchema: { type: "object" } },
+			{
+				expand: { from: { output: "targets", path: "/items" }, item: "target", key: "/path", maxItems: 4 },
+				parallel: { agent: "reviewer", task: "Review {target.path}", outputSchema: verdictSchema },
+				collect: { as: "reviews" },
+				acceptance: { level: "verified", verify: [{ id: "group-fail", command: "node -e \"process.exit(5)\"" }] },
+				stopOn: { path: "/verdict", in: ["FAIL"] },
+			},
+		], [makeAgent("scout"), makeAgent("reviewer")]));
+		assert.equal(result.isError, true);
+		assert.match(result.content[0]!.text, /^❌ Chain failed/);
+		assert.equal((result.details.stop as { matches: unknown[] }).matches.length, 1);
+	});
+
+	it("lets all parallel siblings finish, then stops with every output and no following step", async () => {
+		mockPi.onCall({ output: "ok one", structuredOutput: { verdict: "PASS" } });
+		mockPi.onCall({ output: "bad two", structuredOutput: { verdict: "FAIL" } });
+		mockPi.onCall({ output: "ok three", structuredOutput: { verdict: "PASS" } });
+		const result = await executeChain(makeChainParams([
+			{ parallel: [
+				{ agent: "reviewer", task: "Review 1", as: "sr_1", label: "task 1 review", outputSchema: verdictSchema },
+				{ agent: "reviewer", task: "Review 2", as: "sr_2", label: "task 2 review", outputSchema: verdictSchema },
+				{ agent: "reviewer", task: "Review 3", as: "sr_3", outputSchema: verdictSchema },
+			], concurrency: 1, stopOn: { path: "/verdict", in: ["FAIL"] } },
+			{ agent: "writer", task: "never" },
+		], [makeAgent("reviewer"), makeAgent("writer")]));
+		assert.ok(!result.isError);
+		assert.equal(mockPi.callCount(), 3);
+		const record = stopRecordOf(result.content[0]!.text);
+		assert.deepEqual(record.matches, [{ stepIndex: 0, taskIndex: 1, as: "sr_2", label: "task 2 review", agent: "reviewer", value: "FAIL" }]);
+		assert.match(result.content[0]!.text, /#### Task 1 \(reviewer, as sr_1\)[\s\S]*#### Task 2 \(reviewer, as sr_2\)[\s\S]*#### Task 3 \(reviewer, as sr_3\)/);
+		assert.deepEqual(Object.keys(result.details.outputs ?? {}).sort(), ["sr_1", "sr_2", "sr_3"]);
+	});
+
+	it("reports failure but keeps the record and successful siblings' outputs when a sibling crashes", async () => {
+		mockPi.onCall({ output: "bad one", structuredOutput: { verdict: "FAIL" } });
+		mockPi.onCall({ output: "boom", exitCode: 1 });
+		const result = await executeChain(makeChainParams([
+			{ parallel: [
+				{ agent: "reviewer", task: "Review 1", as: "sr_1", outputSchema: verdictSchema },
+				{ agent: "reviewer", task: "Review 2", as: "sr_2", outputSchema: verdictSchema },
+			], concurrency: 1, stopOn: { path: "/verdict", in: ["FAIL"] } },
+			{ agent: "writer", task: "never" },
+		], [makeAgent("reviewer"), makeAgent("writer")]));
+		assert.equal(result.isError, true);
+		assert.match(result.content[0]!.text, /^❌ Chain failed at step 1/);
+		assert.equal((result.details.stop as { matches: unknown[] }).matches.length, 1);
+		assert.equal(result.details.outputs?.sr_1?.text, "{\"verdict\":\"FAIL\"}");
+		assert.equal(result.details.outputs?.sr_2, undefined);
+		assert.match(result.content[0]!.text, /#### Task 2 \(reviewer, as sr_2\) - failed\n/);
+	});
+
+	it("renders skipped fail-fast siblings as skipped, not matched", async () => {
+		mockPi.onCall({ output: "bad one", structuredOutput: { verdict: "FAIL" } });
+		mockPi.onCall({ output: "boom", exitCode: 1 });
+		const result = await executeChain(makeChainParams([
+			{ parallel: [
+				{ agent: "reviewer", task: "Review 1", as: "sr_1", outputSchema: verdictSchema },
+				{ agent: "reviewer", task: "Review 2", as: "sr_2", outputSchema: verdictSchema },
+				{ agent: "reviewer", task: "Review 3", as: "sr_3", outputSchema: verdictSchema },
+			], concurrency: 1, failFast: true, stopOn: { path: "/verdict", in: ["FAIL"] } },
+		], [makeAgent("reviewer")]));
+		assert.equal(result.isError, true);
+		assert.match(result.content[0]!.text, /#### Task 3 \(reviewer, as sr_3\) - skipped \(fail-fast\)\n/);
+		assert.equal((result.details.stop as { matches: unknown[] }).matches.length, 1);
+	});
+
+	it("stops a dynamic fanout step and labels matches", async () => {
+		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }, { path: "src/b.ts" }] } });
+		mockPi.onCall({ output: "a ok", structuredOutput: { verdict: "PASS" } });
+		mockPi.onCall({ output: "b bad", structuredOutput: { verdict: "FAIL" } });
+		const result = await executeChain(makeChainParams([
+			{ agent: "scout", task: "Targets", as: "targets", outputSchema: { type: "object" } },
+			{
+				expand: { from: { output: "targets", path: "/items" }, item: "target", key: "/path", maxItems: 4 },
+				parallel: { agent: "reviewer", task: "Review {target.path}", label: "Review {target.path}", outputSchema: verdictSchema },
+				collect: { as: "reviews" },
+				concurrency: 1,
+				stopOn: { path: "/verdict", in: ["FAIL"] },
+			},
+			{ agent: "writer", task: "never" },
+		], [makeAgent("scout"), makeAgent("reviewer"), makeAgent("writer")]));
+		assert.ok(!result.isError);
+		assert.equal(mockPi.callCount(), 3);
+		const record = stopRecordOf(result.content[0]!.text);
+		assert.deepEqual(record.matches, [{ stepIndex: 1, taskIndex: 1, label: "Review src/b.ts", agent: "reviewer", value: "FAIL" }]);
+		assert.ok(Array.isArray(result.details.outputs?.reviews?.structured));
+	});
+
+	it("keeps the dynamic collection and stop record when an item crashes", async () => {
+		mockPi.onCall({ output: "targets", structuredOutput: { items: ["a", "b"] } });
+		mockPi.onCall({ output: "needs fixes", structuredOutput: { verdict: "FAIL" } });
+		mockPi.onCall({ exitCode: 1, stderr: "review crashed" });
+		const result = await executeChain(makeChainParams([
+			{ agent: "scout", task: "Targets", as: "targets", outputSchema: { type: "object" } },
+			{
+				expand: { from: { output: "targets", path: "/items" }, maxItems: 2 },
+				parallel: { agent: "reviewer", task: "Review {item}", outputSchema: verdictSchema },
+				collect: { as: "reviews" }, concurrency: 1,
+				stopOn: { path: "/verdict", in: ["FAIL"] },
+			},
+			{ agent: "writer", task: "never" },
+		], [makeAgent("scout"), makeAgent("reviewer"), makeAgent("writer")]));
+		assert.equal(result.isError, true);
+		assert.equal(mockPi.callCount(), 3);
+		assert.equal((result.details.stop as { matches: unknown[] }).matches.length, 1);
+		const collected = result.details.outputs?.reviews?.structured as Array<{ exitCode: number; error?: string }>;
+		assert.ok(Array.isArray(collected));
+		assert.equal(collected.length, 2);
+		assert.deepEqual(collected.map((item) => item.exitCode), [0, 1]);
+		assert.match(collected[1]!.error ?? "", /review crashed/);
+	});
+
+	it("fails but keeps the record when the dynamic collection schema rejects", async () => {
+		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }] } });
+		mockPi.onCall({ output: "a bad", structuredOutput: { verdict: "FAIL" } });
+		const result = await executeChain(makeChainParams([
+			{ agent: "scout", task: "Targets", as: "targets", outputSchema: { type: "object" } },
+			{
+				expand: { from: { output: "targets", path: "/items" }, item: "target", key: "/path", maxItems: 4 },
+				parallel: { agent: "reviewer", task: "Review {target.path}", outputSchema: verdictSchema },
+				collect: { as: "reviews", outputSchema: { type: "object" } },
+				stopOn: { path: "/verdict", in: ["FAIL"] },
+			},
+		], [makeAgent("scout"), makeAgent("reviewer")]));
+		assert.equal(result.isError, true);
+		assert.match(result.content[0]!.text, /^❌ Chain failed at step 2: Collected output validation failed/);
+		assert.equal((result.details.stop as { matches: unknown[] }).matches.length, 1);
+	});
+
+	it("renders Outputs on ordinary completion when any step carries stopOn, and nothing extra otherwise", async () => {
+		mockPi.onCall({ output: "fine", structuredOutput: { verdict: "PASS" } });
+		mockPi.onCall({ output: "SHIP" });
+		const withStop = await executeChain(makeChainParams([
+			{ agent: "reviewer", task: "Review", as: "sr", outputSchema: verdictSchema, stopOn: { path: "/verdict", in: ["FAIL"] } },
+			{ agent: "writer", task: "Decide" },
+		], [makeAgent("reviewer"), makeAgent("writer")]));
+		assert.ok(!withStop.isError);
+		assert.equal(withStop.details.stop, undefined);
+		assert.match(withStop.content[0]!.text, /^✅ Chain completed[\s\S]*## Outputs\n### Step 1\n#### Task 1 \(reviewer, as sr\)[\s\S]*### Step 2\n#### Task 1 \(writer\)\nSHIP/);
+		assert.doesNotMatch(withStop.content[0]!.text, /## Stop/);
+
+		mockPi.onCall({ output: "fine", structuredOutput: { verdict: "PASS" } });
+		mockPi.onCall({ output: "SHIP" });
+		const plain = await executeChain(makeChainParams([
+			{ agent: "reviewer", task: "Review", as: "sr", outputSchema: verdictSchema },
+			{ agent: "writer", task: "Decide" },
+		], [makeAgent("reviewer"), makeAgent("writer")]));
+		assert.match(plain.content[0]!.text, /^✅ Chain completed: reviewer → writer \(2 steps, [^)]*\)\n\n📋 Progress: .*\n📁 Artifacts: .*$/s);
+		assert.doesNotMatch(plain.content[0]!.text, /## Outputs|## Stop/);
+	});
+
+	it("rejects stopOn without outputSchema before any child runs", async () => {
+		const result = await executeChain(makeChainParams([
+			{ agent: "reviewer", task: "Review", stopOn: { path: "/verdict", in: ["FAIL"] } },
+		], [makeAgent("reviewer")]));
+		assert.equal(result.isError, true);
+		assert.equal(result.content[0]!.text, "Chain step 1 has stopOn but no outputSchema.");
+		assert.equal(mockPi.callCount(), 0);
 	});
 });

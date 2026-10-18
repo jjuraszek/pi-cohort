@@ -117,6 +117,35 @@ Ask oracle for a second opinion on my current plan.
 Run parallel reviewers: one for correctness, one for tests, and one for unnecessary complexity.
 ```
 
+Run implementers and spec reviewers in the first call, stopping the chain on `FAIL`:
+
+```ts
+subagent({ async: false, chain: [
+  { parallel: [
+      { agent: "implementer", as: "impl_1", task: "Implement task 1", outputSchema: statusSchema },
+      { agent: "implementer", as: "impl_2", task: "Implement task 2", outputSchema: statusSchema },
+    ], worktree: true, stopOn: { path: "/status", in: ["NEEDS_CONTEXT", "BLOCKED"] } },
+  { parallel: [
+      { agent: "spec-reviewer", as: "sr_1", task: "Review {outputs.impl_1.patchPath}", outputSchema: verdictSchema },
+      { agent: "spec-reviewer", as: "sr_2", task: "Review {outputs.impl_2.patchPath}", outputSchema: verdictSchema },
+    ], stopOn: { path: "/verdict", in: ["FAIL"] } },
+]})
+```
+
+The parent applies the accepted patches, runs its tests, and issues a second call for code review over the integrated diff:
+
+```ts
+subagent({ async: false, agent: "code-reviewer", task: "Review the integrated diff" })
+```
+
+A match ends the chain after that step as a controlled stop (not an error): the result carries a `## Stop` JSON record naming every matching task and a `## Outputs` section with every finished task's output. A chain without `stopOn` behaves exactly as before.
+
+In a saved `.chain.md` the condition is one line per step, the object as JSON:
+
+```md
+stopOn: {"path":"/verdict","in":["FAIL"]}
+```
+
 That's the whole surface for day-to-day use. More phrasing patterns: [doc/commands.md](doc/commands.md#prompt-cookbook-appendix).
 
 Review and delivery workflows live in pi-gauntlet; pi-cohort ships delegation primitives plus `/investigate` and `/skill:handoff [--out <path> | --key <stem>]` (the brief lands in `<tmpdir>/pi-handoff/<primary>--<leaf>.md` by default; contract in [doc/handoff-template.md](doc/handoff-template.md)).
@@ -142,7 +171,7 @@ Full reference: agent/chain authoring in [doc/agents-and-chains.md](doc/agents-a
 |---|---|
 | Subagent | A focused child Pi session with one job and (by default) a fresh context. |
 | Agent (persona) | A markdown file with frontmatter defining a specialist: `scout`, `planner`, `worker`, `reviewer`, `context-builder`, `oracle`, `delegate`, `monitor`. Full table: [doc/agents-and-chains.md](doc/agents-and-chains.md#builtin-agents-in-plain-english). |
-| Chain | A saved or inline sequence of agent steps, with fan-out/fan-in support. |
+| Chain | A saved or inline sequence of agent steps, with fan-out/fan-in support and an optional per-step `stopOn` condition that ends the chain when a child's structured output matches (for example a reviewer's `FAIL` verdict). Field reference: [doc/agents-and-chains.md](doc/agents-and-chains.md#stop-conditions-stopon). |
 | Fresh vs. forked context | Fresh = clean slate; forked = a real branch of the parent's session history. |
 | Recursion guard | Depth cap on nested delegation so a child can only fan out if explicitly allowed. |
 | `Σ$` / `cost:external` | The session-wide cost rollup, and the protocol other extensions use to report into it. |

@@ -53,6 +53,7 @@ Per step:
 | `model` | string | Model override. |
 | `skills` | string[] \| false | Skills to inject into this step's agent (management config, plural); the execution-time `chain[].skill` param is singular. |
 | `progress` | boolean | progress.md tracking. |
+| `stopOn` | `{ path: string, in: string[] }` | End the chain after this step when the structured output at JSON Pointer `path` equals a member of `in`; supply `outputSchema`. Write to `.chain.md` as `stopOn: {"path":"/verdict","in":["FAIL"]}`. |
 
 ### Call-time `control` overrides
 

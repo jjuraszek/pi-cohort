@@ -20,7 +20,8 @@ import {
 import { serializeAgent } from "./agent-serializer.ts";
 import { serializeChain, serializeJsonChain } from "./chain-serializer.ts";
 import { discoverAvailableSkills } from "./skills.ts";
-import type { Details } from "../shared/types.ts";
+import type { Details, StopCondition } from "../shared/types.ts";
+import { stopConditionShapeError, validateStopConditions } from "../runs/shared/stop-conditions.ts";
 
 type ManagementAction = "list" | "get" | "create" | "update" | "delete";
 type ManagementScope = "user" | "project";
@@ -213,8 +214,15 @@ function parseStepList(raw: unknown): { steps?: ChainStepConfig[]; error?: strin
 			if (typeof s.progress === "boolean") step.progress = s.progress;
 			else return { error: `config.steps[${i}].progress must be a boolean.` };
 		}
+		if (hasKey(s, "stopOn")) {
+			const shapeError = stopConditionShapeError(s.stopOn, `config.steps[${i}].stopOn`);
+			if (shapeError) return { error: shapeError };
+			step.stopOn = s.stopOn as StopCondition;
+		}
 		steps.push(step);
 	}
+	const stopError = validateStopConditions(steps);
+	if (stopError) return { error: stopError };
 	return { steps };
 }
 

@@ -23,11 +23,47 @@ export type OutputMode = "inline" | "file-only";
 
 export type JsonSchemaObject = Record<string, unknown>;
 
+export interface StopCondition {
+	path: string;
+	in: string[];
+}
+
+export interface StopMatch {
+	stepIndex: number;
+	taskIndex?: number;
+	as?: string;
+	label?: string;
+	agent: string;
+	value: string;
+}
+
+export interface StopRecord {
+	reason: "condition";
+	stepIndex: number;
+	condition: StopCondition;
+	matches: StopMatch[];
+}
+
+/** One finished task's output as rendered in the chain result's `## Outputs` section. */
+export interface ChainTaskOutputEntry {
+	stepIndex: number;
+	taskIndex: number;
+	agent: string;
+	as?: string;
+	label?: string;
+	text: string;
+	structured?: unknown;
+	exitCode: number | null | undefined;
+	error?: string;
+}
+
 export interface ChainOutputMapEntry {
 	text: string;
 	structured?: unknown;
 	agent: string;
 	stepIndex: number;
+	patchPath?: string;
+	patchError?: string;
 }
 
 export type ChainOutputMap = Record<string, ChainOutputMapEntry>;
@@ -435,6 +471,7 @@ export interface Details {
 	currentStepIndex?: number;   // 0-indexed current step (for running chains)
 	workflowGraph?: WorkflowGraphSnapshot;
 	outputs?: ChainOutputMap;
+	stop?: StopRecord;
 }
 
 // ============================================================================

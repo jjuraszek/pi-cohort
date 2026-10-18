@@ -5,6 +5,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { buildCompletionKey, getGlobalSeenMap, markSeenWithTtl } from "./completion-dedupe.ts";
 import { SUBAGENT_ASYNC_COMPLETE_EVENT } from "../../shared/types.ts";
+import { buildChainStopSection } from "../../shared/formatters.ts";
+import type { StopRecord } from "../../shared/types.ts";
 
 interface ChainStepResult {
 	agent: string;
@@ -14,7 +16,7 @@ interface ChainStepResult {
 
 export interface SubagentNotifyDetails {
 	agent: string;
-	status: "completed" | "failed" | "paused";
+	status: "completed" | "failed" | "paused" | "stopped";
 	taskInfo?: string;
 	resultPreview: string;
 	durationMs?: number;
@@ -36,6 +38,7 @@ interface SubagentResult {
 	gistUrl?: string;
 	shareError?: string;
 	results?: ChainStepResult[];
+	stop?: StopRecord;
 	taskIndex?: number;
 	totalTasks?: number;
 }
@@ -57,7 +60,7 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 			|| result.state === "paused"
 			|| summary.startsWith("Paused after interrupt.")
 		);
-		const status = paused ? "paused" : result.success ? "completed" : "failed";
+		const status = paused ? "paused" : result.success ? (result.stop ? "stopped" : "completed") : "failed";
 
 		const taskInfo =
 			result.taskIndex !== undefined && result.totalTasks !== undefined
@@ -73,10 +76,13 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 					: undefined;
 
 		const displaySummary = summary.trim() ? summary : "(no output)";
+		const stopBlock = result.stop ? buildChainStopSection(result.stop) : undefined;
 		const content = [
 			`Background task ${status}: **${agent}**${taskInfo}`,
 			"",
 			displaySummary,
+			stopBlock ? "" : undefined,
+			stopBlock,
 			sessionLine ? "" : undefined,
 			sessionLine,
 		]

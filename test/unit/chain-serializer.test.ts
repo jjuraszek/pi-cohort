@@ -155,3 +155,45 @@ Review the diff
 		);
 	});
 });
+
+describe("chain-serializer stopOn", () => {
+	const header = "---\nname: verdict-flow\ndescription: stop on FAIL\n---\n\n";
+
+	it("parses a JSON stopOn line and round-trips byte-identically for hard values", () => {
+		const conditions = [
+			{ path: "/verdict", in: ["FAIL", "BLOCKED"] },
+			{ path: "", in: ["FAIL"] },
+			{ path: "/verdict", in: ["needs, context", "  padded  ", ""] },
+		];
+		for (const condition of conditions) {
+			const content = `${header}## reviewer\noutputSchema: schemas/verdict.json\nstopOn: ${JSON.stringify(condition)}\n\nReview it\n`;
+			const parsed = parseChain(content, "project", "/tmp/verdict-flow.chain.md");
+			assert.deepEqual(parsed.steps[0]?.stopOn, condition);
+			const serialized = serializeChain(parsed);
+			assert.deepEqual(parseChain(serialized, "project", "/tmp/verdict-flow.chain.md").steps[0]?.stopOn, condition);
+			assert.equal(serializeChain(parseChain(serialized, "project", "/tmp/verdict-flow.chain.md")), serialized);
+		}
+	});
+
+	it("matches the key case-insensitively", () => {
+		const content = `${header}## reviewer\noutputSchema: schemas/verdict.json\nSTOPON: {"path":"/verdict","in":["FAIL"]}\n\nReview it\n`;
+		assert.deepEqual(parseChain(content, "project", "/tmp/x.chain.md").steps[0]?.stopOn, { path: "/verdict", in: ["FAIL"] });
+	});
+
+	it("rejects a malformed stopOn line", () => {
+		for (const bad of ["/verdict in FAIL", "{\"path\":\"/v\"}", "{\"path\":\"/v\",\"in\":[]}", "{\"path\":\"/v\",\"in\":\"FAIL\"}", "[1]"]) {
+			const content = `${header}## reviewer\noutputSchema: schemas/verdict.json\nstopOn: ${bad}\n\nReview it\n`;
+			assert.throws(
+				() => parseChain(content, "project", "/tmp/x.chain.md"),
+				new RegExp(`stopOn line '.*' must be a JSON object \\{"path": "<json-pointer>", "in": \\["<value>", \\.\\.\\.\\]\\}\\.$`),
+			);
+		}
+	});
+
+	it("validates stopOn in .chain.json through the bindings validator", () => {
+		const json = JSON.stringify({ name: "j", description: "d", chain: [{ agent: "reviewer", stopOn: { path: "/verdict", in: ["FAIL"] } }] });
+		assert.throws(() => parseJsonChain(json, "project", "/tmp/j.chain.json"), /Invalid JSON chain '\/tmp\/j\.chain\.json': Chain step 1 has stopOn but no outputSchema\./);
+		const ok = JSON.stringify({ name: "j", description: "d", chain: [{ agent: "reviewer", outputSchema: "schemas/verdict.json", stopOn: { path: "/verdict", in: ["FAIL"] } }] });
+		assert.deepEqual(parseJsonChain(ok, "project", "/tmp/j.chain.json").steps[0]?.stopOn, { path: "/verdict", in: ["FAIL"] });
+	});
+});

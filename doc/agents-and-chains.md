@@ -312,7 +312,8 @@ Task templates support:
 | `{task}` | Original task from the first step. |
 | `{previous}` | Output from the prior step, or aggregated output from a parallel step. |
 | `{chain_dir}` | Path to the chain artifact directory. |
-| `{outputs.name}` | Text value from a prior step or completed parallel task with `as: "name"`. |
+| `{outputs.name}` | Text value from a prior step or completed parallel task with `as: "name"` (compact JSON when the step had an `outputSchema`). |
+| `{outputs.name.patchPath}` | Absolute path of the patch a `worktree: true` parallel task with `as: "name"` produced. Rejected pre-run when that step is not a worktree step; fails the chain at the referencing step when the task made no changes or the capture failed. The only sub-field. |
 
 Parallel outputs are aggregated with clear separators before being passed to the next step:
 
@@ -323,3 +324,42 @@ Parallel outputs are aggregated with clear separators before being passed to the
 === Parallel Task 2 (worker) ===
 ...
 ```
+
+## Stop conditions (`stopOn`)
+
+Any chain step - sequential, parallel, or dynamic - may carry `stopOn: { path, in }`. `path` is an RFC 6901 JSON Pointer into the task's validated structured output (`""` is the root); `in` is a non-empty list of strings. After the step's tasks finish, each exit-0 task's structured output is checked: a resolved string equal to any member is a match. The step (every task of a parallel or dynamic step) must have an `outputSchema`; the chain is rejected before any child starts otherwise, with `Chain step N has stopOn but no outputSchema.` or `Chain step N task M has no outputSchema; stopOn requires one on every task.`
+
+| Outcome | Result |
+|---|---|
+| match, no task failed | controlled stop: `isError: false`, header `Chain stopped at step N/M by condition /verdict in [FAIL]` (with a stop icon), no later step runs |
+| match and a task failed (exit other than 0 or -1, collection-schema failure, group-acceptance failure) | the chain fails as today (`isError: true`), and the stop record plus every finished output is still attached |
+| no match | the chain continues; a completed chain that carries `stopOn` anywhere still renders `## Outputs` |
+| pointer missing or not a string | no match |
+| `failFast`-skipped siblings | listed as skipped, never matched |
+
+A condition match adds two sections to the result content. `## Stop` is one JSON object, identical in `details.stop` and in a background run's result file:
+
+```json
+{
+  "reason": "condition",
+  "stepIndex": 1,
+  "condition": { "path": "/verdict", "in": ["FAIL"] },
+  "matches": [
+    { "stepIndex": 1, "taskIndex": 0, "as": "sr_1", "label": "task 3 review", "agent": "spec-reviewer", "value": "FAIL" }
+  ]
+}
+```
+
+`stepIndex` and `taskIndex` are 0-based; `taskIndex` is omitted for a sequential step. `## Outputs` lists every finished task of every executed step, grouped `### Step N` / `#### Task M (agent, as name)` with the task's final text and, when it had an `outputSchema`, its structured output as a fenced JSON block; headings are 1-based. Background runs deliver the same record through the completion notice (`Background task stopped: **chain:...**` followed by the `## Stop` block). A failed chain includes these sections only when the failing step had matches.
+
+In `.chain.md` the value is the condition object as JSON on one line:
+
+```md
+## spec-reviewer
+outputSchema: schemas/verdict.json
+stopOn: {"path":"/verdict","in":["FAIL","BLOCKED"]}
+
+Review {outputs.impl_1.patchPath}
+```
+
+`.chain.json` and management `config.steps[]` carry the object as-is. Not in scope: regex over text output, cancelling running siblings, or resuming a stopped chain at a later step - the parent issues a new chain for the remaining steps. Worktree patches are not integrated automatically: in an implementers -> spec reviewers -> code reviewer workflow, integration between spec review and code review is a parent action, followed by a new chain for the remaining steps.

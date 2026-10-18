@@ -65,6 +65,7 @@ A child saying "done" is evidence, not verification. `reviewed` means a reviewer
 | `cwd` | child working directory; pass the worktree path or the child inherits pi's launch dir |
 | `acceptance` | per-task override, same shape as top-level |
 | `as`, `outputSchema` | the child must call `structured_output` with schema-valid JSON or the step fails; later steps read `{outputs.<as>}` |
+| `stopOn` | Use step-level `{ path, in }` to end the chain after this step when any task's structured output at the JSON Pointer `path` equals a member of `in`; supply `outputSchema` on every task of the step |
 
 ## Control actions
 
@@ -97,6 +98,15 @@ subagent({ async: false, chain: [
   { parallel: [ { agent: "reviewer", task: "Review {outputs.targets}" }, { agent: "reviewer", task: "Test gaps in {outputs.targets}" } ] },
   { agent: "worker", task: "Apply accepted fixes from {previous}" }
 ]})
+
+// Run implementers and spec reviewers in the first call (stop on FAIL).
+subagent({ async: false, chain: [
+  { parallel: [ { agent: "implementer", as: "impl_1", task: "...", outputSchema: statusSchema } ], worktree: true, stopOn: { path: "/status", in: ["NEEDS_CONTEXT", "BLOCKED"] } },
+  { parallel: [ { agent: "spec-reviewer", as: "sr_1", task: "Review {outputs.impl_1.patchPath}", outputSchema: verdictSchema } ], stopOn: { path: "/verdict", in: ["FAIL"] } },
+]})
+// Read a controlled match (isError false) in the `## Stop` JSON record and every finished output under `## Outputs`.
+// Apply accepted patches in the parent, run tests, then issue a second call for code review over the integrated diff.
+subagent({ async: false, agent: "code-reviewer", task: "Review the integrated diff" })
 
 // background job, then control (pair long jobs with a monitor - see Control actions)
 subagent({ agent: "worker", async: true, task: "<long job - emit progress lines as you work>" })

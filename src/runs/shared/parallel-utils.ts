@@ -28,6 +28,7 @@ export interface RunnerSubagentStep {
 	};
 	structuredOutputSchema?: import("../../shared/types.ts").JsonSchemaObject;
 	effectiveAcceptance?: import("../../shared/types.ts").ResolvedAcceptanceConfig;
+	stopOn?: import("../../shared/types.ts").StopCondition;
 }
 
 export interface ParallelStepGroup {
@@ -35,6 +36,7 @@ export interface ParallelStepGroup {
 	concurrency?: number;
 	failFast?: boolean;
 	worktree?: boolean;
+	stopOn?: import("../../shared/types.ts").StopCondition;
 }
 
 export interface DynamicRunnerGroup {
@@ -46,6 +48,7 @@ export interface DynamicRunnerGroup {
 	phase?: string;
 	label?: string;
 	effectiveAcceptance?: import("../../shared/types.ts").ResolvedAcceptanceConfig;
+	stopOn?: import("../../shared/types.ts").StopCondition;
 }
 
 export type RunnerStep = RunnerSubagentStep | ParallelStepGroup | DynamicRunnerGroup;

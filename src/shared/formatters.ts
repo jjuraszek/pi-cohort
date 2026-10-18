@@ -4,7 +4,8 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { Usage, SingleResult } from "./types.ts";
+import type { Usage, SingleResult, ChainTaskOutputEntry, StopRecord } from "./types.ts";
+import { formatStopCondition } from "../runs/shared/stop-conditions.ts";
 import type { ChainStep } from "./settings.ts";
 import { isDynamicParallelStep, isParallelStep } from "./settings.ts";
 import { splitKnownThinkingSuffix, THINKING_LEVELS } from "./model-info.ts";
@@ -52,15 +53,62 @@ export function formatDuration(ms: number): string {
 	return `${Math.floor(ms / 60000)}m${Math.floor((ms % 60000) / 1000)}s`;
 }
 
+export interface ChainSummaryOptions {
+	stop?: StopRecord;
+	outputs?: ChainTaskOutputEntry[];
+}
+
+function renderTaskHeading(entry: ChainTaskOutputEntry): string {
+	const asPart = entry.as ? `, as ${entry.as}` : "";
+	const base = `#### Task ${entry.taskIndex + 1} (${entry.agent}${asPart})`;
+	if (entry.exitCode === -1) return `${base} - skipped (fail-fast)`;
+	if (entry.exitCode !== 0) return `${base} - failed`;
+	return base;
+}
+
+/** `## Outputs`, grouped by step in execution order; skipped tasks get a heading only, failed tasks their error line. */
+export function buildChainOutputsSection(entries: ChainTaskOutputEntry[]): string {
+	const lines: string[] = ["## Outputs"];
+	let currentStep = -1;
+	for (const entry of entries) {
+		if (entry.stepIndex !== currentStep) {
+			currentStep = entry.stepIndex;
+			lines.push(`### Step ${currentStep + 1}`);
+		}
+		lines.push(renderTaskHeading(entry));
+		if (entry.exitCode === -1) continue;
+		if (entry.exitCode !== 0) {
+			lines.push(entry.error || "failed");
+			continue;
+		}
+		if (entry.text) lines.push(entry.text);
+		if (entry.structured !== undefined) lines.push("```json", JSON.stringify(entry.structured), "```");
+	}
+	return lines.join("\n");
+}
+
+export function buildChainStopSection(stop: StopRecord): string {
+	return `## Stop\n\`\`\`json\n${JSON.stringify(stop, null, 2)}\n\`\`\``;
+}
+
+function appendChainSections(text: string, options: ChainSummaryOptions | undefined): string {
+	if (!options) return text;
+	const sections: string[] = [];
+	if (options.stop) sections.push(buildChainStopSection(options.stop));
+	if (options.outputs) sections.push(buildChainOutputsSection(options.outputs));
+	return sections.length ? `${text}\n\n${sections.join("\n\n")}\n` : text;
+}
+
 /**
- * Build a summary string for a completed/failed chain
+ * Build a summary string for a completed/failed/stopped chain
  */
 export function buildChainSummary(
 	steps: ChainStep[],
 	results: SingleResult[],
 	chainDir: string,
-	status: "completed" | "failed",
+	status: "completed" | "failed" | "stopped",
 	failedStep?: { index: number; error: string },
+	options?: ChainSummaryOptions,
 ): string {
 	const stepNames = steps
 		.map((step) => (isParallelStep(step) ? `parallel[${step.parallel.length}]` : isDynamicParallelStep(step) ? `expand:${step.parallel.agent}` : step.agent))
@@ -77,20 +125,21 @@ export function buildChainSummary(
 	}
 	const skillsLine = allSkills.size > 0 ? `🔧 Skills: ${[...allSkills].join(", ")}` : "";
 
-	if (status === "completed") {
-		const stepWord = results.length === 1 ? "step" : "steps";
-		return `✅ Chain completed: ${stepNames} (${results.length} ${stepWord}, ${durationStr})${skillsLine ? `\n${skillsLine}` : ""}
+	const footer = `\n\n📋 Progress: ${hasProgress ? progressPath : "(none)"}\n📁 Artifacts: ${chainDir}`;
 
-📋 Progress: ${hasProgress ? progressPath : "(none)"}
-📁 Artifacts: ${chainDir}`;
-	} else {
-		const stepInfo = failedStep ? ` at step ${failedStep.index + 1}` : "";
-		const errorInfo = failedStep?.error ? `: ${failedStep.error}` : "";
-		return `❌ Chain failed${stepInfo}${errorInfo}${skillsLine ? `\n${skillsLine}` : ""}
-
-📋 Progress: ${hasProgress ? progressPath : "(none)"}
-📁 Artifacts: ${chainDir}`;
+	if (status === "stopped" && options?.stop) {
+		const header = `⏹ Chain stopped at step ${options.stop.stepIndex + 1}/${steps.length} by condition ${formatStopCondition(options.stop.condition)}`;
+		return appendChainSections(`${header}${skillsLine ? `\n${skillsLine}` : ""}${footer}`, options);
 	}
+	if (status === "completed" || status === "stopped") {
+		const stepWord = results.length === 1 ? "step" : "steps";
+		const header = `✅ Chain completed: ${stepNames} (${results.length} ${stepWord}, ${durationStr})${skillsLine ? `\n${skillsLine}` : ""}`;
+		return appendChainSections(`${header}${footer}`, options);
+	}
+	const stepInfo = failedStep ? ` at step ${failedStep.index + 1}` : "";
+	const errorInfo = failedStep?.error ? `: ${failedStep.error}` : "";
+	const header = `❌ Chain failed${stepInfo}${errorInfo}${skillsLine ? `\n${skillsLine}` : ""}`;
+	return appendChainSections(`${header}${footer}`, options);
 }
 
 /**

@@ -18,7 +18,7 @@ interface WorktreeInfo {
 	syntheticPaths: string[];
 }
 
-interface WorktreeDiff {
+export interface WorktreeDiff {
 	index: number;
 	agent: string;
 	branch: string;
@@ -488,6 +488,12 @@ function cleanupSingleWorktree(repoCwd: string, worktree: WorktreeInfo): void {
 
 function hasWorktreeChanges(diff: WorktreeDiff): boolean {
 	return diff.filesChanged > 0 || diff.insertions > 0 || diff.deletions > 0 || diff.diffStat.trim().length > 0;
+}
+
+/** The patch a later chain step may reference: only a clean capture with real changes qualifies. */
+export function patchPathForDiff(diff: WorktreeDiff): string | undefined {
+	if (diff.captureError) return undefined;
+	return hasWorktreeChanges(diff) ? diff.patchPath : undefined;
 }
 
 export function createWorktrees(cwd: string, runId: string, count: number, options?: CreateWorktreesOptions): WorktreeSetup {

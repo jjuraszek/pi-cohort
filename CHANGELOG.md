@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Chain steps accept an optional `stopOn: { path, in }` condition over schema-validated structured output. A match ends the chain after that step as a controlled stop (`isError: false`) with a fixed `## Stop` JSON record naming every matching task and a `## Outputs` section carrying every finished task's text and structured output; a sibling failure in the same step keeps the failed status but still attaches the record and the finished outputs. Accepted on call-time `chain:` items, `.chain.json`, management `config.steps[]`, and `.chain.md` (`stopOn: {"path":"/verdict","in":["FAIL"]}`); rejected before any child starts when the step has no `outputSchema`. Background runs persist `stop` in the result file and the completion notice renders it. Worktree parallel tasks expose their patch to later steps as `{outputs.name.patchPath}`. Chains without `stopOn` are unchanged. (#23)
+
 ## [7.2.3] - 2026-10-18
 
 ### Fixed

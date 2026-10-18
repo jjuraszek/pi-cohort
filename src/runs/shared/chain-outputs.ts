@@ -2,9 +2,20 @@ import { isDynamicParallelStep, isParallelStep, type ChainStep, type SequentialS
 import type { ChainOutputMap, ChainOutputMapEntry, SingleResult } from "../../shared/types.ts";
 import { getSingleResultOutput } from "../../shared/utils.ts";
 import { DynamicFanoutError, hasDynamicFanoutFields, type DynamicFanoutConfig, validateDynamicStepShape } from "./dynamic-fanout.ts";
+import { validateStopConditions } from "./stop-conditions.ts";
 
 const OUTPUT_REF_PATTERN = /\{outputs\.([^}]*)\}/g;
 const SAFE_OUTPUT_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const PATCH_PATH_FIELD = "patchPath";
+
+/** `name` or `name.patchPath`; anything else is invalid. */
+function parseOutputReference(raw: string): { name: string; field?: typeof PATCH_PATH_FIELD } | undefined {
+	const dot = raw.indexOf(".");
+	const name = dot === -1 ? raw : raw.slice(0, dot);
+	if (!SAFE_OUTPUT_NAME_PATTERN.test(name)) return undefined;
+	if (dot === -1) return { name };
+	return raw.slice(dot + 1) === PATCH_PATH_FIELD ? { name, field: PATCH_PATH_FIELD } : undefined;
+}
 
 export class ChainOutputValidationError extends Error {}
 
@@ -22,6 +33,10 @@ function taskTemplatesForStep(step: ChainStep): string[] {
 }
 
 export function validateChainOutputBindings(steps: ChainStep[], dynamicFanoutConfig: DynamicFanoutConfig = {}): void {
+	const stopError = validateStopConditions(steps);
+	if (stopError) throw new ChainOutputValidationError(stopError);
+	const worktreeProducers = new Map<string, number>();
+	const producerSteps = new Map<string, number>();
 	const available = new Set<string>();
 	const seen = new Set<string>();
 	for (let stepIndex = 0; stepIndex < steps.length; stepIndex++) {
@@ -52,29 +67,39 @@ export function validateChainOutputBindings(steps: ChainStep[], dynamicFanoutCon
 		for (const template of taskTemplatesForStep(step)) {
 			for (const match of template.matchAll(OUTPUT_REF_PATTERN)) {
 				const rawReference = match[0];
-				const name = match[1]!;
-				if (!SAFE_OUTPUT_NAME_PATTERN.test(name)) {
+				const parsed = parseOutputReference(match[1]!);
+				if (!parsed) {
 					throw new ChainOutputValidationError(`Invalid chain output reference '${rawReference}' at step ${stepIndex + 1}. Use {outputs.name} with /^[A-Za-z_][A-Za-z0-9_]*$/ names.`);
 				}
-				if (!available.has(name)) {
+				if (!available.has(parsed.name)) {
 					throw new ChainOutputValidationError(`Unknown chain output reference '${rawReference}' at step ${stepIndex + 1}. Named outputs are only available after producing step/group completes.`);
+				}
+				if (parsed.field === PATCH_PATH_FIELD && !worktreeProducers.has(parsed.name)) {
+					const producerStep = producerSteps.get(parsed.name)!;
+					throw new ChainOutputValidationError(`Chain step ${stepIndex + 1} references ${rawReference} but step ${producerStep + 1} is not a worktree step.`);
 				}
 			}
 		}
 		for (const name of outputNamesForStep(step)) {
 			available.add(name);
+			producerSteps.set(name, stepIndex);
+			if (isParallelStep(step) && step.worktree) worktreeProducers.set(name, stepIndex);
 		}
 	}
 }
 
 export function resolveOutputReferences(template: string, outputs: ChainOutputMap): string {
-	return template.replace(OUTPUT_REF_PATTERN, (rawReference, name: string) => {
-		if (!SAFE_OUTPUT_NAME_PATTERN.test(name)) {
+	return template.replace(OUTPUT_REF_PATTERN, (rawReference, rawName: string) => {
+		const parsed = parseOutputReference(rawName);
+		if (!parsed) {
 			throw new ChainOutputValidationError(`Invalid chain output reference '${rawReference}'. Use {outputs.name} with /^[A-Za-z_][A-Za-z0-9_]*$/ names.`);
 		}
-		const entry = outputs[name];
+		const entry = outputs[parsed.name];
 		if (!entry) throw new ChainOutputValidationError(`Unknown chain output reference '${rawReference}'.`);
-		return entry.text;
+		if (parsed.field !== PATCH_PATH_FIELD) return entry.text;
+		if (entry.patchPath) return entry.patchPath;
+		const reason = entry.patchError ? `capture failed: ${entry.patchError}` : "no changes";
+		throw new ChainOutputValidationError(`Output '${parsed.name}' has no patch (${reason}).`);
 	});
 }
 
@@ -82,8 +107,22 @@ function compactStructuredText(value: unknown): string {
 	return JSON.stringify(value);
 }
 
-export function outputEntryFromResult(result: SingleResult, stepIndex: number): ChainOutputMapEntry {
+export interface OutputEntryPatchInfo {
+	patchPath?: string;
+	patchError?: string;
+}
+
+function patchFields(patch: OutputEntryPatchInfo | undefined): Pick<ChainOutputMapEntry, "patchPath" | "patchError"> {
+	if (!patch) return {};
 	return {
+		...(patch.patchPath ? { patchPath: patch.patchPath } : {}),
+		...(patch.patchError ? { patchError: patch.patchError } : {}),
+	};
+}
+
+export function outputEntryFromResult(result: SingleResult, stepIndex: number, patch?: OutputEntryPatchInfo): ChainOutputMapEntry {
+	return {
+		...patchFields(patch),
 		text: result.structuredOutput !== undefined ? compactStructuredText(result.structuredOutput) : getSingleResultOutput(result),
 		...(result.structuredOutput !== undefined ? { structured: result.structuredOutput } : {}),
 		agent: result.agent,
@@ -91,8 +130,9 @@ export function outputEntryFromResult(result: SingleResult, stepIndex: number): 
 	};
 }
 
-export function outputEntryFromAsyncResult(result: { agent: string; output: string; structuredOutput?: unknown }, stepIndex: number): ChainOutputMapEntry {
+export function outputEntryFromAsyncResult(result: { agent: string; output: string; structuredOutput?: unknown }, stepIndex: number, patch?: OutputEntryPatchInfo): ChainOutputMapEntry {
 	return {
+		...patchFields(patch),
 		text: result.structuredOutput !== undefined ? compactStructuredText(result.structuredOutput) : result.output,
 		...(result.structuredOutput !== undefined ? { structured: result.structuredOutput } : {}),
 		agent: result.agent,

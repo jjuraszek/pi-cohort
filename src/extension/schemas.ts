@@ -233,6 +233,10 @@ const ChainItem = Type.Object({
 	worktree: Type.Optional(Type.Boolean({
 		description: "Isolated worktree per task."
 	})),
+	stopOn: Type.Optional(Type.Object({
+		path: Type.String({ description: "JSON Pointer into the step's structured output." }),
+		in: Type.Array(Type.String(), { minItems: 1, description: "Stop the chain when the value equals any member." }),
+	}, { additionalProperties: false, description: "Stop after this step when any task's structured output matches; requires outputSchema." })),
 }, {
 	description: "{agent,task?} seq; {parallel:[..]} concurrent; {expand,parallel,collect} fanout.",
 	additionalProperties: false,

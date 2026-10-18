@@ -48,6 +48,12 @@ describe("result watcher", () => {
 			const statusPath = path.join(durableDir, "status.json");
 			const durableStatus = JSON.stringify({ runId: "session-run", runtime: { nodeExecPath: "/origin/node", piEntryPath: "/origin/pi/cli.js", piPackageRoot: "/origin/pi" } });
 			fs.writeFileSync(statusPath, durableStatus);
+			const stop = {
+				reason: "condition",
+				stepIndex: 0,
+				condition: { path: "/verdict", in: ["FAIL"] },
+				matches: [{ stepIndex: 0, as: "review", agent: "reviewer", value: "FAIL" }],
+			};
 			const resultPath = path.join(resultsDir, "session-run.json");
 			fs.writeFileSync(resultPath, JSON.stringify({
 				id: "session-run",
@@ -55,6 +61,7 @@ describe("result watcher", () => {
 				sessionId: "session-current",
 				success: true,
 				summary: "done",
+				stop,
 			}), "utf-8");
 
 			const watcher = createResultWatcher(pi, state, resultsDir, 60_000);
@@ -72,6 +79,8 @@ describe("result watcher", () => {
 			}
 
 			assert.equal(emitted.filter((entry) => entry.event === "subagent:async-complete").length, 1);
+			const completion = emitted.find((entry) => entry.event === "subagent:async-complete")?.data as { stop?: unknown };
+			assert.deepEqual(completion.stop, stop);
 			assert.equal(fs.existsSync(resultPath), false);
 			assert.equal(fs.readFileSync(statusPath, "utf-8"), durableStatus);
 		} finally {

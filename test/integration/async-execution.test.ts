@@ -23,6 +23,7 @@ interface AsyncExecutionResult {
 }
 
 interface AsyncResultPayload {
+	stop?: unknown;
 	success: boolean;
 	state?: string;
 	exitCode?: number;
@@ -30,7 +31,7 @@ interface AsyncResultPayload {
 	mode?: string;
 	summary?: string;
 	results: Array<{ output?: string; success?: boolean; error?: string; model?: string; attemptedModels?: string[]; modelAttempts?: Array<{ success?: boolean; error?: string }>; structuredOutput?: unknown; acceptance?: { status?: string; childReport?: unknown } }>;
-	outputs?: Record<string, { text?: string; structured?: unknown }>;
+	outputs?: Record<string, { text?: string; structured?: unknown; patchPath?: string }>;
 	workflowGraph?: { nodes?: Array<{ kind?: string; label?: string; phase?: string; status?: string; error?: string; outputName?: string; structured?: boolean; children?: Array<{ label?: string; outputName?: string; itemKey?: string; status?: string; error?: string }> }> };
 }
 
@@ -902,9 +903,159 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(payload.success, false);
 		assert.match(payload.results.at(-1)?.error ?? "", /Collected output validation failed/);
 		assert.ok(Array.isArray(payload.results.at(-1)?.structuredOutput), "failed collect result should preserve ordered collection details");
+		assert.deepEqual(payload.outputs?.reviews?.structured, payload.results.at(-1)?.structuredOutput);
 		assert.equal(payload.workflowGraph?.nodes?.[1]?.status, "failed");
 		assert.match(payload.workflowGraph?.nodes?.[1]?.error ?? "", /Collected output validation failed/);
 	});
+
+	it("async dynamic item failure keeps the collection and stop record", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		mockPi.onCall({ output: "targets", structuredOutput: { items: ["a", "b"] } });
+		mockPi.onCall({ output: "needs fixes", structuredOutput: { verdict: "FAIL" } });
+		mockPi.onCall({ exitCode: 1, stderr: "review crashed" });
+		const id = `async-stop-dynamic-fail-${Date.now().toString(36)}`;
+		const result = executeAsyncChain(id, {
+			chain: [
+				{ agent: "scout", task: "Targets", as: "targets", outputSchema: { type: "object" } },
+				{
+					expand: { from: { output: "targets", path: "/items" }, maxItems: 2 },
+					parallel: { agent: "reviewer", task: "Review {item}", outputSchema: { type: "object" } },
+					collect: { as: "reviews" }, concurrency: 1,
+					stopOn: { path: "/verdict", in: ["FAIL"] },
+				},
+				{ agent: "writer", task: "never" },
+			],
+			agents: [makeAgent("scout"), makeAgent("reviewer"), makeAgent("writer")],
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-stop-dynamic-fail" },
+			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+			shareEnabled: false,
+			maxSubagentDepth: 2,
+		});
+		assert.ok(!result.isError);
+		const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id, 10_000), "utf-8")) as AsyncResultPayload;
+		assert.equal(payload.success, false);
+		assert.equal(payload.state, "failed");
+		assert.equal(mockPi.callCount(), 3);
+		assert.equal(payload.stop?.matches.length, 1);
+		const collected = payload.outputs?.reviews?.structured as Array<{ exitCode: number; error?: string }>;
+		assert.ok(Array.isArray(collected));
+		assert.equal(collected.length, 2);
+		assert.deepEqual(collected.map((item) => item.exitCode), [0, 1]);
+		assert.match(collected[1]!.error ?? "", /review crashed/);
+		const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf-8"));
+		assert.deepEqual(status.outputs.reviews.structured, collected);
+	});
+
+	it("async sequential stopOn match writes stop into the result file and skips later steps", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		mockPi.onCall({ output: "Missing edge case.", structuredOutput: { verdict: "FAIL" } });
+		mockPi.onCall({ output: "never" });
+		const id = `async-stop-seq-${Date.now().toString(36)}`;
+		const result = executeAsyncChain(id, {
+			chain: [
+				{ agent: "reviewer", task: "Review", as: "sr", outputSchema: { type: "object" }, stopOn: { path: "/verdict", in: ["FAIL"] } },
+				{ agent: "writer", task: "Fix {outputs.sr}" },
+			],
+			agents: [makeAgent("reviewer"), makeAgent("writer")],
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-stop-seq" },
+			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+			shareEnabled: false,
+			maxSubagentDepth: 2,
+		});
+		assert.ok(!result.isError);
+		const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id, 10_000), "utf-8")) as AsyncResultPayload;
+		assert.equal(payload.success, true);
+		assert.equal(payload.state, "complete");
+		assert.equal(payload.exitCode, 0);
+		assert.equal(payload.results.length, 1);
+		assert.equal(mockPi.callCount(), 1);
+		assert.equal(payload.outputs?.sr?.text, "{\"verdict\":\"FAIL\"}");
+		assert.deepEqual(payload.stop, { reason: "condition", stepIndex: 0, condition: { path: "/verdict", in: ["FAIL"] }, matches: [{ stepIndex: 0, as: "sr", agent: "reviewer", value: "FAIL" }] });
+	});
+
+	for (const siblingFails of [false, true]) {
+		it(`async parallel stopOn finishes siblings and ${siblingFails ? "keeps the stop on failure" : "skips later steps"}`, { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+			mockPi.onCall({ output: "one", structuredOutput: { verdict: "FAIL" } });
+			mockPi.onCall(siblingFails ? { output: "boom", exitCode: 1 } : { output: "two", structuredOutput: { verdict: "PASS" } });
+			const id = `async-stop-par-${siblingFails}-${Date.now().toString(36)}`;
+			const result = executeAsyncChain(id, {
+				chain: [
+					{ parallel: [{ agent: "reviewer", task: "R1", as: "sr_1", outputSchema: { type: "object" } }, { agent: "reviewer", task: "R2", as: "sr_2", outputSchema: { type: "object" } }], concurrency: 1, stopOn: { path: "/verdict", in: ["FAIL"] } },
+					{ agent: "writer", task: "never" },
+				],
+				agents: [makeAgent("reviewer"), makeAgent("writer")],
+				ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-stop-par" },
+				artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+				shareEnabled: false,
+				maxSubagentDepth: 2,
+			});
+			assert.ok(!result.isError);
+			const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id, 10_000), "utf-8")) as AsyncResultPayload;
+			assert.equal(payload.success, !siblingFails);
+			assert.equal(payload.state, siblingFails ? "failed" : "complete");
+			assert.equal(payload.exitCode, siblingFails ? 1 : 0);
+			assert.equal(payload.results.length, 2);
+			assert.equal(mockPi.callCount(), 2);
+			assert.deepEqual(payload.stop, { reason: "condition", stepIndex: 0, condition: { path: "/verdict", in: ["FAIL"] }, matches: [{ stepIndex: 0, taskIndex: 0, as: "sr_1", agent: "reviewer", value: "FAIL" }] });
+			assert.equal(payload.outputs?.sr_1?.text, "{\"verdict\":\"FAIL\"}");
+			assert.equal(Boolean(payload.outputs?.sr_2), !siblingFails);
+		});
+	}
+
+	it("async run rejects stopOn without outputSchema at start", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		const result = executeAsyncChain(`async-stop-invalid-${Date.now().toString(36)}`, {
+			chain: [{ agent: "reviewer", task: "Review", stopOn: { path: "/verdict", in: ["FAIL"] } }],
+			agents: [makeAgent("reviewer")],
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-stop-invalid" },
+			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+			shareEnabled: false,
+			maxSubagentDepth: 2,
+		});
+		assert.equal(result.isError, true);
+		assert.equal(mockPi.callCount(), 0);
+		assert.match(result.content[0]!.text, /Chain step 1 has stopOn but no outputSchema\./);
+	});
+
+	for (const changes of [true, false]) {
+		it(`async patchPath reference ${changes ? "resolves a captured patch" : "fails without changes and keeps producers"}`, { skip: process.platform === "win32" || !isAsyncAvailable() ? "requires shell hooks and jiti" : undefined }, async () => {
+			const repoDir = createRepo("pi-subagent-async-patch-");
+			try {
+				const hookPath = path.join(tempDir, "hook.sh");
+				fs.writeFileSync(hookPath, '#!/bin/sh\ninput=$(cat)\ncase "$input" in\n  *"\\"index\\":0"*) echo "patched" >> input.md ;;\nesac\necho "{}"\n');
+				fs.chmodSync(hookPath, 0o755);
+				mockPi.onCall({ output: "Implemented" });
+				mockPi.onCall({ output: "Reviewed" });
+				const id = `async-patch-${changes}-${Date.now().toString(36)}`;
+				const result = executeAsyncChain(id, {
+					chain: [
+						{ parallel: [{ agent: "worker", task: "Implement", as: "impl_1", output: false, progress: false }], worktree: true },
+						{ agent: "reviewer", task: "Review {outputs.impl_1.patchPath}" },
+					],
+					agents: [makeAgent("worker", { completionGuard: false }), makeAgent("reviewer")],
+					ctx: { pi: { events: { emit() {} } }, cwd: repoDir, currentSessionId: "session-patch" },
+					...(changes ? { worktreeSetupHook: hookPath } : {}),
+					artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+					shareEnabled: false,
+					maxSubagentDepth: 2,
+				});
+				assert.ok(!result.isError);
+				const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id, 10_000), "utf-8")) as AsyncResultPayload;
+				assert.equal(payload.results.length, 2, JSON.stringify(payload.results));
+				assert.equal(payload.success, changes);
+				assert.equal(payload.outputs?.impl_1?.text, "Implemented");
+				if (changes) {
+					const patchPath = payload.outputs?.impl_1?.patchPath;
+					assert.match(patchPath ?? "", /worktree-diffs\/step-0\/task-0-.*\.patch$/);
+					assert.ok(fs.existsSync(patchPath!));
+					assert.ok((readMockPiArgs(mockPi, 1).at(-1) ?? "").includes(patchPath!));
+				} else {
+					assert.equal(payload.state, "failed");
+					assert.match(payload.results.at(-1)?.error ?? "", /Output 'impl_1' has no patch \(no changes\)./);
+					assert.equal(mockPi.callCount(), 1);
+				}
+			} finally {
+				removeTempDir(repoDir);
+			}
+		});
+	}
 
 	it("top-level async worktree parallel keeps reads in the worktree and output in the run dir", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
 		const repoDir = createRepo("pi-subagent-async-worktree-");

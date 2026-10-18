@@ -491,6 +491,27 @@ describe("saved chain slash command", { skip: !available ? "slash-commands.ts no
 		clearSlashSnapshots?.();
 	});
 
+	it("/run-chain keeps stopOn on sequential saved-chain steps", async () => {
+		await withTempProject("pi-chain-stop-on-", async (root) => {
+			const schemas = path.join(root, ".pi", "chains", "schemas");
+			fs.mkdirSync(schemas);
+			fs.writeFileSync(path.join(schemas, "verdict.json"), '{"type":"object"}');
+			writeProjectChain(root, "verdict-flow.chain.md", `---
+name: verdict-flow
+description: Review
+---
+
+## reviewer
+outputSchema: schemas/verdict.json
+stopOn: {"path":"/verdict","in":["FAIL"]}
+
+Review
+`);
+			const chain = await captureSlashCommandParams("run-chain", "verdict-flow -- Review", root);
+			assert.deepEqual((chain.params as { chain: Array<{ stopOn?: unknown }> }).chain[0].stopOn, { path: "/verdict", in: ["FAIL"] });
+		});
+	});
+
 	it("/run and /chain accept dotted packaged runtime agent names", async () => {
 		await withTempProject("pi-packaged-agent-slash-", async (root) => {
 			fs.writeFileSync(path.join(root, ".pi", "agents", "code-analysis.scout.md"), `---
