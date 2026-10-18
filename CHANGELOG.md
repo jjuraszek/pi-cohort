@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Worktree patches include binary payloads, so `git apply` preserves binary modifications, additions, and deletions instead of rejecting patches that only report that binary files differ. Git writes patch bytes directly to the artifact file, avoiding subprocess stdout-buffer overflow on large assets. Paired with pi-gauntlet's review-snapshot fix.
+
 ## [7.3.0] - 2026-10-18
 
 ### Added

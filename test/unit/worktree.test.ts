@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -197,6 +198,41 @@ describe("worktree", () => {
 			const summary = formatWorktreeDiffSummary(diffs);
 			assert.match(summary, /=== Worktree Changes ===/);
 			assert.match(summary, /Full patches:/);
+		} finally {
+			if (setup) cleanupWorktrees(setup);
+			cleanupRepo(repoDir);
+		}
+	});
+
+	it("diffWorktrees patches round-trip binary modification, addition, and deletion", () => {
+		const repoDir = createRepo("pi-worktree-binary-");
+		const original = Buffer.from([0, 1, 128, 255, 10]);
+		const modified = Buffer.from([0, 2, 254, 129, 10, 0]);
+		// Incompressible payload must exceed spawnSync's default stdout buffer.
+		const added = randomBytes(1024 * 1024);
+		let setup: WorktreeSetup | undefined;
+		try {
+			fs.writeFileSync(path.join(repoDir, "modified.bin"), original);
+			fs.writeFileSync(path.join(repoDir, "deleted.bin"), original);
+			git(repoDir, ["add", "-A"]);
+			git(repoDir, ["commit", "-m", "add binary fixtures"]);
+			setup = createWorktrees(repoDir, path.basename(repoDir), 1);
+			const worktree = setup.worktrees[0]!;
+			fs.writeFileSync(path.join(worktree.path, "modified.bin"), modified);
+			fs.writeFileSync(path.join(worktree.path, "added.bin"), added);
+			fs.unlinkSync(path.join(worktree.path, "deleted.bin"));
+
+			const [captured] = diffWorktrees(setup, ["worker"], path.relative(process.cwd(), path.join(repoDir, "diffs")));
+			assert.ok(captured);
+			assert.ok(!captured.captureError, `capture failed (${captured.captureError?.length ?? 0} error characters)`);
+			assert.ok(fs.statSync(captured.patchPath).size > 1024 * 1024);
+			assert.equal(captured.filesChanged, 3);
+			assert.equal(captured.insertions, 0);
+			assert.equal(captured.deletions, 0);
+			git(repoDir, ["apply", path.resolve(captured.patchPath)]);
+			assert.deepEqual(fs.readFileSync(path.join(repoDir, "modified.bin")), modified);
+			assert.deepEqual(fs.readFileSync(path.join(repoDir, "added.bin")), added);
+			assert.equal(fs.existsSync(path.join(repoDir, "deleted.bin")), false);
 		} finally {
 			if (setup) cleanupWorktrees(setup);
 			cleanupRepo(repoDir);
