@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Subagents start from SDK-hosted sessions (Pi Web, standalone SDK scripts) whose `process.argv[1]` is not Pi's CLI. `capturePiRuntime` still identifies the parent from `argv[1]` first; when that entry is not Pi's declared CLI, the executor supplies the installation the extension was loaded from (`getPackageDir()` from `@earendil-works/pi-coding-agent`), validated against that package's `bin.pi` through the same ownership check, so a sibling Pi earlier on `PATH` is never selected. Sessions launched through Pi's CLI capture exactly as before. (#22)
+
 ## [7.2.2] - 2026-10-16
 
 ### Fixed

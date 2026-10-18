@@ -1,35 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
 
 export const PI_CODING_AGENT_PACKAGE = "@earendil-works/pi-coding-agent";
-
-export function findPiPackageRootFromEntry(entryPoint: string): string | undefined {
-	let dir = path.dirname(entryPoint);
-	while (true) {
-		const packageJsonPath = path.join(dir, "package.json");
-		if (fs.existsSync(packageJsonPath)) {
-			const pkg = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8")) as { name?: unknown };
-			if (pkg.name === PI_CODING_AGENT_PACKAGE) return dir;
-		}
-		if (dir === path.dirname(dir)) return undefined;
-		dir = path.dirname(dir);
-	}
-}
-
-export function resolveInstalledPiPackageRoot(): string | undefined {
-	return findPiPackageRootFromEntry(fileURLToPath(import.meta.resolve(PI_CODING_AGENT_PACKAGE)));
-}
-
-export function resolvePiPackageRoot(): string | undefined {
-	try {
-		const entry = process.argv[1];
-		return entry ? findPiPackageRootFromEntry(fs.realpathSync(entry)) : undefined;
-	} catch {
-		// Non-launch package inspection is best-effort.
-		return undefined;
-	}
-}
 
 export interface PiRuntimeIdentity {
 	readonly nodeExecPath: string;
@@ -90,13 +62,46 @@ function checkAvailability(file: string, executable: boolean): void {
 	}
 }
 
-export function capturePiRuntime(deps: { execPath?: string; argv1?: string } = {}): PiRuntimeIdentity {
-	const nodeExecPath = canonicalPath(deps.execPath ?? process.execPath, "Node executable");
-	const piEntryPath = canonicalPath(deps.argv1 ?? process.argv[1], "Pi entry");
-	checkAvailability(nodeExecPath, true);
+function identifyFromEntry(entry: string | undefined): { piEntryPath: string; piPackageRoot: string } {
+	const piEntryPath = canonicalPath(entry, "Pi entry");
 	checkAvailability(piEntryPath, false);
 	const piPackageRoot = canonicalPath(owningPackageRoot(piEntryPath), "Pi package root");
-	return { nodeExecPath, piEntryPath, piPackageRoot };
+	return { piEntryPath, piPackageRoot };
+}
+
+function identifyFromInstallRoot(installRoot: string): { piEntryPath: string; piPackageRoot: string } {
+	const piPackageRoot = canonicalPath(installRoot, "Pi installation root");
+	const manifest = path.join(piPackageRoot, "package.json");
+	let bin: unknown;
+	try {
+		const pkg = JSON.parse(fs.readFileSync(manifest, "utf-8"));
+		if (pkg?.name !== PI_CODING_AGENT_PACKAGE) {
+			throw new PiRuntimeLaunchError(`${manifest}: installation is not ${PI_CODING_AGENT_PACKAGE}`);
+		}
+		bin = typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.pi;
+	} catch (error) {
+		if (error instanceof PiRuntimeLaunchError) throw error;
+		throw new PiRuntimeLaunchError(`${manifest}: ${String(error)}`);
+	}
+	if (typeof bin !== "string" || !bin) throw new PiRuntimeLaunchError(`${manifest}: missing declared Pi bin`);
+	const piEntryPath = canonicalPath(path.resolve(piPackageRoot, bin), "Declared Pi bin");
+	checkAvailability(piEntryPath, false);
+	const owner = canonicalPath(owningPackageRoot(piEntryPath), "Pi package root");
+	if (owner !== piPackageRoot) {
+		throw new PiRuntimeLaunchError(`${piEntryPath}: owning package ${owner} does not match installation ${piPackageRoot}`);
+	}
+	return { piEntryPath, piPackageRoot };
+}
+
+export function capturePiRuntime(deps: { execPath?: string; argv1?: string; installRoot?: string } = {}): PiRuntimeIdentity {
+	const nodeExecPath = canonicalPath(deps.execPath ?? process.execPath, "Node executable");
+	checkAvailability(nodeExecPath, true);
+	try {
+		return { nodeExecPath, ...identifyFromEntry(deps.argv1 ?? process.argv[1]) };
+	} catch (error) {
+		if (!(error instanceof PiRuntimeLaunchError) || deps.installRoot === undefined) throw error;
+		return { nodeExecPath, ...identifyFromInstallRoot(deps.installRoot) };
+	}
 }
 
 export function parsePiRuntime(value: unknown, source: string): PiRuntimeIdentity {

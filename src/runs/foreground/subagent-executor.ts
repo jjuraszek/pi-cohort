@@ -3,7 +3,7 @@ import { capturePiRuntime, parsePiRuntime, type PiRuntimeIdentity } from "../sha
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getPackageDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig, AgentScope } from "../../agents/agents.ts";
 import { getArtifactsDir } from "../../shared/artifacts.ts";
 import { ChainClarifyComponent, type ChainClarifyResult } from "./chain-clarify.ts";
@@ -2120,7 +2120,8 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 	let runtime: PiRuntimeIdentity | undefined;
 	let runtimeError: unknown;
 	try {
-		runtime = (deps.captureRuntime ?? capturePiRuntime)();
+		// SDK hosts are not launched through Pi's CLI; the installation this extension was loaded from is the fallback.
+		runtime = (deps.captureRuntime ?? (() => capturePiRuntime({ installRoot: getPackageDir() })))();
 	} catch (error) {
 		runtimeError = error;
 	}
