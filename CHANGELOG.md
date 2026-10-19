@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [7.4.1] - 2026-10-19
 
 ### Fixed
 - Non-BLOCKED file-only failures and save errors return an artifact pointer or an explicit not-preserved reason instead of the child reply inline; BLOCKED handoffs and inline mode are unchanged. (#24)
