@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [7.4.0] - 2026-10-19
 
 ### Added
 - Chains can use `{outputs.name.treePath}` in a later child's `cwd` to review a worktree task's base commit plus captured patch in a lazy detached checkout. Trees are shared per named output and cleaned up at chain end; only `treePath` output references are allowed in `cwd`, and not on `worktree: true` steps.
