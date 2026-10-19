@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [7.4.2] - 2026-10-19
 
 ### Added
 - Children with `outputSchema` get one in-process follow-up after a normal completion without a `structured_output` call; a valid follow-up call succeeds like a first-turn call. (#25)
