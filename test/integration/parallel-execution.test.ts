@@ -356,6 +356,70 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 		assert.equal(result.details?.results?.[0]?.savedOutputPath, outputPath);
 	});
 
+	for (const outputMode of [undefined, "inline"] as const) {
+		for (const outcome of ["saved", "save error", "failed"] as const) {
+			it(`preserves exact parallel inline output (${outputMode ?? "unset"}, ${outcome})`, { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+				const reply = "Complete parallel reply\nwith details";
+				const parent = path.join(tempDir, "reports");
+				if (outcome === "save error") fs.writeFileSync(parent, "not a directory");
+				const outputPath = path.join(parent, "report.md");
+				mockPi.onCall({ output: reply, exitCode: outcome === "failed" ? 1 : 0, stderr: outcome === "failed" ? "child failed" : "" });
+				const result = await makeExecutor().execute(
+					"parallel-output",
+					{ tasks: [{ agent: "echo", task: "Write report", output: outputPath, outputMode }] },
+					new AbortController().signal, undefined, makeMinimalCtx(tempDir),
+				);
+				const child = result.details.results[0];
+				assert.equal(child.finalOutput, reply);
+				const status = outcome === "failed" ? `FAILED (exit code 1): ${child.error}\n` : "";
+				assert.equal(result.content[0].text, `${outcome === "failed" ? 0 : 1}/1 succeeded\n\n=== Task 1: echo ===\n${status}${reply}`);
+				assert.doesNotMatch(result.content[0].text, /Output saved to:|Output file error:/);
+				assert.equal(result.isError, undefined);
+				if (outcome === "saved") {
+					assert.equal(child.savedOutputPath, outputPath);
+					assert.equal(fs.readFileSync(outputPath, "utf-8"), reply);
+				} else if (outcome === "save error") {
+					assert.ok(child.outputSaveError);
+				} else {
+					assert.equal(child.error, "child failed");
+				}
+			});
+		}
+	}
+
+	it("projects mixed file-only failures without leaking truncated replies or BLOCKED handoffs", async () => {
+		const reply = "PRIVATE prefix\n" + "private detail\n".repeat(100) + "PRIVATE suffix";
+		const blocked = "\n\nBLOCKED: approval needed\nDone: inspected\nRemaining: deploy";
+		mockPi.onCall({ output: reply, exitCode: 1, stderr: "plain failure" });
+		mockPi.onCall({ output: "success report" });
+		mockPi.onCall({ output: blocked });
+		const results = [];
+		for (const [index, name] of ["failed", "success", "blocked"].entries()) {
+			results.push(await runSync(tempDir, [makeAgent("echo")], "echo", name, {
+				runId: "mixed-file-only", index, outputPath: path.join(tempDir, `${name}.md`), outputMode: "file-only",
+				artifactsDir: path.join(tempDir, "artifacts"), artifactConfig: { enabled: true },
+				...(name === "failed" ? { maxOutput: { bytes: 64, lines: 2 } } : {}),
+			}));
+		}
+		const [failed, success, stopped] = results;
+		const { aggregateParallelOutputs } = await import("../../src/runs/shared/parallel-utils.ts");
+		const text = aggregateParallelOutputs(results.map((child, taskIndex) => ({
+			agent: child.agent, taskIndex, exitCode: child.exitCode, error: child.error,
+			output: utils.getSingleResultOutput(child),
+		})));
+		const pointer = `Full reply preserved at ${failed.artifactPaths.outputPath}`;
+		assert.equal(failed.finalOutput, pointer);
+		assert.equal(failed.truncation, undefined);
+		assert.equal(fs.readFileSync(failed.artifactPaths.outputPath, "utf8"), reply);
+		assert.equal(failed.savedOutputPath, undefined);
+		assert.match(success.finalOutput, /^Output saved to:/);
+		assert.equal(stopped.exitCode, 1);
+		assert.equal(stopped.error, blocked);
+		assert.equal(stopped.finalOutput, blocked);
+		assert.equal(text, `=== Parallel Task 1 (echo) ===\nFAILED (exit code 1): plain failure\n${pointer}\n\n=== Parallel Task 2 (echo) ===\n${success.finalOutput}\n\n=== Parallel Task 3 (echo) ===\nFAILED (exit code 1): ${blocked}\n${blocked}`);
+		assert.doesNotMatch(text, /PRIVATE|private detail|success report/);
+	});
+
 	it("top-level parallel file-only output aggregates concise file references", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
 		mockPi.onCall({ output: "Parallel full report\nwith details" });
 		const executor = makeExecutor();

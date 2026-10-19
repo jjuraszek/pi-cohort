@@ -106,6 +106,16 @@ export function formatSavedOutputReference(savedPath: string, fullOutput: string
 	};
 }
 
+export function formatFileOnlyFailure(params: {
+	outputPath?: string;
+	saveError?: string;
+} & ({ preservedAt: string; notPreservedReason?: never } | { preservedAt?: never; notPreservedReason: string })): string {
+	const pointer = params.preservedAt !== undefined
+		? `Full reply preserved at ${params.preservedAt}`
+		: `Full reply not preserved (${params.notPreservedReason})`;
+	return params.saveError ? `Output file error: ${params.outputPath}\n${params.saveError}\n\n${pointer}` : pointer;
+}
+
 export function validateFileOnlyOutputMode(outputMode: OutputMode | undefined, outputPath: string | undefined, context: string): string | undefined {
 	if (outputMode === "file-only" && !outputPath) {
 		return `${context} sets outputMode: "file-only" but does not configure an output file. Set output to a path or use outputMode: "inline".`;

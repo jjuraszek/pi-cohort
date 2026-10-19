@@ -39,6 +39,7 @@ import { createForkContextResolver } from "../../shared/fork-context.ts";
 import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
 import { formatControlNoticeMessage, resolveControlConfig, shouldNotifyControlEvent } from "../shared/subagent-control.ts";
 import { finalizeSingleOutput, injectSingleOutputInstruction, normalizeTopLevelOutput, resolveParallelTaskOutputPath, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
+import { blockedLine } from "../shared/completion-guard.ts";
 import { compactForegroundDetails, getSingleResultOutput, mapConcurrent, readStatus, resolveChildCwd } from "../../shared/utils.ts";
 import { resolveSubagentResultStatus } from "../shared/result-children.ts";
 import { buildRevivedAsyncTask, resolveAsyncResumeTarget } from "../background/async-resume.ts";
@@ -2064,7 +2065,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 	if (r.artifactPaths) allArtifactPaths.push(r.artifactPaths);
 
 	const fullOutput = getSingleResultOutput(r);
-	const finalizedOutput = finalizeSingleOutput({
+	const displayOutput = r.outputMode === "file-only" ? r.finalOutput : finalizeSingleOutput({
 		fullOutput,
 		truncatedOutput: r.truncation?.text,
 		outputPath,
@@ -2073,7 +2074,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		savedPath: r.savedOutputPath,
 		outputReference: r.outputReference,
 		saveError: r.outputSaveError,
-	});
+	}).displayOutput;
 	const details = compactForegroundDetails({
 		mode: "single",
 		runId,
@@ -2096,14 +2097,14 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		};
 	}
 
-	if (r.exitCode !== 0)
-		return {
-			content: [{ type: "text", text: r.error || "Failed" }],
-			details,
-			isError: true,
-		};
+	if (r.exitCode !== 0) {
+		const text = r.outputMode === "file-only" && !blockedLine(r.error ?? "")
+			? `FAILED (exit code ${r.exitCode})${r.error ? `: ${r.error}` : ""}\n\n${r.finalOutput ?? ""}`
+			: r.error || "Failed";
+		return { content: [{ type: "text", text }], details, isError: true };
+	}
 	return {
-		content: [{ type: "text", text: finalizedOutput.displayOutput || "(no output)" }],
+		content: [{ type: "text", text: displayOutput || "(no output)" }],
 		details,
 	};
 }

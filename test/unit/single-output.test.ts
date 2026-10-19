@@ -6,6 +6,7 @@ import * as path from "node:path";
 import {
 	captureSingleOutputSnapshot,
 	finalizeSingleOutput,
+	formatFileOnlyFailure,
 	formatSavedOutputReference,
 	injectSingleOutputInstruction,
 	normalizeSingleOutputOverride,
@@ -163,6 +164,38 @@ describe("formatSavedOutputReference", () => {
 		const ref = formatSavedOutputReference("/tmp/large.md", "a".repeat(49_357));
 		assert.match(ref.message, /\(48\.2 KB, 1 line\)/);
 	});
+});
+
+describe("formatFileOnlyFailure", () => {
+	const cases: Array<{ name: string; params: Parameters<typeof formatFileOnlyFailure>[0]; expected: string }> = [
+		{
+			name: "preserved reply",
+			params: { preservedAt: "/tmp/reply.md" },
+			expected: "Full reply preserved at /tmp/reply.md",
+		},
+		{
+			name: "artifact output disabled",
+			params: { notPreservedReason: "artifact output disabled" },
+			expected: "Full reply not preserved (artifact output disabled)",
+		},
+		{
+			name: "save error with preserved reply",
+			params: { outputPath: "/tmp/requested.md", saveError: "EACCES", preservedAt: "/tmp/reply.md" },
+			expected: "Output file error: /tmp/requested.md\nEACCES\n\nFull reply preserved at /tmp/reply.md",
+		},
+		{
+			name: "save error with artifact write failure",
+			params: { outputPath: "/tmp/requested.md", saveError: "EISDIR", notPreservedReason: "artifact write failed: EACCES" },
+			expected: "Output file error: /tmp/requested.md\nEISDIR\n\nFull reply not preserved (artifact write failed: EACCES)",
+		},
+	];
+
+	for (const { name, params, expected } of cases) {
+		it(name, () => {
+			const output = formatFileOnlyFailure(params);
+			assert.equal(output, expected);
+		});
+	}
 });
 
 describe("resolveParallelTaskOutputPath", () => {

@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { registerExecutionBackend } from "../../src/execution-backend/registry.ts";
 import type { ExecutionBackend, ExecutionSurfaceRequest } from "../../src/execution-backend/types.ts";
 import { runSync } from "../../src/runs/foreground/execution.ts";
+import { getArtifactPaths } from "../../src/shared/artifacts.ts";
 import { createMockPi } from "../support/mock-pi.ts";
 import { createTempDir, makeAgent, removeTempDir } from "../support/helpers.ts";
 
@@ -53,7 +54,8 @@ socket.on("data", chunk => {
 });
 `;
 
-test("runSync drives one real child host surface through a registered backend", unixOnly, async () => {
+for (const outcome of ["success", "artifact failure", "save and artifact failure"] as const) {
+test(`runSync drives one real child host surface through a registered backend (${outcome})`, unixOnly, async () => {
 	const tempDir = createTempDir("foreground-external-");
 	const binDir = path.join(tempDir, "bin");
 	const fixturePath = path.join(binDir, "pi");
@@ -92,21 +94,41 @@ test("runSync drives one real child host surface through a registered backend", 
 	process.env.PATH = `${binDir}${path.delimiter}${savedPath ?? ""}`;
 	try {
 		const sessionFile = path.join(tempDir, "session.jsonl");
+		const artifactPaths = getArtifactPaths(path.join(tempDir, "artifacts"), "external-integration", "worker");
+		const outputPath = path.join(tempDir, "blocker", "report.md");
+		if (outcome !== "success") fs.mkdirSync(artifactPaths.outputPath, { recursive: true });
+		if (outcome === "save and artifact failure") fs.writeFileSync(path.dirname(outputPath), "not a directory");
 		const output = await runSync(tempDir, [makeAgent("worker", { completionGuard: false })], "worker", "Task", {
 			runtime: mockPi.runtime,
 			runId: "external-integration",
+			...(outcome !== "success" ? {
+				outputMode: "file-only" as const, outputPath,
+				artifactsDir: path.dirname(artifactPaths.outputPath),
+				artifactConfig: { enabled: true, includeJsonl: false, includeMetadata: false },
+			} : {}),
 			executionBackend: backend.name,
 			sessionFile,
 			parentModel: "github-copilot/gpt-6",
 			parentThinking: "high",
 			acceptance: { level: "none", reason: "integration fixture" },
 		});
-		assert.equal(output.exitCode, 0, output.error);
-		assert.equal(output.finalOutput, "durable answer");
+		assert.equal(output.exitCode, outcome === "success" ? 0 : 1, output.error);
+		if (outcome === "success") assert.equal(output.finalOutput, "durable answer");
+		else {
+			let writeMessage = "";
+			try { fs.writeFileSync(artifactPaths.outputPath, "durable answer", "utf8"); }
+			catch (error) { writeMessage = (error as Error).message; }
+			assert.ok(writeMessage);
+			const pointer = `Full reply not preserved (artifact write failed: ${writeMessage})`;
+			assert.equal(output.finalOutput, outcome === "save and artifact failure"
+				? `Output file error: ${outputPath}\n${output.outputSaveError}\n\n${pointer}` : pointer);
+			assert.equal(output.error, "External execution cleanup failed");
+			assert.doesNotMatch(output.finalOutput, /durable answer/);
+		}
 		assert.equal(output.messages?.length, 1);
 		assert.deepEqual(output.executionSurface, {
 			handle: { protocolVersion: 1, backend: backend.name, surface: { kind: "fixture", id: "one" }, display: { label: "fixture surface", hint: "durable" }, data: null },
-			retained: false,
+			retained: outcome !== "success",
 		});
 		assert.equal(requests.length, 1);
 		const sessionEntry = JSON.parse(fs.readFileSync(sessionFile, "utf8").split("\n")[0]) as { args: string[] };
@@ -114,7 +136,7 @@ test("runSync drives one real child host surface through a registered backend", 
 		assert.equal(sessionEntry.args[sessionEntry.args.indexOf("--model") + 1], "github-copilot/gpt-6:high");
 		assert.deepEqual(requests[0].awareness, { title: "worker" });
 		assert.equal(releases, 1);
-		assert.equal(closes, 1);
+		assert.equal(closes, outcome === "success" ? 1 : 0);
 		assert.ok(fs.readFileSync(sessionFile, "utf8").includes("durable answer"));
 		assert.equal("stdout" in output, false);
 	} finally {
@@ -129,3 +151,4 @@ test("runSync drives one real child host surface through a registered backend", 
 		removeTempDir(tempDir);
 	}
 });
+}

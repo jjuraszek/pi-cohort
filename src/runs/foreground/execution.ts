@@ -46,7 +46,7 @@ import { PINNED_AGENT_DIR_OVERRIDE } from "../../shared/agent-dir.ts";
 import { createJsonlWriter } from "../../shared/jsonl-writer.ts";
 import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
 import { buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
-import { captureSingleOutputSnapshot, validateFileOnlyOutputMode } from "../shared/single-output.ts";
+import { captureSingleOutputSnapshot, formatFileOnlyFailure, validateFileOnlyOutputMode } from "../shared/single-output.ts";
 import {
 	buildModelCandidates,
 	formatModelAttemptNote,
@@ -815,6 +815,8 @@ export async function runSync(
 	} satisfies SingleResult;
 
 	let postLoopError: unknown;
+	let preservedAt: string | undefined;
+	let notPreservedReason = "artifact output disabled";
 	try {
 		result.usage = aggregateUsage;
 		result.attemptedModels = attemptedModels.length > 0 ? attemptedModels : undefined;
@@ -834,7 +836,14 @@ export async function runSync(
 		if (artifactPathsResult && options.artifactConfig?.enabled !== false) {
 			result.artifactPaths = artifactPathsResult;
 			if (options.artifactConfig?.includeOutput !== false) {
-				writeArtifact(artifactPathsResult.outputPath, artifactOutputByResult.get(result) ?? result.finalOutput ?? "");
+				try {
+					writeArtifact(artifactPathsResult.outputPath, artifactOutputByResult.get(result) ?? result.finalOutput ?? "");
+					preservedAt = artifactPathsResult.outputPath;
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					notPreservedReason = `artifact write failed: ${message}`;
+					throw error;
+				}
 			}
 			if (options.artifactConfig?.includeMetadata !== false) {
 				writeMetadata(artifactPathsResult.metadataPath, {
@@ -912,9 +921,19 @@ export async function runSync(
 				: safeMessage;
 			result.executionSurface ??= { handle: externalOwner.surface, retained: true };
 		}
-	} else if (postLoopError) {
-		throw postLoopError;
 	}
+
+	if (options.outputMode === "file-only"
+		&& (result.exitCode !== 0 || result.outputSaveError)
+		&& !blockedLine(result.error ?? "")) {
+		result.finalOutput = formatFileOnlyFailure({
+			outputPath: options.outputPath,
+			saveError: result.outputSaveError,
+			...(preservedAt !== undefined ? { preservedAt } : { notPreservedReason }),
+		});
+		result.truncation = undefined;
+	}
+	if (!externalOwner && postLoopError) throw postLoopError;
 
 	return result;
 }

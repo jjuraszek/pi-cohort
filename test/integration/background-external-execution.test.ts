@@ -454,6 +454,7 @@ test("runSingleStep treats an external output-save EISDIR as a retained failed l
 			inheritProjectContext: false,
 			inheritSkills: false,
 			sessionFile: path.join(tempDir, "session-0-attempt-0.jsonl"),
+			outputMode: "file-only",
 			outputPath,
 			completionGuard: false,
 		}, {
@@ -472,6 +473,8 @@ test("runSingleStep treats an external output-save EISDIR as a retained failed l
 
 		assert.equal(result.exitCode, 1);
 		assert.match(result.error ?? "", /EISDIR|illegal operation on a directory/);
+		assert.equal(result.output, `Output file error: ${outputPath}\n${result.error}\n\nFull reply not preserved (artifact output disabled)`);
+		assert.equal(fs.readFileSync(path.join(tempDir, "output-0.log"), "utf8"), result.output);
 		assert.equal(result.executionSurface?.retained, true);
 		assert.equal(result.executionSurface?.handle.backend, backendName);
 		assert.equal(lifecycle.releases, 1);
@@ -487,7 +490,8 @@ test("runSingleStep treats an external output-save EISDIR as a retained failed l
 	}
 });
 
-test("runSingleStep retains an external leaf when its async output file cannot be persisted", unixOnly, async () => {
+test("runSingleStep retains an external leaf when its async output file cannot be persisted", unixOnly, async t => {
+	for (const outputMode of ["inline", "file-only"] as const) await t.test(outputMode, async () => {
 	const tempDir = createTempDir("bg-runner-async-output-");
 	const binDir = path.join(tempDir, "bin");
 	const argsPath = path.join(tempDir, "pi-args.json");
@@ -510,6 +514,8 @@ test("runSingleStep retains an external leaf when its async output file cannot b
 		const result = await runSingleStep({
 			agent: "worker",
 			task: "Exercise async output persistence failure",
+			outputMode,
+			...(outputMode === "file-only" ? { outputPath: path.join(tempDir, "requested.md") } : {}),
 			systemPrompt: "runner fixture prompt",
 			inheritProjectContext: false,
 			inheritSkills: false,
@@ -528,7 +534,10 @@ test("runSingleStep retains an external leaf when its async output file cannot b
 			executionBackendConfig: { protocolVersion: 1, registrations: [], userPreference: backendName },
 		});
 
-		assert.equal(result.output, "background answer");
+		assert.equal(result.output, outputMode === "file-only"
+			? "Full reply not preserved (artifact output disabled)"
+			: "background answer");
+		if (outputMode === "file-only") assert.equal(fs.readFileSync(path.join(tempDir, "requested.md"), "utf8"), "background answer");
 		assert.equal(result.exitCode, 1);
 		assert.equal(result.error, "External execution output persistence failed");
 		assert.ok(!result.error.includes(secretPath), `must not leak output paths: ${result.error}`);
@@ -545,10 +554,11 @@ test("runSingleStep retains an external leaf when its async output file cannot b
 		await cleanupHosts(hosts);
 		removeTempDir(tempDir);
 	}
+	});
 });
 
-test("runSingleStep retains external leaves when enabled artifact output or metadata writes fail", unixOnly, async t => {
-	for (const target of ["output", "metadata"] as const) await t.test(target, async () => {
+test("runSingleStep retains external leaves when artifact writes or finish fail", unixOnly, async t => {
+	for (const target of ["output", "metadata", "child-failure", "finish-failure"] as const) await t.test(target, async () => {
 		const tempDir = createTempDir(`bg-runner-artifact-${target}-`);
 		const binDir = path.join(tempDir, "bin");
 		const argsPath = path.join(tempDir, "pi-args.json");
@@ -557,12 +567,13 @@ test("runSingleStep retains external leaves when enabled artifact output or meta
 		const artifactPaths = getArtifactPaths(artifactsDir, runId, "worker");
 		fs.mkdirSync(binDir);
 		fs.mkdirSync(artifactsDir);
-		fs.mkdirSync(target === "output" ? artifactPaths.outputPath : artifactPaths.metadataPath);
-		fs.writeFileSync(path.join(binDir, "pi"), makeFixtureScript("success", argsPath), { mode: 0o755 });
+		if (target === "output" || target === "metadata") fs.mkdirSync(target === "output" ? artifactPaths.outputPath : artifactPaths.metadataPath);
+		fs.writeFileSync(path.join(binDir, "pi"), makeFixtureScript(target === "child-failure" ? "fail" : "success", argsPath), { mode: 0o755 });
 
 		const requests: ExecutionSurfaceRequest[] = [];
 		const hosts: ReturnType<typeof spawn>[] = [];
 		const lifecycle: BackendLifecycle = { releases: 0, closes: 0 };
+		if (target === "finish-failure") lifecycle.releaseError = "SENTINEL_FINISH_SECRET";
 		const backendName = `fake-bg-runner-artifact-${target}-${process.pid}`;
 		const dispose = registerExecutionBackend(makeBackend(backendName, binDir, requests, hosts, lifecycle));
 		const savedPath = process.env.PATH;
@@ -572,6 +583,8 @@ test("runSingleStep retains external leaves when enabled artifact output or meta
 			const result = await runSingleStep({
 				agent: "worker",
 				task: `Exercise artifact ${target} persistence failure`,
+				outputMode: "file-only",
+				outputPath: path.join(tempDir, "requested.md"),
 				inheritProjectContext: false,
 				inheritSkills: false,
 				sessionFile: path.join(tempDir, "session-0-attempt-0.jsonl"),
@@ -586,7 +599,7 @@ test("runSingleStep retains external leaves when enabled artifact output or meta
 				artifactConfig: {
 					enabled: true,
 					includeInput: true,
-					includeOutput: target === "output",
+					includeOutput: true,
 					includeJsonl: false,
 					includeMetadata: true,
 					cleanupDays: 1,
@@ -600,11 +613,22 @@ test("runSingleStep retains external leaves when enabled artifact output or meta
 			});
 
 			assert.equal(result.exitCode, 1);
+			assert.equal(result.output, target === "output"
+				? `Full reply not preserved (artifact write failed: ${result.error})`
+				: `Full reply preserved at ${artifactPaths.outputPath}`);
+			assert.equal(fs.readFileSync(path.join(tempDir, "output-0.log"), "utf8"), result.output);
+			if (target !== "output") assert.equal(fs.readFileSync(artifactPaths.outputPath, "utf8"), "background answer");
+			if (target === "child-failure") assert.equal(fs.existsSync(path.join(tempDir, "requested.md")), false);
+			if (target === "finish-failure") {
+				assert.equal(result.error, "External execution finish failed");
+				assert.equal(fs.readFileSync(path.join(tempDir, "requested.md"), "utf8"), "background answer");
+				assert.ok(!result.output.includes("Output saved to:"));
+			}
 			assert.ok(result.error, "artifact write failure must produce a controlled failed result");
 			assert.equal(result.executionSurface?.retained, true);
 			assert.equal(result.executionSurface?.handle.backend, backendName);
 			assert.equal(lifecycle.releases, 1);
-			assert.equal(lifecycle.closes, 0);
+			assert.equal(lifecycle.closes, target === "finish-failure" ? 1 : 0);
 			assert.equal(requests.length, 1);
 			assert.equal(fixtureInvocationCount(argsPath), 1, "must not fall back to native execution");
 		} finally {

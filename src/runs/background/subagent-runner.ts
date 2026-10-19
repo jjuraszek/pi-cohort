@@ -7,7 +7,7 @@ import type { Message } from "@earendil-works/pi-ai";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { appendJsonl, getArtifactPaths } from "../../shared/artifacts.ts";
 import { getPiSpawnCommand, parsePiRuntime, PiRuntimeLaunchError, type PiRuntimeIdentity } from "../shared/pi-spawn.ts";
-import { captureSingleOutputSnapshot, finalizeSingleOutput, formatSavedOutputReference, resolveSingleOutput, type SingleOutputSnapshot } from "../shared/single-output.ts";
+import { captureSingleOutputSnapshot, finalizeSingleOutput, formatFileOnlyFailure, formatSavedOutputReference, resolveSingleOutput, type SingleOutputSnapshot } from "../shared/single-output.ts";
 import {
 	type ActivityState,
 	type ArtifactConfig,
@@ -1007,6 +1007,8 @@ export async function runSingleStep(
 	let acceptanceCanFailRun = false;
 	let effectiveFinalExitCode = resolvedOutput.saveError ? 1 : finalResult?.exitCode ?? 1;
 	let effectiveFinalError = finalResult?.error;
+	let preservedAt: string | undefined;
+	let notPreservedReason = "artifact output disabled";
 	if (resolvedOutput.saveError) {
 		effectiveFinalError = effectiveFinalError
 			? `${effectiveFinalError}\n${resolvedOutput.saveError}`
@@ -1037,7 +1039,14 @@ export async function runSingleStep(
 
 	if (artifactPaths && ctx.artifactConfig?.enabled !== false) {
 		if (ctx.artifactConfig?.includeOutput !== false) {
-			fs.writeFileSync(artifactPaths.outputPath, output, "utf-8");
+			try {
+				fs.writeFileSync(artifactPaths.outputPath, output, "utf-8");
+				preservedAt = artifactPaths.outputPath;
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				notPreservedReason = `artifact write failed: ${message}`;
+				throw error;
+			}
 		}
 		if (ctx.artifactConfig?.includeMetadata !== false) {
 			fs.writeFileSync(
@@ -1063,11 +1072,14 @@ export async function runSingleStep(
 		effectiveFinalError = effectiveFinalError ? `${effectiveFinalError}\n${message}` : message;
 	}
 
+	const outputBeforeExternalFinalization = outputForSummary;
+	let externalOutputPersisted = false;
 	// Native runs have runPiStreaming write outputFile live; external runs persist it
 	// before their surface can be destructively closed as delivered.
 	if (externalOwner) {
 		try {
 			fs.writeFileSync(ctx.outputFile, outputForSummary, "utf-8");
+			externalOutputPersisted = true;
 		} catch (error) {
 			const message = safeExternalFailure("output persistence", error);
 			effectiveFinalExitCode = 1;
@@ -1088,6 +1100,30 @@ export async function runSingleStep(
 			finishResult = { handle: externalOwner.surface, retained: true };
 		}
 		executionSurface = { handle: finishResult.handle, retained: finishResult.retained };
+	}
+
+	if (step.outputMode === "file-only"
+		&& (effectiveFinalExitCode !== 0 || resolvedOutput.saveError)
+		&& !blockedLine(effectiveFinalError ?? "")) {
+		const pointer = formatFileOnlyFailure({
+			outputPath: step.outputPath,
+			saveError: resolvedOutput.saveError,
+			...(preservedAt !== undefined ? { preservedAt } : { notPreservedReason }),
+		});
+		outputForSummary = attemptNotes.length > 0
+			? `${attemptNotes.join("\n")}\n\n${pointer}`
+			: pointer;
+	}
+
+	// finish can turn a saved success into a failure after the pre-close log write.
+	if (externalOutputPersisted && outputForSummary !== outputBeforeExternalFinalization) {
+		try {
+			fs.writeFileSync(ctx.outputFile, outputForSummary, "utf-8");
+		} catch (error) {
+			const message = safeExternalFailure("output persistence", error);
+			effectiveFinalExitCode = 1;
+			effectiveFinalError = effectiveFinalError ? `${effectiveFinalError}\n${message}` : message;
+		}
 	}
 
 	return {

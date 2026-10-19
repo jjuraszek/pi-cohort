@@ -16,6 +16,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { createEventBus, createMockPi, createTempDir, events, makeAgent, makeMinimalCtx, makeParentSessionCtx, removeTempDir, tryImport } from "../support/helpers.ts";
 import type { MockPi } from "../support/helpers.ts";
+import { getArtifactPaths } from "../../src/shared/artifacts.ts";
+import { formatModelAttemptNote } from "../../src/runs/shared/model-fallback.ts";
 
 interface AsyncExecutionResult {
 	content: Array<{ text?: string }>;
@@ -31,7 +33,7 @@ interface AsyncResultPayload {
 	sessionId?: string;
 	mode?: string;
 	summary?: string;
-	results: Array<{ output?: string; success?: boolean; error?: string; model?: string; attemptedModels?: string[]; modelAttempts?: Array<{ success?: boolean; error?: string }>; structuredOutput?: unknown; acceptance?: { status?: string; childReport?: unknown } }>;
+	results: Array<{ exitCode?: number; artifactPaths?: { outputPath: string }; output?: string; success?: boolean; error?: string; model?: string; attemptedModels?: string[]; modelAttempts?: Array<{ model: string; success: boolean; exitCode?: number | null; error?: string }>; structuredOutput?: unknown; acceptance?: { status?: string; childReport?: unknown } }>;
 	outputs?: Record<string, { text?: string; structured?: unknown; patchPath?: string; treePath?: string; repoCwd?: string; baseCommit?: string; taskIndex?: number }>;
 	workflowGraph?: { nodes?: Array<{ kind?: string; label?: string; phase?: string; status?: string; error?: string; outputName?: string; structured?: boolean; children?: Array<{ label?: string; outputName?: string; itemKey?: string; status?: string; error?: string }> }> };
 }
@@ -1480,6 +1482,95 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		}
 	});
 
+	for (const mode of [undefined, "inline", "file-only"] as const) {
+		for (const scenario of ["failure", "save-error"] as const) {
+			it(`background ${mode ?? "unset"} ${scenario} preserves its output contract`, async () => {
+				const reply = "PRIVATE_BACKGROUND_REPLY";
+				mockPi.onCall({ output: "primary failed", stderr: "rate limit exceeded", exitCode: 1 });
+				mockPi.onCall({ output: reply, exitCode: scenario === "failure" ? 1 : 0, stderr: scenario === "failure" ? "child failed" : undefined });
+				const id = `contract-${mode}-${scenario}-${Date.now().toString(36)}`;
+				const parent = path.join(tempDir, "parent");
+				if (scenario === "save-error") fs.writeFileSync(parent, "not a directory");
+				const output = path.join(parent, "requested.md");
+				const artifactsDir = path.join(tempDir, "artifacts");
+				executeAsyncSingle(id, {
+					agent: "worker", task: "Summarize", agentConfig: makeAgent("worker", { model: "openai/gpt-5-mini", fallbackModels: ["anthropic/claude-sonnet-4"] }), output, outputMode: mode,
+					ctx: { cwd: tempDir, pi: { events: { emit() {} } } }, artifactsDir,
+					artifactConfig: { enabled: true, includeOutput: true, includeInput: false, includeJsonl: false, includeMetadata: false },
+					shareEnabled: false, maxSubagentDepth: 2,
+				});
+				const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf8")) as AsyncResultPayload;
+				const result = payload.results[0];
+				assert.equal(payload.exitCode, 1);
+				const saveBlock = scenario === "save-error" ? `Output file error: ${output}\n${result.error}` : "";
+				const pointer = `Full reply preserved at ${getArtifactPaths(artifactsDir, id, "worker").outputPath}`;
+				assert.equal(result.modelAttempts?.length, 2);
+				const note = formatModelAttemptNote(result.modelAttempts![0], "anthropic/claude-sonnet-4");
+				assert.equal(result.output, `${note}\n\n` + (mode === "file-only" ? [saveBlock, pointer].filter(Boolean).join("\n\n") : reply + (saveBlock ? `\n\n${saveBlock}` : "")));
+				assert.equal(fs.readFileSync(result.artifactPaths!.outputPath, "utf8"), reply);
+				if (scenario === "failure") {
+					assert.equal(result.error, "child failed");
+					assert.equal(fs.existsSync(output), false);
+				}
+				if (mode === "file-only") assert.equal(payload.summary, `worker:\n${result.output}`);
+			});
+		}
+	}
+
+	for (const gate of ["disabled", "include-output", "no-directory", "combined-write-error"] as const) {
+		it(`background file-only failure handles ${gate}`, async () => {
+			const id = `gate-${gate}-${Date.now().toString(36)}`;
+			const artifactsDir = path.join(tempDir, "artifacts");
+			const artifact = getArtifactPaths(artifactsDir, id, "worker").outputPath;
+			const output = path.join(tempDir, "parent", "requested.md");
+			let writeError = "";
+			if (gate === "combined-write-error") {
+				fs.mkdirSync(artifact, { recursive: true });
+				fs.writeFileSync(path.dirname(output), "not a directory");
+				try { fs.writeFileSync(artifact, "reply", "utf-8"); } catch (error) { writeError = (error as Error).message; }
+			}
+			mockPi.onCall({ output: "PRIVATE_GATE_REPLY", exitCode: gate === "combined-write-error" ? 0 : 1 });
+			executeAsyncSingle(id, {
+				agent: "worker", task: "Summarize", agentConfig: makeAgent("worker"), output, outputMode: "file-only",
+				ctx: { cwd: tempDir, pi: { events: { emit() {} } } }, artifactsDir: gate === "no-directory" ? undefined : artifactsDir,
+				artifactConfig: { enabled: gate !== "disabled", includeOutput: gate !== "include-output", includeInput: false, includeJsonl: false, includeMetadata: false },
+				shareEnabled: false, maxSubagentDepth: 2,
+			});
+			const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf8")) as AsyncResultPayload;
+			const result = payload.results[0];
+			assert.equal(payload.exitCode, 1);
+			if (writeError) {
+				assert.ok(result.error?.endsWith(writeError));
+				const saveError = result.error!.slice(0, -(writeError.length + 1));
+				assert.equal(result.output, `Output file error: ${output}\n${saveError}\n\nFull reply not preserved (artifact write failed: ${writeError})`);
+			} else assert.equal(result.output, "Full reply not preserved (artifact output disabled)");
+			assert.equal(payload.summary, `worker:\n${result.output}`);
+		});
+	}
+
+	it("background failed fallback preserves empty reply and existing requested file", async () => {
+		mockPi.onCall({ output: "primary failed", stderr: "rate limit exceeded", exitCode: 1 });
+		mockPi.onCall({ output: "", stderr: "final failure", exitCode: 1 });
+		const id = `failed-fallback-empty-${Date.now().toString(36)}`;
+		const output = path.join(tempDir, "requested.md");
+		fs.writeFileSync(output, "previous result");
+		const artifactsDir = path.join(tempDir, "artifacts");
+		executeAsyncSingle(id, {
+			agent: "worker", task: "Summarize", agentConfig: makeAgent("worker", { model: "openai/gpt-5-mini", fallbackModels: ["anthropic/claude-sonnet-4"] }), output, outputMode: "file-only",
+			ctx: { cwd: tempDir, pi: { events: { emit() {} } } }, artifactsDir,
+			artifactConfig: { enabled: true, includeOutput: true, includeInput: false, includeJsonl: false, includeMetadata: false }, shareEnabled: false, maxSubagentDepth: 2,
+		});
+		const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf8")) as AsyncResultPayload;
+		const result = payload.results[0];
+		assert.equal(payload.exitCode, 1);
+		assert.equal(result.error, "final failure");
+		const note = formatModelAttemptNote(result.modelAttempts![0], "anthropic/claude-sonnet-4");
+		assert.equal(result.output, `${note}\n\nFull reply preserved at ${result.artifactPaths!.outputPath}`);
+		assert.equal(fs.readFileSync(result.artifactPaths!.outputPath, "utf8"), "");
+		assert.equal(payload.summary, `worker:\n${result.output}`);
+		assert.equal(fs.readFileSync(output, "utf8"), "previous result");
+	});
+
 	it("background runs record fallback attempts and final model", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
 		mockPi.onCall({
 			jsonl: [{
@@ -1814,7 +1905,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 
 		executeAsyncSingle(id, {
 			agent: "worker",
-			task: "Implement deployment",
+			task: "Implement deployment", output: path.join(tempDir, "blocked.md"), outputMode: "file-only",
 			agentConfig: makeAgent("worker", { model: "openai/gpt-5-mini", fallbackModels: ["anthropic/claude-sonnet-4"] }),
 			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
 			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
@@ -1853,12 +1944,14 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		mockPi.onCall({ output: "Rotation completed" });
 		const id = `async-sequential-blocked-${Date.now().toString(36)}`;
 		executeAsyncChain(id, {
-			chain: [{ agent: "worker", task: "Trace callers" }, { agent: "reviewer", task: "Rotate key" }], agents: [makeAgent("worker"), makeAgent("reviewer")],
+			chain: [{ agent: "worker", task: "Trace callers", output: path.join(tempDir, "blocked.md"), outputMode: "file-only" }, { agent: "reviewer", task: "Rotate key" }], agents: [makeAgent("worker"), makeAgent("reviewer")],
 			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" }, artifactConfig: { enabled: false }, shareEnabled: false, sessionRoot: path.join(tempDir, "sessions"), maxSubagentDepth: 2,
 		});
 		const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id, 10_000), "utf-8")) as AsyncResultPayload;
 		assert.equal(payload.success, false);
 		assert.equal(payload.results[0]?.error, blocked);
+		assert.equal(payload.results[0]?.output, blocked);
+		assert.equal(payload.exitCode, 1);
 		assert.equal(payload.results.length, 1);
 		assert.equal(mockPi.callCount(), 1);
 	});
@@ -1869,14 +1962,18 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		mockPi.onCall({ output: "Sibling completed" });
 		const id = `async-parallel-blocked-${Date.now().toString(36)}`;
 		executeAsyncChain(id, {
-			chain: [{ parallel: [{ agent: "blocked", task: "Implement" }, { agent: "sibling", task: "Review" }] }], resultMode: "parallel", agents: [makeAgent("blocked"), makeAgent("sibling")],
+			chain: [{ parallel: [{ agent: "blocked", task: "Review", output: path.join(tempDir, "blocked.md"), outputMode: "file-only" }, { agent: "sibling", task: "Review", output: path.join(tempDir, "sibling.md"), outputMode: "file-only" }] }], resultMode: "parallel", agents: [makeAgent("blocked"), makeAgent("sibling")],
 			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" }, artifactConfig: { enabled: false }, shareEnabled: false, sessionRoot: path.join(tempDir, "sessions"), maxSubagentDepth: 2,
 		});
 		const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id, 10_000), "utf-8")) as AsyncResultPayload;
 		assert.equal(payload.success, false);
 		assert.equal(payload.results.length, 2);
-		assert.ok(payload.results.some((item) => item.error === blocked));
-		assert.ok(payload.results.some((item) => item.output === "Sibling completed"));
+		assert.ok(payload.results.some((item) => item.error === blocked && item.output === blocked));
+		assert.equal(payload.exitCode, 1);
+		const succeeded = payload.results.find((item) => item.success);
+		assert.match(succeeded?.output ?? "", /^Output saved to:/);
+		assert.doesNotMatch(succeeded?.output ?? "", /Sibling completed/);
+		assert.equal(fs.readFileSync(path.join(tempDir, succeeded === payload.results[0] ? "blocked.md" : "sibling.md"), "utf8"), "Sibling completed");
 	});
 
 	it("background implementation runs fail when no mutation attempt occurred", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {

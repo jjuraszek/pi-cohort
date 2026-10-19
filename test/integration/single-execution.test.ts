@@ -94,6 +94,7 @@ interface ExecutionModule {
 
 interface UtilsModule {
 	getFinalOutput(messages: unknown[]): string;
+	getSingleResultOutput(result: { finalOutput?: string }): string;
 }
 
 interface ExecutorModule {
@@ -1257,6 +1258,166 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.equal(fs.existsSync(path.join(tempDir, "false")), false);
 		assert.equal(fs.existsSync(path.join(tempDir, "default-report.md")), false);
 		assert.doesNotMatch(readCallArgs().at(-1) ?? "", /Write your findings to:/);
+	});
+
+	for (const outputMode of [undefined, "inline"] as const) {
+		for (const saveError of [false, true]) {
+			it(`preserves exact single inline output (${outputMode ?? "unset"}, save ${saveError ? "error" : "success"})`, async () => {
+				const reply = "Complete report\nwith details";
+				const parent = path.join(tempDir, "reports");
+				if (saveError) fs.writeFileSync(parent, "not a directory");
+				const outputPath = path.join(parent, "report.md");
+				mockPi.onCall({ output: reply });
+				const result = await makeExecutor().execute(
+					"inline-output", { agent: "echo", task: "Write report", output: outputPath, outputMode },
+					new AbortController().signal, undefined, makeMinimalCtx(tempDir),
+				);
+				const child = result.details.results[0];
+				assert.equal(result.isError, undefined);
+				assert.equal(child.finalOutput, reply);
+				if (saveError) {
+					assert.ok(child.outputSaveError);
+					assert.equal(result.content[0].text, `${reply}\n\nOutput file error: ${outputPath}\n${child.outputSaveError}`);
+					assert.equal(result.content[0].text.split("Output file error:").length - 1, 1);
+				} else {
+					assert.equal(child.outputReference.path, outputPath);
+					assert.equal(result.content[0].text, `${reply}\n\n${child.outputReference.message}`);
+					assert.equal(result.content[0].text.split("Output saved to:").length - 1, 1);
+					assert.equal(fs.readFileSync(outputPath, "utf-8"), reply);
+				}
+			});
+		}
+		for (const stderr of ["child failed", ""]) {
+			it(`preserves single inline failure exception (${outputMode ?? "unset"}, ${stderr ? "stderr" : "empty stderr"})`, async () => {
+				const reply = "Partial reply\nwith complete details";
+				mockPi.onCall({ output: reply, exitCode: 1, stderr });
+				const result = await makeExecutor().execute(
+					"inline-failure", { agent: "echo", task: "Write report", output: path.join(tempDir, "report.md"), outputMode },
+					new AbortController().signal, undefined, makeMinimalCtx(tempDir),
+				);
+				const child = result.details.results[0];
+				assert.equal(result.isError, true);
+				assert.equal(child.exitCode, 1);
+				assert.equal(child.error, stderr || undefined);
+				assert.equal(result.content[0].text, stderr || "Failed");
+				assert.equal(child.finalOutput, reply);
+				assert.equal(utils!.getSingleResultOutput(child), reply);
+				assert.equal(fs.readFileSync(child.artifactPaths.outputPath, "utf-8"), reply);
+			});
+		}
+	}
+
+	for (const row of [
+		{ name: "stderr", reply: "PRIVATE partial reply", stderr: "plain failure", existing: false },
+		{ name: "empty stderr", reply: "PRIVATE partial reply", stderr: "", existing: true },
+		{ name: "empty reply", reply: "", stderr: "", existing: false },
+	]) {
+		it(`projects file-only exit 7 (${row.name}) after preserving the reply`, async () => {
+			const outputPath = path.join(tempDir, "report.md");
+			if (row.existing) fs.writeFileSync(outputPath, "existing target\n");
+			mockPi.onCall({ output: row.reply, stderr: row.stderr, exitCode: 7 });
+			const result = await makeExecutor().execute("file-only-failure", {
+				agent: "echo", task: "Write report", output: outputPath, outputMode: "file-only",
+			}, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
+			const child = result.details.results[0];
+			const pointer = `Full reply preserved at ${child.artifactPaths.outputPath}`;
+			assert.equal(result.isError, true);
+			assert.equal(child.exitCode, 7);
+			assert.equal(child.finalOutput, pointer);
+			assert.equal(result.content[0].text, `FAILED (exit code 7)${row.stderr ? `: ${row.stderr}` : ""}\n\n${pointer}`);
+			assert.equal(fs.readFileSync(child.artifactPaths.outputPath, "utf8"), row.reply);
+			assert.doesNotMatch(result.content[0].text, /PRIVATE/);
+			assert.equal(child.savedOutputPath, undefined);
+			if (row.existing) assert.equal(fs.readFileSync(outputPath, "utf8"), "existing target\n");
+			else assert.equal(fs.existsSync(outputPath), false);
+		});
+	}
+
+	it("projects acceptance failures after parsing the original report", async () => {
+		const report = {
+			criteriaSatisfied: [{ id: "regression", status: "not-satisfied", evidence: "test missing" }],
+			changedFiles: [], testsAddedOrUpdated: [], commandsRun: [], validationOutput: [],
+			residualRisks: [], noStagedFiles: true, notes: "test missing",
+		};
+		const reply = `PRIVATE analysis\n\`\`\`acceptance-report\n${JSON.stringify(report)}\n\`\`\``;
+		mockPi.onCall({ output: reply });
+		const result = await makeExecutor().execute("acceptance-failure", {
+			agent: "echo", task: "Task", output: "report.md", outputMode: "file-only",
+			acceptance: { level: "checked", criteria: [{ id: "regression", must: "Regression is covered" }] },
+		}, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
+		const child = result.details.results[0];
+		assert.equal(child.exitCode, 1);
+		assert.equal(child.finalOutput, `Full reply preserved at ${child.artifactPaths.outputPath}`);
+		assert.deepEqual(child.acceptance.childReport, report);
+		assert.equal(fs.readFileSync(child.artifactPaths.outputPath, "utf8"), "PRIVATE analysis");
+		assert.doesNotMatch(result.content[0].text, /PRIVATE analysis|acceptance-report/);
+	});
+
+	it("rethrows native output-artifact write failures", async () => {
+		const artifactsDir = path.join(tempDir, "artifacts");
+		const { getArtifactPaths } = await import("../../src/shared/artifacts.ts");
+		const artifact = getArtifactPaths(artifactsDir, "write-failure", "echo");
+		fs.mkdirSync(artifact.outputPath, { recursive: true });
+		mockPi.onCall({ output: "PRIVATE reply" });
+		await assert.rejects(() => runSync(tempDir, makeAgentConfigs(["echo"]), "echo", "Task", {
+			runId: "write-failure", outputPath: path.join(tempDir, "report.md"), outputMode: "file-only",
+			artifactsDir, artifactConfig: { enabled: true, includeJsonl: false, includeMetadata: false },
+		}), /EISDIR/);
+	});
+
+	it("projects file-only save errors without changing exit 0", async () => {
+		const parent = path.join(tempDir, "blocker");
+		fs.writeFileSync(parent, "not a directory");
+		const outputPath = path.join(parent, "report.md");
+		mockPi.onCall({ output: "PRIVATE full reply" });
+		const result = await makeExecutor().execute("file-only-save-error", {
+			agent: "echo", task: "Write report", output: outputPath, outputMode: "file-only",
+		}, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
+		const child = result.details.results[0];
+		assert.equal(child.exitCode, 0);
+		assert.ok(child.outputSaveError);
+		const expected = `Output file error: ${outputPath}\n${child.outputSaveError}\n\nFull reply preserved at ${child.artifactPaths.outputPath}`;
+		assert.equal(result.content[0].text, expected);
+		assert.equal(child.finalOutput, expected);
+		assert.equal(fs.readFileSync(child.artifactPaths.outputPath, "utf8"), "PRIVATE full reply");
+		assert.doesNotMatch(expected, /PRIVATE|Output saved to:/);
+		assert.equal(child.savedOutputPath, undefined);
+	});
+
+	for (const row of [
+		{ name: "includeOutput false", artifactsDir: true, artifactConfig: { enabled: true, includeOutput: false } },
+		{ name: "enabled false", artifactsDir: true, artifactConfig: { enabled: false } },
+		{ name: "no directory", artifactsDir: false, artifactConfig: { enabled: true } },
+	]) {
+		it(`reports disabled artifact output (${row.name})`, async () => {
+			mockPi.onCall({ output: "PRIVATE reply", exitCode: 7 });
+			const result = await runSync(tempDir, makeAgentConfigs(["echo"]), "echo", "Task", {
+				runId: "disabled-output", outputPath: path.join(tempDir, "report.md"), outputMode: "file-only",
+				artifactsDir: row.artifactsDir ? path.join(tempDir, "artifacts") : undefined,
+				artifactConfig: row.artifactConfig,
+			});
+			assert.equal(result.finalOutput, "Full reply not preserved (artifact output disabled)");
+		});
+	}
+
+	it("supports public artifacts false for file-only failures", async () => {
+		mockPi.onCall({ output: "PRIVATE reply", exitCode: 7 });
+		const result = await makeExecutor().execute("no-artifacts", {
+			agent: "echo", task: "Task", output: "report.md", outputMode: "file-only", artifacts: false,
+		}, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
+		assert.equal(result.content[0].text, "FAILED (exit code 7)\n\nFull reply not preserved (artifact output disabled)");
+	});
+
+	it("keeps leading-blank BLOCKED handoffs in single content", async () => {
+		const blocked = "\n\nBLOCKED: need approval\nDone: inspected\nRemaining: rotate key";
+		mockPi.onCall({ output: blocked });
+		const result = await makeExecutor().execute("blocked", {
+			agent: "echo", task: "Task", output: "report.md", outputMode: "file-only",
+		}, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
+		assert.equal(result.content[0].text, blocked);
+		assert.equal(result.details.results[0].error, blocked);
+		assert.equal(result.details.results[0].finalOutput, blocked);
+		assert.equal(result.details.results[0].exitCode, 1);
 	});
 
 	it("rejects file-only mode without an output path before spawning", async () => {

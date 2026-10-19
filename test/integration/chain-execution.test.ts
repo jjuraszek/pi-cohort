@@ -86,6 +86,7 @@ type TestChainStep = TestSequentialStep | {
 };
 
 interface ChainResultItem {
+	outputSaveError?: string;
 	agent: string;
 	exitCode: number;
 	finalOutput?: string;
@@ -224,6 +225,72 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 		assert.equal(result.details.results[0].agent, "analyst");
 		assert.equal(result.details.results[1].agent, "reporter");
 	});
+
+	for (const outputMode of [undefined, "inline"] as const) {
+		for (const saveError of [false, true]) {
+			it(`passes exact raw inline reply through {previous} (${outputMode ?? "unset"}, save ${saveError ? "error" : "success"})`, async () => {
+				const reply = "Complete analysis\nwith details";
+				const parent = path.join(tempDir, "reports");
+				if (saveError) fs.writeFileSync(parent, "not a directory");
+				const outputPath = path.join(parent, "analysis.md");
+				mockPi.onCall({ output: reply });
+				const result = await executeChain(makeChainParams(
+					[
+						{ agent: "analyst", task: "Analyze", output: outputPath, outputMode },
+						{ agent: "reporter", task: "{previous}", acceptance: { level: "none", reason: "test: isolate previous output" } },
+					],
+					[makeAgent("analyst"), makeAgent("reporter")],
+					{ chainDir: tempDir },
+				));
+				assert.ok(!result.isError, JSON.stringify(result.content));
+				assert.equal(result.details.results[0].finalOutput, reply);
+				const secondTaskArg = readCallArgs(1).at(-1) ?? "";
+				assert.equal(secondTaskArg, `Task: ${reply}`);
+				assert.doesNotMatch(secondTaskArg, /Output saved to:|Output file error:/);
+				if (saveError) {
+					assert.ok(result.details.results[0].outputSaveError);
+				} else {
+					assert.equal(fs.readFileSync(outputPath, "utf-8"), reply);
+				}
+			});
+		}
+	}
+
+	it("passes file-only save-error pointers through {previous}", async () => {
+		const parent = path.join(tempDir, "blocker");
+		fs.writeFileSync(parent, "not a directory");
+		mockPi.onCall({ output: "PRIVATE chain reply" });
+		const result = await executeChain(makeChainParams([
+			{ agent: "analyst", task: "Analyze", output: path.join(parent, "report.md"), outputMode: "file-only" },
+			{ agent: "reporter", task: "{previous}", acceptance: { level: "none", reason: "isolate previous" } },
+		], [makeAgent("analyst"), makeAgent("reporter")], { chainDir: tempDir, artifactConfig: { enabled: true } }));
+		const first = result.details.results[0] as any;
+		const expected = `Output file error: ${path.join(parent, "report.md")}\n${first.outputSaveError}\n\nFull reply preserved at ${first.artifactPaths.outputPath}`;
+		assert.equal(first.exitCode, 0);
+		assert.equal(first.finalOutput, expected);
+		assert.equal(readCallArgs(1).at(-1), `Task: ${expected}`);
+		assert.equal(fs.readFileSync(first.artifactPaths.outputPath, "utf8"), "PRIVATE chain reply");
+	});
+
+	for (const shape of ["sequential", "parallel", "blocked"] as const) {
+		it(`keeps failed ${shape} chain summaries unchanged`, async () => {
+			const blocked = "\n\nBLOCKED: approval needed\nDone: inspected\nRemaining: deploy";
+			mockPi.onCall({ output: shape === "blocked" ? blocked : "PRIVATE failed reply", exitCode: shape === "blocked" ? 0 : 1, stderr: shape === "blocked" ? "" : "plain failure" });
+			const step = { agent: "analyst", task: "Analyze", output: "report.md", outputMode: "file-only" as const };
+			const chain = shape === "parallel" ? [{ parallel: [step] }] : [step];
+			const result = await executeChain(makeChainParams(chain, [makeAgent("analyst")], { runId: "failed-chain", chainDir: tempDir, artifactConfig: { enabled: true } }));
+			const first = result.details.results[0] as any;
+			const error = shape === "blocked" ? blocked : "plain failure";
+			assert.equal(first.exitCode, 1);
+			assert.equal(first.error, error);
+			assert.equal(first.finalOutput, shape === "blocked" ? blocked : `Full reply preserved at ${first.artifactPaths.outputPath}`);
+			const { buildChainSummary } = await import("../../src/shared/formatters.ts");
+			assert.equal(result.content[0].text, buildChainSummary(chain, result.details.results, path.join(tempDir, "failed-chain"), "failed", {
+				index: 0, error: shape === "parallel" ? "Parallel step 1 failed:\n- Task 1 (analyst): plain failure" : error,
+			}));
+			assert.doesNotMatch(result.content[0].text, /PRIVATE|Full reply preserved at/);
+		});
+	}
 
 	it("passes file-only saved-output references through {previous}", async () => {
 		mockPi.onCall({ output: "full chain output\nwith details" });
