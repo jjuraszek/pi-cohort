@@ -197,7 +197,7 @@ function buildTaskHandler(socket, onAbort) {
 			appendReport("ready");
 			const structuredData = { items: [{ path: "src/a.ts" }, { path: "src/b.ts" }] };
 			if (structuredOutputPath) {
-				fs.writeFileSync(structuredOutputPath, JSON.stringify(structuredData), "utf8");
+				fs.writeFileSync(structuredOutputPath, JSON.stringify({ status: "success", value: structuredData }), "utf8");
 			}
 			const output = "produced";
 			appendMessage(output);
@@ -213,7 +213,7 @@ function buildTaskHandler(socket, onAbort) {
 			appendReport("ready");
 			const structuredData = { reviewed: reviewPath };
 			if (structuredOutputPath) {
-				fs.writeFileSync(structuredOutputPath, JSON.stringify(structuredData), "utf8");
+				fs.writeFileSync(structuredOutputPath, JSON.stringify({ status: "success", value: structuredData }), "utf8");
 			}
 			const output = `reviewed ${reviewPath}`;
 			appendMessage(output);

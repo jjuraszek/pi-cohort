@@ -66,7 +66,7 @@ for (const source of ["direct", "file"]) {
 			assert.deepEqual(entries.slice(1).map(entry => [entry.type, entry.toolName ?? entry.message.toolName]), [
 				["tool_execution_start", "structured_output"], ["tool_result_end", "structured_output"], ["tool_execution_end", "structured_output"],
 			]);
-			assert.deepEqual(JSON.parse(fs.readFileSync(path.join(cwd, "capture.json"), "utf8")), { ok: true });
+			assert.deepEqual(JSON.parse(fs.readFileSync(path.join(cwd, "capture.json"), "utf8")), { status: "success", value: { ok: true } });
 		});
 	}
 }
@@ -78,5 +78,5 @@ test("omitted observation and ordering options retain legacy output", () => {
 	assert.equal(result.status, 0, result.stderr);
 	assert.equal(events(result.stdout)[0].message.content[0].text.split("\n")[0], "legacy");
 	assert.match(events(result.stdout)[0].message.content[0].text, /```acceptance-report/);
-	assert.deepEqual(JSON.parse(fs.readFileSync(path.join(cwd, "capture.json"), "utf8")), { value: 1 });
+	assert.deepEqual(JSON.parse(fs.readFileSync(path.join(cwd, "capture.json"), "utf8")), { status: "success", value: { value: 1 } });
 });

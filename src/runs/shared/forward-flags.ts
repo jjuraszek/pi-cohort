@@ -3,7 +3,7 @@ export interface ForwardFlagsConfig {
 }
 
 // Core pi flag names -> value arity. This is the UNION of recognized core flags
-// across the supported pi range (0.74-0.85), transcribed from
+// across the supported pi range (0.74-1.3), transcribed from
 // @earendil-works/pi-coding-agent dist/cli/args.js. A name present here is never
 // forwarded to children. Direction matters: an entry that is core in a NEWER pi
 // but absent from an OLDER installed pi is safe (worst case we skip forwarding a
@@ -14,7 +14,7 @@ type Arity = "boolean" | "value" | "value-guarded" | "value-guarded-print";
 export const RECOGNIZED_PI_FLAGS: Record<string, Arity> = {
   help: "boolean", version: "boolean", continue: "boolean", resume: "boolean",
   "no-session": "boolean", "no-tools": "boolean", "no-builtin-tools": "boolean",
-  "no-extensions": "boolean", "no-skills": "boolean", "no-prompt-templates": "boolean",
+  "no-extensions": "boolean", "no-mcp": "boolean", "no-skills": "boolean", "no-prompt-templates": "boolean",
   "no-themes": "boolean", "no-context-files": "boolean", verbose: "boolean",
   approve: "boolean", "no-approve": "boolean", offline: "boolean",
   mode: "value", provider: "value", model: "value", "api-key": "value",

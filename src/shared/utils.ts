@@ -6,6 +6,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
+import { getStructuredOutputValidationDiagnostic, STRUCTURED_OUTPUT_TOOL_NAME } from "../runs/shared/structured-output.ts";
 import { formatToolCall } from "./formatters.ts";
 import type { AgentProgress, AsyncStatus, Details, DisplayItem, ErrorInfo, SingleResult, ToolCallSummary } from "./types.ts";
 
@@ -293,6 +294,7 @@ export function detectSubagentError(messages: Message[]): ErrorInfo {
 	}
 
 	const scanStart = lastAssistantTextIndex >= 0 ? lastAssistantTextIndex + 1 : 0;
+	let hasLaterStructuredOutputSuccess = false;
 
 	for (let i = messages.length - 1; i >= scanStart; i--) {
 		const msg = messages[i];
@@ -300,9 +302,15 @@ export function detectSubagentError(messages: Message[]): ErrorInfo {
 		const toolName = "toolName" in msg && typeof msg.toolName === "string" ? msg.toolName : undefined;
 		const isError = "isError" in msg && msg.isError === true;
 
+		if (toolName === STRUCTURED_OUTPUT_TOOL_NAME && !isError) {
+			hasLaterStructuredOutputSuccess = true;
+		}
+
 		if (isError) {
 			const text = msg.content.find((c) => c.type === "text");
 			const details = text && "text" in text ? text.text : undefined;
+			if (toolName === STRUCTURED_OUTPUT_TOOL_NAME && hasLaterStructuredOutputSuccess
+				&& getStructuredOutputValidationDiagnostic(details) !== undefined) continue;
 			const exitMatch = details?.match(/exit(?:ed)?\s*(?:with\s*)?(?:code|status)?\s*[:\s]?\s*(\d+)/i);
 			return {
 				hasError: true,

@@ -22,7 +22,7 @@ describe("deriveForwardedFlags", () => {
     assert.deepEqual(deriveForwardedFlags(argv("--no-autofix", "--other"), {}), ["--no-autofix", "--other"]);
   });
   it("drops recognized core boolean flags", () => {
-    assert.deepEqual(deriveForwardedFlags(argv("--verbose", "--no-autofix"), {}), ["--no-autofix"]);
+    assert.deepEqual(deriveForwardedFlags(argv("--verbose", "--no-mcp", "--no-autofix"), {}), ["--no-autofix"]);
   });
   it("drops a core value flag AND its value, even a dash-prefixed value", () => {
     assert.deepEqual(deriveForwardedFlags(argv("--system-prompt", "--literal-prompt", "--no-autofix"), {}), ["--no-autofix"]);

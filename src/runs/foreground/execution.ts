@@ -192,13 +192,18 @@ async function runSingleAttempt(
 		let activityTimer: NodeJS.Timeout | undefined;
 
 
-		// If the child emits a terminal assistant stop but never exits,
-		// give it a short grace period to flush naturally, then clean it up.
+		// Structured continuations can outlive a prose stop; drain only after settlement.
 		const FINAL_STOP_GRACE_MS = 1000;
 		const HARD_KILL_MS = 3000;
 		let childExited = false;
 		let forcedTerminationSignal = false;
 		let cleanTerminalAssistantStopReceived = false;
+		let structuredSettlementPending = Boolean(options.structuredOutput);
+		let cleanStructuredSettlementReceived = false;
+		let silenceHardKillTimer: NodeJS.Timeout | undefined;
+		const cleanCompletionReceived = () => options.structuredOutput
+			? cleanStructuredSettlementReceived && !options.signal?.aborted && !interruptedByControl && !silenceKillRequested
+			: cleanTerminalAssistantStopReceived;
 		let finalDrainTimer: NodeJS.Timeout | undefined;
 		let finalHardKillTimer: NodeJS.Timeout | undefined;
 		const clearFinalDrainTimers = () => {
@@ -218,7 +223,7 @@ async function runSingleAttempt(
 				const termSent = trySignalChild(proc, "SIGTERM");
 				if (!termSent) return;
 				forcedTerminationSignal = true;
-				if (!cleanTerminalAssistantStopReceived && !assistantError) {
+				if (!cleanCompletionReceived() && !assistantError) {
 					result.error = result.error ?? `Subagent process did not exit within ${FINAL_STOP_GRACE_MS}ms after its final message. Forcing termination.`;
 				}
 				finalHardKillTimer = setTimeout(() => {
@@ -240,17 +245,19 @@ async function runSingleAttempt(
 			result.error = result.error ??
 				`Subagent killed: in-flight turn produced no output for ${Math.round(silenceMs / 1000)}s ` +
 				`(exceeded inFlightSilenceKillMs=${controlConfig.inFlightSilenceKillMs}ms). Likely wedged in a tool call.`;
-			const hardKill = setTimeout(() => {
+			silenceHardKillTimer = setTimeout(() => {
 				if (settled || processClosed) return;
 				forcedTerminationSignal = trySignalChild(proc, "SIGKILL") || forcedTerminationSignal;
 			}, HARD_KILL_MS);
-			hardKill.unref?.();
+			silenceHardKillTimer.unref?.();
 		};
 
 
 		const finish = (code: number) => {
 			if (settled) return;
 			settled = true;
+			structuredSettlementPending = false;
+			if (silenceHardKillTimer) clearTimeout(silenceHardKillTimer);
 			clearFinalDrainTimers();
 			clearStdioGuard();
 			if (activityTimer) {
@@ -326,19 +333,33 @@ async function runSingleAttempt(
 			return true;
 		};
 		const updateActivityState = (now: number): boolean => {
+			if (structuredSettlementPending
+				&& now - (progress.lastProductiveSignalAt ?? startTime) >= controlConfig.inFlightSilenceCeilingMs) {
+				result.error ??= "Subagent awaiting structured settlement exceeded its silence ceiling. Forcing termination.";
+				startFinalDrain();
+			}
+			if (!controlConfig.enabled && structuredSettlementPending && shouldSilenceKill({
+				turnOpen: progress.turnOpen || structuredSettlementPending,
+				lastProductiveSignalAt: progress.lastProductiveSignalAt,
+				startedAt: startTime,
+				now,
+				killMs: controlConfig.inFlightSilenceKillMs,
+			})) {
+				requestSilenceKill(now - (progress.lastProductiveSignalAt ?? startTime));
+			}
 			if (!controlConfig.enabled) return false;
 			const idleState = deriveActivityState({
 				config: controlConfig,
 				startedAt: startTime,
 				lastActivityAt: progress.lastActivityAt,
 				now,
-				inFlightTurn: progress.turnOpen,
+				inFlightTurn: progress.turnOpen || structuredSettlementPending,
 				lastProductiveSignalAt: progress.lastProductiveSignalAt,
 			});
 			if (idleState === "needs_attention") {
 				const notified = progress.activityState === "needs_attention" ? false : emitNeedsAttention(now);
 				if (shouldSilenceKill({
-					turnOpen: progress.turnOpen,
+					turnOpen: progress.turnOpen || structuredSettlementPending,
 					lastProductiveSignalAt: progress.lastProductiveSignalAt,
 					startedAt: startTime,
 					now,
@@ -383,9 +404,9 @@ async function runSingleAttempt(
 		const processLine = (line: string) => {
 			if (!line.trim()) return;
 			jsonlWriter.writeLine(line);
-			let evt: { type?: string; message?: Message; toolName?: string; args?: unknown };
+			let evt: { type?: string; message?: Message; toolName?: string; args?: unknown; aborted?: boolean };
 			try {
-				evt = JSON.parse(line) as { type?: string; message?: Message; toolName?: string; args?: unknown };
+				evt = JSON.parse(line) as typeof evt;
 			} catch {
 				// Non-JSON stdout lines are expected; only structured events are parsed.
 				return;
@@ -406,6 +427,14 @@ async function runSingleAttempt(
 			progress.turnOpen = lifecycle.turnOpen;
 			progress.lastProductiveSignalAt = lifecycle.lastProductiveSignalAt;
 			updateActivityState(now);
+
+			if (options.structuredOutput && evt.type === "agent_settled") {
+				structuredSettlementPending = false;
+				cleanStructuredSettlementReceived = !evt.aborted && !assistantError
+					&& !options.signal?.aborted && !interruptedByControl && !silenceKillRequested;
+				if (evt.aborted) result.error ??= "Subagent settlement aborted.";
+				startFinalDrain();
+			}
 
 			if (evt.type === "tool_execution_start") {
 				const toolArgs = evt.args && typeof evt.args === "object" && !Array.isArray(evt.args)
@@ -455,14 +484,14 @@ async function runSingleAttempt(
 					if (evt.message.errorMessage) assistantError = evt.message.errorMessage;
 					const assistantText = extractTextFromContent(evt.message.content);
 					appendRecentOutput(progress, assistantText.split("\n").slice(-10));
-					// Final assistant message: start the exit drain window.
+					// Unstructured runs still drain on the final assistant message.
 					const stopReason = (evt.message as { stopReason?: string }).stopReason;
 					const hasToolCall = Array.isArray(evt.message.content)
 						&& evt.message.content.some((part) => (part as { type?: string }).type === "toolCall");
 					if (stopReason === "stop" && !hasToolCall) {
 						if (!evt.message.errorMessage && assistantText.trim()) assistantError = undefined;
 						cleanTerminalAssistantStopReceived ||= !evt.message.errorMessage;
-						startFinalDrain();
+						if (!options.structuredOutput) startFinalDrain();
 					}
 				}
 				updateActivityState(now);
@@ -499,7 +528,7 @@ async function runSingleAttempt(
 			}
 		};
 
-		if (controlConfig.enabled) {
+		if (controlConfig.enabled || options.structuredOutput) {
 			activityTimer = setInterval(() => {
 				if (processClosed || settled) return;
 				const now = Date.now();
@@ -514,13 +543,20 @@ async function runSingleAttempt(
 		let stderrBuf = "";
 
 		const clearStdioGuard = attachPostExitStdioGuard(proc, { idleMs: 2000, hardMs: 8000 });
+		const refreshStructuredWait = () => {
+			if (!structuredSettlementPending) return;
+			progress.lastActivityAt = Date.now();
+			progress.lastProductiveSignalAt = progress.lastActivityAt;
+		};
 		proc.stdout.on("data", (d) => {
+			refreshStructuredWait();
 			buf += d.toString();
 			const lines = buf.split("\n");
 			buf = lines.pop() || "";
 			lines.forEach(processLine);
 		});
 		proc.stderr.on("data", (d) => {
+			refreshStructuredWait();
 			stderrBuf += d.toString();
 		});
 		proc.on("exit", () => {
@@ -537,7 +573,7 @@ async function runSingleAttempt(
 			processClosed = true;
 			if (buf.trim()) processLine(buf);
 			if (!result.error && assistantError) result.error = assistantError;
-			const forcedDrainAfterFinalSuccess = forcedTerminationSignal && cleanTerminalAssistantStopReceived && !result.error;
+			const forcedDrainAfterFinalSuccess = forcedTerminationSignal && cleanCompletionReceived() && !result.error;
 			if (code !== 0 && stderrBuf.trim() && !result.error && !forcedDrainAfterFinalSuccess) {
 				result.error = stderrBuf.trim();
 			}

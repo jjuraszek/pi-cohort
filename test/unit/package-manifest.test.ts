@@ -58,7 +58,7 @@ test("Pi package resolution stays export-map safe", () => {
 	}
 });
 
-test("execution reporting requires Pi 0.85", () => {
+test("pre-settlement continuations require Pi 1.3", () => {
 	const packageJson = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf-8"));
 	const piPackages = [
 		"@earendil-works/pi-agent-core",
@@ -67,9 +67,13 @@ test("execution reporting requires Pi 0.85", () => {
 		"@earendil-works/pi-tui",
 	];
 
-	assert.equal(packageJson.peerDependencies?.["@earendil-works/pi-coding-agent"], ">=0.85.0");
+	assert.equal(packageJson.peerDependencies?.["@earendil-works/pi-coding-agent"], ">=1.3.0");
+	const packageLock = JSON.parse(fs.readFileSync(path.join(projectRoot, "package-lock.json"), "utf-8"));
+	assert.deepEqual(packageLock.packages[""].peerDependencies, packageJson.peerDependencies);
+	assert.deepEqual(packageLock.packages[""].devDependencies, packageJson.devDependencies);
 	for (const packageName of piPackages) {
-		assert.equal(packageJson.devDependencies?.[packageName], "^0.85.0");
+		assert.equal(packageJson.devDependencies?.[packageName], "^1.3.0");
+		assert.equal(packageLock.packages[`node_modules/${packageName}`]?.version, "1.3.0");
 	}
 });
 

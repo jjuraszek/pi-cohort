@@ -18,6 +18,7 @@ import { createEventBus, createMockPi, createTempDir, events, makeAgent, makeMin
 import type { MockPi } from "../support/helpers.ts";
 import { getArtifactPaths } from "../../src/shared/artifacts.ts";
 import { formatModelAttemptNote } from "../../src/runs/shared/model-fallback.ts";
+import { DEFAULT_CONTROL_CONFIG } from "../../src/runs/shared/subagent-control.ts";
 
 interface AsyncExecutionResult {
 	content: Array<{ text?: string }>;
@@ -2516,6 +2517,77 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.match(result.content[0]?.text ?? "", /Failed to start async chain/);
 		assert.match(result.content[0]?.text ?? "", /async-cfg-/);
 	});
+
+	for (const scenario of ["delayed", "tool-only", "corrected", "unrelated-error", "missing-settlement", "activity", "silent-tool", "aborted", "provider-error", "cancelled"] as const) {
+		it(`background structured settlement: ${scenario}`, { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async (t) => {
+			const runRoot = fs.mkdtempSync(path.join(ASYNC_DIR, `settlement-${scenario}-`));
+			const id = path.basename(runRoot);
+			fs.rmdirSync(runRoot);
+			t.after(() => fs.rmSync(runRoot, { recursive: true, force: true }));
+			const settlement = { type: "agent_settled", aborted: scenario === "aborted" };
+			const corrected = [
+				events.toolResult("structured_output", 'Validation failed for tool "structured_output": value: must be object', true),
+				events.toolResult("structured_output", "Structured output captured."),
+			];
+			const success = { structuredOutput: { verdict: "FAIL" }, jsonl: [settlement] };
+			mockPi.onCall({
+				steps: scenario === "tool-only" ? [{ ...success, jsonl: [events.toolResult("structured_output", "Structured output captured."), settlement] }]
+					: scenario === "corrected" || scenario === "unrelated-error" ? [
+						{ jsonl: [...(scenario === "unrelated-error" ? [events.toolResult("read", "unrelated failure", true)] : []), ...corrected] }, success,
+					]
+					: scenario === "silent-tool" ? [
+						{ jsonl: [events.toolStart("bash", { command: "silent work" })] },
+						{ ...success, delay: 1500 },
+					]
+					: [
+						{ ...(scenario === "missing-settlement" ? { structuredOutput: { verdict: "FAIL" } } : {}), jsonl: [scenario === "provider-error" ? { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "failed" }], stopReason: "stop", errorMessage: "provider exploded" } } : events.assistantMessage("Initial report")] },
+						...(scenario === "activity" ? [
+							{ delay: 200, jsonl: ["stdout activity"] },
+							{ delay: 200, stderr: "stderr activity\n" },
+							{ delay: 200, jsonl: [events.toolStart("read", { path: "input.md" })] },
+						] : []),
+						...(scenario === "missing-settlement" || scenario === "cancelled" ? [] : [{ ...success, delay: scenario === "delayed" ? 1500 : scenario === "activity" ? 200 : 0 }]),
+					],
+				keepAliveAfterFinalMessageMs: 10000,
+			});
+			const startedAt = Date.now();
+			const result = executeAsyncChain(id, {
+				chain: [{ agent: "reviewer", task: "Review", as: "review", outputSchema: { type: "object" }, stopOn: { path: "/verdict", in: ["FAIL"] } }, { agent: "reviewer", task: "never" }],
+				agents: [makeAgent("reviewer")],
+				ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: id },
+				artifactConfig: { enabled: false }, shareEnabled: false, maxSubagentDepth: 2,
+				...(scenario === "missing-settlement" || scenario === "activity" || scenario === "silent-tool" ? { controlConfig: { ...DEFAULT_CONTROL_CONFIG, enabled: false, inFlightSilenceCeilingMs: 500, inFlightSilenceKillMs: 800 } } : {}),
+			});
+			assert.ok(!result.isError);
+			if (scenario === "cancelled") {
+				const deadline = Date.now() + 5000;
+				while (!fs.existsSync(path.join(runRoot, "output-0.log")) || !fs.readFileSync(path.join(runRoot, "output-0.log"), "utf8").includes("Initial report")) {
+					assert.ok(Date.now() < deadline, "Timed out waiting for prose before cancellation");
+					await new Promise((resolve) => setTimeout(resolve, 25));
+				}
+				const status = JSON.parse(fs.readFileSync(path.join(runRoot, "status.json"), "utf8"));
+				process.kill(status.pid, "SIGUSR2");
+			}
+			const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id, 6000), "utf8")) as AsyncResultPayload;
+			const succeeds = !["missing-settlement", "aborted", "provider-error", "unrelated-error", "cancelled"].includes(scenario);
+			assert.equal(payload.success, succeeds, JSON.stringify(payload));
+			assert.equal(mockPi.callCount(), 1);
+			assert.ok(Date.now() - startedAt < 6000);
+			if (succeeds) {
+				assert.equal(payload.exitCode, 0);
+				assert.deepEqual(payload.results[0].structuredOutput, { verdict: "FAIL" });
+				assert.equal(payload.outputs?.review?.text, '{"verdict":"FAIL"}');
+				assert.ok(payload.stop);
+				assert.doesNotMatch(JSON.stringify(payload), /Forcing termination/);
+				assert.doesNotMatch(fs.readFileSync(path.join(ASYNC_DIR, id, "output-0.log"), "utf8"), /Forcing termination/);
+				const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf8"));
+				assert.equal(status.steps[0].status, "complete");
+			} else if (scenario === "cancelled") assert.equal(payload.state, "paused");
+			else if (scenario === "provider-error") assert.match(payload.results[0].error ?? "", /provider exploded/);
+			else if (scenario === "unrelated-error") assert.match(payload.results[0].error ?? "", /unrelated failure/);
+			else if (scenario === "missing-settlement") assert.match(payload.results[0].error ?? "", /settlement.*silence/i);
+		});
+	}
 
 	it("background forced drain after final assistant output is cleanup success", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
 		mockPi.onCall({

@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { MockPi } from "../support/helpers.ts";
+import { DEFAULT_CONTROL_CONFIG } from "../../src/runs/shared/subagent-control.ts";
 import {
 	createMockPi,
 	createTempDir,
@@ -1603,6 +1604,87 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.ok(extensionArgs.includes("./custom-tool.ts"));
 		assert.ok(extensionArgs.includes("./allowed-ext.ts"));
 	});
+
+	it("keeps unstructured turns alive while nonproductive events prevent idle attention", async () => {
+		mockPi.onCall({
+			steps: [
+				{ jsonl: [{ type: "turn_start" }] },
+				...Array.from({ length: 8 }, () => ({ delay: 200, jsonl: [{ type: "heartbeat" }] })),
+				{ jsonl: [events.assistantMessage("done after heartbeats")] },
+			],
+		});
+
+		const result = await runSync(tempDir, makeAgentConfigs(["echo"]), "echo", "Task", {
+			controlConfig: { ...DEFAULT_CONTROL_CONFIG, needsAttentionAfterMs: 600, inFlightSilenceCeilingMs: 200, inFlightSilenceKillMs: 900 },
+		});
+
+		assert.equal(result.exitCode, 0, result.error);
+		assert.equal(result.error, undefined);
+		assert.equal(result.finalOutput, "done after heartbeats");
+		assert.ok(!result.controlEvents?.some((event) => event.type === "needs_attention"));
+	});
+
+	for (const scenario of ["delayed", "tool-only", "corrected", "unrelated-error", "invalid", "aborted", "provider-error", "cancelled", "missing-settlement", "missing-settlement-control-disabled", "active-wait"]) {
+		it(`settles structured foreground output: ${scenario}`, async () => {
+			const schema = { type: "object", properties: { done: { type: "boolean" } }, required: ["done"] };
+			const schemaPath = path.join(tempDir, "schema.json");
+			const outputPath = path.join(tempDir, "structured.json");
+			fs.writeFileSync(schemaPath, JSON.stringify(schema));
+			const controller = new AbortController();
+			const settled = { type: "agent_settled", aborted: scenario === "aborted" };
+			const missingSettlement = scenario.startsWith("missing-settlement");
+			const corrected = scenario === "corrected" || scenario === "unrelated-error";
+			const first = scenario === "tool-only" || corrected ? [] : [events.assistantMessage("report")];
+			if (corrected || scenario === "invalid") first.push(events.toolResult("structured_output", "Structured output validation failed: Expected boolean", true));
+			if (scenario === "invalid") first.push(events.assistantMessage("report after rejected call"));
+			if (scenario === "unrelated-error") first.push(events.toolResult("read", "unrelated failure", true));
+			const success = events.toolResult("structured_output", "Structured output captured", false);
+			const providerError = { type: "message_end", message: { role: "assistant", content: [], stopReason: "error", errorMessage: "provider exploded" } };
+			mockPi.onCall({
+				steps: [
+					{ jsonl: first },
+					...(scenario === "active-wait" ? Array.from({ length: 4 }, () => ({ delay: 500, jsonl: [{ type: "turn_end" }] })) : []),
+					{
+						delay: scenario === "delayed" || scenario === "cancelled" ? 1500 : 0,
+						...(scenario === "invalid" ? { structuredOutputError: "Expected boolean" } : { structuredOutput: { done: true } }),
+						jsonl: missingSettlement ? [] : [
+							...(scenario === "tool-only" || corrected ? [success] : []),
+							...(scenario === "provider-error" ? [providerError] : []),
+							settled,
+						],
+					},
+				],
+				keepAliveAfterFinalMessageMs: 10000,
+			});
+			const timer = scenario === "cancelled" ? setTimeout(() => controller.abort(), 300) : undefined;
+			const start = Date.now();
+			const result = await runSync(tempDir, makeAgentConfigs(["echo"]), "echo", "Task", {
+				structuredOutput: { schema, schemaPath, outputPath },
+				signal: controller.signal,
+				...(missingSettlement || scenario === "active-wait" ? { controlConfig: { ...DEFAULT_CONTROL_CONFIG, enabled: scenario !== "missing-settlement-control-disabled", needsAttentionAfterMs: 50, inFlightSilenceCeilingMs: 700, inFlightSilenceKillMs: missingSettlement ? 8000 : 900 } } : {}),
+			});
+			if (timer) clearTimeout(timer);
+			assert.equal(mockPi.callCount(), 1);
+			assert.ok(Date.now() - start < 6000, "settlement or silence backstop must bound cleanup");
+			if (["delayed", "tool-only", "corrected", "active-wait"].includes(scenario)) {
+				assert.equal(result.exitCode, 0, result.error);
+				assert.deepEqual((result as RunSyncResult & { structuredOutput?: unknown }).structuredOutput, { done: true });
+				assert.equal(result.error, undefined);
+				assert.ok(!(result.progress?.recentOutput ?? []).some((line: string) => line.includes("Forcing termination")));
+				if (scenario === "delayed") assert.ok(Date.now() - start >= 1500);
+			} else {
+				assert.notEqual(result.exitCode, 0);
+				if (scenario === "invalid") assert.match(result.error ?? "", /Structured output validation failed:/);
+				if (scenario === "provider-error") assert.match(result.error ?? "", /provider exploded/);
+				if (scenario === "unrelated-error") assert.match(result.error ?? "", /unrelated failure/);
+				if (missingSettlement) assert.match(result.error ?? "", /awaiting structured settlement exceeded its silence ceiling/);
+				if (scenario === "missing-settlement-control-disabled") {
+					assert.equal(result.progress.activityState, undefined);
+					assert.equal(result.controlEvents, undefined);
+				}
+			}
+		});
+	}
 
 	it("treats forced drain after final assistant output as cleanup success", async () => {
 		mockPi.onCall({

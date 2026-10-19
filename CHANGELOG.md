@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Children with `outputSchema` get one in-process follow-up after a normal completion without a `structured_output` call; a valid follow-up call succeeds like a first-turn call. (#25)
+
+### Changed
+- Pi >=1.3.0 is required. (#25)
+
 ## [7.4.1] - 2026-10-19
 
 ### Fixed

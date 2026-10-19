@@ -211,12 +211,16 @@ async function writeResponseEntries(entries, jsonMode, args, persistMessage) {
 }
 
 async function maybeWriteStructuredOutput(response, jsonMode) {
-	if (!Object.prototype.hasOwnProperty.call(response, "structuredOutput")) return;
+	const isError = typeof response.structuredOutputError === "string";
+	if (!isError && !Object.prototype.hasOwnProperty.call(response, "structuredOutput")) return;
 	const outputPath = process.env.PI_SUBAGENT_STRUCTURED_OUTPUT_CAPTURE;
 	if (!outputPath) return;
+	const envelope = isError
+		? { status: "error", message: response.structuredOutputError }
+		: { status: "success", value: response.structuredOutput };
 	fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-	fs.writeFileSync(outputPath, JSON.stringify(response.structuredOutput), "utf-8");
-	if (!jsonMode) return;
+	fs.writeFileSync(outputPath, JSON.stringify(envelope), { encoding: "utf-8", mode: 0o600 });
+	if (!jsonMode || isError) return;
 	await writeJsonlLine({ type: "tool_execution_start", toolName: "structured_output", args: { value: response.structuredOutput } });
 	await writeJsonlLine({
 		type: "tool_result_end",
@@ -274,25 +278,26 @@ async function main() {
 		for (const step of response.steps) {
 			if (typeof step?.delay === "number" && step.delay > 0) {
 				await new Promise((resolve) => setTimeout(resolve, step.delay));
-				}
-				if (Array.isArray(step?.jsonl) && step.jsonl.length > 0) {
-						await writeResponseEntries(step.jsonl, jsonMode, args, persistMessage);
-				}
-				if (typeof step?.stderr === "string" && step.stderr.length > 0) {
-					process.stderr.write(step.stderr);
-				}
 			}
-		} else if (Array.isArray(response.jsonl) && response.jsonl.length > 0) {
-				await writeResponseEntries(response.jsonl, jsonMode, args, persistMessage);
-		} else if (Array.isArray(response.echoEnv) && response.echoEnv.length > 0) {
-			const envSnapshot = Object.fromEntries(response.echoEnv.map((key) => [key, process.env[key] ?? null]));
-			await writeResponseEntries([defaultAssistantMessage(JSON.stringify(envSnapshot))], jsonMode, args, persistMessage);
-		} else if (typeof response.output === "string") {
-			const entry = defaultAssistantMessage(response.output);
-			await writeResponseEntries([entry], jsonMode, args, persistMessage);
-			if (!jsonMode && entry.message.content[0].text === "") await writeStdout("\n");
+			await maybeWriteStructuredOutput(step, false);
+			if (Array.isArray(step?.jsonl) && step.jsonl.length > 0) {
+				await writeResponseEntries(step.jsonl, jsonMode, args, persistMessage);
+			}
+			if (typeof step?.stderr === "string" && step.stderr.length > 0) {
+				process.stderr.write(step.stderr);
+			}
 		}
-		await maybeWriteStructuredOutput(response, jsonMode);
+	} else if (Array.isArray(response.jsonl) && response.jsonl.length > 0) {
+		await writeResponseEntries(response.jsonl, jsonMode, args, persistMessage);
+	} else if (Array.isArray(response.echoEnv) && response.echoEnv.length > 0) {
+		const envSnapshot = Object.fromEntries(response.echoEnv.map((key) => [key, process.env[key] ?? null]));
+		await writeResponseEntries([defaultAssistantMessage(JSON.stringify(envSnapshot))], jsonMode, args, persistMessage);
+	} else if (typeof response.output === "string") {
+		const entry = defaultAssistantMessage(response.output);
+		await writeResponseEntries([entry], jsonMode, args, persistMessage);
+		if (!jsonMode && entry.message.content[0].text === "") await writeStdout("\n");
+	}
+	await maybeWriteStructuredOutput(response, jsonMode);
 
 	if (typeof response.stderr === "string" && response.stderr.length > 0) {
 		process.stderr.write(response.stderr);

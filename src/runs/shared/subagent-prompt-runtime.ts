@@ -2,11 +2,30 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { SUBAGENT_FANOUT_CHILD_ENV } from "./pi-args.ts";
-import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV, STRUCTURED_OUTPUT_TOOL_NAME, validateStructuredOutputValue } from "./structured-output.ts";
+import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV, STRUCTURED_OUTPUT_TOOL_NAME, getStructuredOutputValidationDiagnostic, validateStructuredOutputValue } from "./structured-output.ts";
 import type { JsonSchemaObject } from "../../shared/types.ts";
 
 const SUBAGENT_INHERIT_PROJECT_CONTEXT_ENV = "PI_SUBAGENT_INHERIT_PROJECT_CONTEXT";
 const SUBAGENT_INHERIT_SKILLS_ENV = "PI_SUBAGENT_INHERIT_SKILLS";
+let reasked = false;
+let attempted = false;
+
+function lastAssistantStopReason(messages: unknown[]): string | undefined {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i] as { role?: string; stopReason?: string };
+		if (message?.role === "assistant") return message.stopReason;
+	}
+	return undefined;
+}
+
+function reaskMessage(schema: JsonSchemaObject) {
+	return {
+		type: "custom_message",
+		customType: "pi-cohort:structured-output-reask",
+		display: true,
+		content: "You finished without calling `structured_output`. Call `structured_output` now with a `value` matching this schema, and send no other text:\n\n" + JSON.stringify(schema, null, 2),
+	};
+}
 
 const STRUCTURED_OUTPUT_INSTRUCTIONS = [
 	"This subagent step has a strict structured output contract.",
@@ -176,6 +195,10 @@ function collectSubagentToolCallIds(entries: readonly unknown[]): Set<string> {
 }
 
 export default function registerSubagentPromptRuntime(pi: ExtensionAPI): void {
+	const onRuntimeEvent = pi.on as unknown as (
+		event: string,
+		handler: (event: unknown, ctx?: { sessionManager?: { getBranch(): unknown[] } }) => unknown,
+	) => void;
 	const structuredOutputPath = process.env[STRUCTURED_OUTPUT_CAPTURE_ENV];
 	const structuredSchemaPath = process.env[STRUCTURED_OUTPUT_SCHEMA_ENV];
 	if (structuredOutputPath && structuredSchemaPath) {
@@ -199,12 +222,13 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI): void {
 			description: "Submit the required final structured output for this subagent step. This terminates the step.",
 			parameters: parameters as never,
 			async execute(_id: string, params: { value: unknown }) {
+				attempted = true;
 				const validation = validateStructuredOutputValue(schema, params.value);
 				if (validation.status === "invalid") {
 					throw new Error(`Structured output validation failed: ${validation.message}`);
 				}
 				fs.mkdirSync(path.dirname(structuredOutputPath), { recursive: true });
-				fs.writeFileSync(structuredOutputPath, JSON.stringify(params.value), { mode: 0o600 });
+				fs.writeFileSync(structuredOutputPath, JSON.stringify({ status: "success", value: params.value }), { mode: 0o600 });
 				return {
 					content: [{ type: "text", text: "Structured output captured." }],
 					details: { path: structuredOutputPath },
@@ -212,13 +236,47 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI): void {
 				};
 			},
 		});
+		onRuntimeEvent("tool_execution_start", (event) => {
+			const e = event as { toolName: string };
+			if (e.toolName === STRUCTURED_OUTPUT_TOOL_NAME) attempted = true;
+		});
+		onRuntimeEvent("tool_execution_end", (event) => {
+			const e = event as { toolName: string; isError: boolean; result?: { content?: { type: string; text?: string }[] } };
+			if (e.toolName !== STRUCTURED_OUTPUT_TOOL_NAME) return;
+			attempted = true;
+			if (!e.isError) return;
+			const text = e.result?.content?.filter((block) => block.type === "text").map((block) => block.text ?? "").join("\n");
+			const message = getStructuredOutputValidationDiagnostic(text);
+			if (message === undefined) return;
+			try {
+				const capture = JSON.parse(fs.readFileSync(structuredOutputPath, "utf-8"));
+				if (capture?.status === "success") return;
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") return;
+			}
+			try {
+				fs.writeFileSync(structuredOutputPath, JSON.stringify({ status: "error", message }), { mode: 0o600 });
+			} catch {
+				// The parent owns capture-read errors when recording the attempt fails.
+			}
+		});
+		onRuntimeEvent("agent_before_settle", (event) => {
+			const e = event as { outcome: string; entries: unknown[]; context: { contextMessages: unknown[] } };
+			if (reasked || attempted) return undefined;
+			if (e.outcome !== "completed") return undefined;
+			if (lastAssistantStopReason(e.context.contextMessages) === "length") return undefined;
+			try {
+				fs.statSync(structuredOutputPath);
+				return undefined;
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") return undefined;
+			}
+			reasked = true;
+			return { entries: [...e.entries, reaskMessage(schema)], continue: true };
+		});
 	}
 
 	let inheritedSubagentToolCallIds: ReadonlySet<string> = new Set<string>();
-	const onRuntimeEvent = pi.on as unknown as (
-		event: string,
-		handler: (event: unknown, ctx?: { sessionManager?: { getBranch(): unknown[] } }) => unknown,
-	) => void;
 	onRuntimeEvent("session_start", (_event: unknown, ctx?: { sessionManager?: { getBranch(): unknown[] } }) => {
 		// Establishes the inherited/own boundary once, before the child's own first turn: any
 		// `subagent` call already in the branch at this point came from the (forked) parent.

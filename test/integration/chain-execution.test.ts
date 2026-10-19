@@ -888,15 +888,25 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 		assert.deepEqual(result.details.results[0]?.structuredOutput, { ok: true, note: "captured" });
 
 		mockPi.reset();
-		mockPi.onCall({ output: "prose only" });
+		mockPi.onCall({ steps: [
+			{ jsonl: [events.assistantMessage("prose only")] },
+			{ jsonl: [events.assistantMessage("still no call"), { type: "agent_settled", aborted: false }] },
+		] });
 		const missing = await executeChain(
 			makeChainParams([{ agent: "worker", task: "Return structured", outputSchema: schema }], agents),
 		);
 		assert.equal(missing.isError, true);
 		assert.match(missing.details.results[0]?.error ?? "", /Missing structured_output call/);
+		assert.equal(missing.details.results[0]?.structuredOutput, undefined);
+		assert.equal(mockPi.callCount(), 1);
 
 		mockPi.reset();
-		mockPi.onCall({ output: "invalid", structuredOutput: { ok: "yes" } });
+		mockPi.onCall({ steps: [
+			{ structuredOutputError: "Expected boolean at /ok", jsonl: [
+				events.assistantMessage("invalid"),
+				{ type: "agent_settled", aborted: false },
+			] },
+		] });
 		const invalid = await executeChain(
 			makeChainParams([{ agent: "worker", task: "Return structured", outputSchema: schema, phase: "Validate", label: "Structured worker", as: "result" }], agents),
 		);
@@ -905,7 +915,51 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 		assert.equal(invalid.details.workflowGraph?.nodes[0]?.status, "failed");
 		assert.equal(invalid.details.workflowGraph?.nodes[0]?.outputName, "result");
 		assert.match(invalid.details.workflowGraph?.nodes[0]?.error ?? "", /Structured output validation failed/);
+		assert.equal(invalid.details.results[0]?.structuredOutput, undefined);
+		assert.equal(mockPi.callCount(), 1);
+
+		mockPi.reset();
+		mockPi.onCall({ steps: [
+			{ jsonl: [events.assistantMessage("prose before follow-up")] },
+			{ structuredOutputError: "Expected boolean at /ok", jsonl: [{ type: "agent_settled", aborted: false }] },
+		] });
+		const invalidFollowUp = await executeChain(
+			makeChainParams([{ agent: "worker", task: "Return structured", outputSchema: schema }], agents),
+		);
+		assert.equal(invalidFollowUp.isError, true);
+		assert.equal(invalidFollowUp.details.results[0]?.error, "Structured output validation failed: Expected boolean at /ok");
+		assert.equal(invalidFollowUp.details.results[0]?.structuredOutput, undefined);
+		assert.equal(mockPi.callCount(), 1);
 	});
+
+	for (const scenario of [
+		{ name: "sequential status", parallel: false, value: { status: "DONE" } },
+		{ name: "sequential envelope-shaped value", parallel: false, value: { status: "success", value: { status: "DONE" } } },
+		{ name: "parallel status", parallel: true, value: { status: "DONE" } },
+	]) {
+		it(`passes delayed structured ${scenario.name} to a named-output consumer`, async () => {
+			mockPi.onCall({ steps: [
+				{ jsonl: [events.assistantMessage("Review report before capture")] },
+				{ delay: 1500, structuredOutput: scenario.value, jsonl: [{ type: "agent_settled", aborted: false }] },
+			] });
+			mockPi.onCall({ output: "Consumed review" });
+			const review = {
+				agent: "reviewer", task: "Review", as: "review",
+				outputSchema: { type: "object", required: ["status"], properties: { status: { type: "string" } } },
+			};
+			const result = await executeChain(makeChainParams([
+				scenario.parallel ? { parallel: [review] } : review,
+				{ agent: "writer", task: "Use {outputs.review}" },
+			], [makeAgent("reviewer"), makeAgent("writer")]));
+
+			assert.ok(!result.isError, JSON.stringify(result.content));
+			assert.equal(mockPi.callCount(), 2);
+			assert.deepEqual(result.details.results[0]?.structuredOutput, scenario.value);
+			assert.equal(result.details.results[0]?.finalOutput, "Review report before capture");
+			assert.equal(result.details.outputs?.review?.text, JSON.stringify(scenario.value));
+			assert.equal(result.details.results[1]?.task?.split("\n")[0], `Use ${JSON.stringify(scenario.value)}`);
+		});
+	}
 
 	it("substitutes {task} in templates", async () => {
 		mockPi.onCall({ output: "Done" });
@@ -1810,23 +1864,28 @@ describe("chain execution - stopOn", { skip: !available }, () => {
 	const verdictSchema = { type: "object", properties: { verdict: { type: "string" } }, required: ["verdict"] };
 	const stopRecordOf = (text: string) => JSON.parse(text.slice(text.indexOf("## Stop")).split("```json\n")[1]!.split("\n```")[0]!);
 
-	it("stops after a sequential step whose structured output matches", async () => {
-		mockPi.onCall({ output: "Reviewed; missing edge case.", structuredOutput: { verdict: "FAIL" } });
-		mockPi.onCall({ output: "never runs" });
-		const result = await executeChain(makeChainParams([
-			{ agent: "reviewer", task: "Review", as: "sr", outputSchema: verdictSchema, stopOn: { path: "/verdict", in: ["FAIL"] } },
-			{ agent: "writer", task: "Fix {outputs.sr}" },
-		], [makeAgent("reviewer"), makeAgent("writer")]));
-		assert.ok(!result.isError);
-		assert.equal(mockPi.callCount(), 1);
-		const text = result.content[0]!.text;
-		assert.match(text, /^⏹ Chain stopped at step 1\/2 by condition \/verdict in \[FAIL\]/);
-		assert.deepEqual(stopRecordOf(text), { reason: "condition", stepIndex: 0, condition: { path: "/verdict", in: ["FAIL"] }, matches: [{ stepIndex: 0, as: "sr", agent: "reviewer", value: "FAIL" }] });
-		assert.deepEqual(result.details.stop, stopRecordOf(text));
-		assert.match(text, /## Outputs\n### Step 1\n#### Task 1 \(reviewer, as sr\)\nReviewed; missing edge case\.\n```json\n\{"verdict":"FAIL"\}\n```/);
-		assert.equal(result.details.workflowGraph?.nodes[0]?.status, "completed");
-		assert.equal(result.details.workflowGraph?.nodes[1]?.status, "pending");
-	});
+	for (const delayed of [false, true]) {
+		it(`stops after a sequential step whose ${delayed ? "delayed" : "first-turn"} structured output matches`, async () => {
+			mockPi.onCall(delayed ? { steps: [
+				{ jsonl: [events.assistantMessage("Reviewed; missing edge case.")] },
+				{ delay: 1500, structuredOutput: { verdict: "FAIL" }, jsonl: [{ type: "agent_settled", aborted: false }] },
+			] } : { output: "Reviewed; missing edge case.", structuredOutput: { verdict: "FAIL" } });
+			mockPi.onCall({ output: "never runs" });
+			const result = await executeChain(makeChainParams([
+				{ agent: "reviewer", task: "Review", as: "sr", outputSchema: verdictSchema, stopOn: { path: "/verdict", in: ["FAIL"] } },
+				{ agent: "writer", task: "Fix {outputs.sr}" },
+			], [makeAgent("reviewer"), makeAgent("writer")]));
+			assert.ok(!result.isError);
+			assert.equal(mockPi.callCount(), 1);
+			const text = result.content[0]!.text;
+			assert.match(text, /^⏹ Chain stopped at step 1\/2 by condition \/verdict in \[FAIL\]/);
+			assert.deepEqual(stopRecordOf(text), { reason: "condition", stepIndex: 0, condition: { path: "/verdict", in: ["FAIL"] }, matches: [{ stepIndex: 0, as: "sr", agent: "reviewer", value: "FAIL" }] });
+			assert.deepEqual(result.details.stop, stopRecordOf(text));
+			assert.match(text, /## Outputs\n### Step 1\n#### Task 1 \(reviewer, as sr\)\nReviewed; missing edge case\.\n```json\n\{"verdict":"FAIL"\}\n```/);
+			assert.equal(result.details.workflowGraph?.nodes[0]?.status, "completed");
+			assert.equal(result.details.workflowGraph?.nodes[1]?.status, "pending");
+		});
+	}
 
 	it("omits stop sections when a stopOn step fails without a match", async () => {
 		mockPi.onCall({ output: "boom", exitCode: 1 });
@@ -1859,7 +1918,10 @@ describe("chain execution - stopOn", { skip: !available }, () => {
 
 	it("lets all parallel siblings finish, then stops with every output and no following step", async () => {
 		mockPi.onCall({ output: "ok one", structuredOutput: { verdict: "PASS" } });
-		mockPi.onCall({ output: "bad two", structuredOutput: { verdict: "FAIL" } });
+		mockPi.onCall({ steps: [
+			{ jsonl: [events.assistantMessage("bad two")] },
+			{ delay: 1500, structuredOutput: { verdict: "FAIL" }, jsonl: [{ type: "agent_settled", aborted: false }] },
+		] });
 		mockPi.onCall({ output: "ok three", structuredOutput: { verdict: "PASS" } });
 		const result = await executeChain(makeChainParams([
 			{ parallel: [

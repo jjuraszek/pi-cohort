@@ -22,7 +22,7 @@
  */
 
 import fs from "node:fs";
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, getCurrentTools } from "@earendil-works/pi-ai";
 
 const PROVIDER = "fanout-fixture";
 const MODEL = "scripted";
@@ -87,7 +87,7 @@ function pushToolCall(stream, output, name, args) {
 function streamScripted(model, context) {
 	const stream = createAssistantMessageEventStream();
 	const output = newAssistantMessage(model);
-	const hasSubagentTool = (context.tools ?? []).some((tool) => tool.name === "subagent");
+	const hasSubagentTool = getCurrentTools(context.messages).some((tool) => tool.name === "subagent");
 	const alreadyDispatched = hasSubagentResult(context);
 	const depth = process.env.PI_SUBAGENT_DEPTH ?? "0";
 	const decision = !hasSubagentTool ? "finish-no-tool" : alreadyDispatched ? "finish-after-dispatch" : "dispatch";

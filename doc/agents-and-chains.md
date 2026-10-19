@@ -256,6 +256,10 @@ Create an implementation plan based on {outputs.context}
 
 Each `.chain.md` `## agent-name` section is a step. Config lines such as `phase`, `label`, `as`, `outputSchema`, `output`, `outputMode`, `reads`, `model`, `skills`, and `progress` go immediately after the header. A blank line separates config from task text. In saved `.chain.md` files, `outputSchema` is a path to a JSON Schema file; direct tool calls and `.chain.json` files can pass the schema object inline.
 
+With `outputSchema`, a normal prose-only completion without a `structured_output` call gets one in-process follow-up naming the schema and requesting no other text. A valid call in that follow-up succeeds like a first-turn call, including for `stopOn` and `{outputs.name}`. A second missing call fails with `Missing structured_output call`; an invalid follow-up call fails validation without another follow-up.
+
+Attempted or invalid calls are not missing calls and do not trigger recovery. A model can correct an invalid call within the same turn, but validation failure does not cause a new follow-up turn. Cancellation, timeout, provider error, and exhausted limits do not get this recovery. When acceptance is also required, the child writes its acceptance report before calling `structured_output`. If the model adds prose despite the no-prose request, its last nonempty assistant text may replace the earlier report in `output:`.
+
 For `output`, `reads`, `skills`, and `progress`, chain behavior is three-state: omitted inherits from the agent, a value overrides, and `false` disables. This chain inheritance is distinct from top-level execution: top-level single/parallel output is disabled until the call site or Clarify selects it, while top-level parallel progress is disabled until the call site or Clarify enables it; omitted top-level parallel-task `reads` still inherit `defaultReads`.
 
 Use `phase` to group related work in status output, `label` for a readable step name, and `as` to store a successful step or parallel task result for later `{outputs.name}` references. Duplicate `as` names, invalid identifiers, and unknown output references fail before child execution.

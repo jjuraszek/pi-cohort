@@ -55,13 +55,48 @@ export function validateStructuredOutputValue(schema: JsonSchemaObject, value: u
 	return { status: "invalid", message: errors.join("; ") || "schema validation failed" };
 }
 
+const VALIDATION_PREFIX = "Structured output validation failed:";
+const PARAMETER_VALIDATION_PREFIX = 'Validation failed for tool "structured_output":';
+const PARSE_VALIDATION_PREFIX = 'Invalid arguments for tool "structured_output":';
+const INVALID_ARGUMENTS = "Invalid structured_output arguments";
+
+function normalizeValidationDiagnostic(content: string): string {
+	let diagnostic = content.split("Received arguments:", 1)[0].trim();
+	for (;;) {
+		if (diagnostic.startsWith(PARSE_VALIDATION_PREFIX)) return INVALID_ARGUMENTS;
+		const prefix = [VALIDATION_PREFIX, PARAMETER_VALIDATION_PREFIX].find((prefix) => diagnostic.startsWith(prefix));
+		if (!prefix) break;
+		diagnostic = diagnostic.slice(prefix.length).trim();
+	}
+	return diagnostic || INVALID_ARGUMENTS;
+}
+
+export function getStructuredOutputValidationDiagnostic(content: unknown): string | undefined {
+	if (typeof content !== "string") return undefined;
+	if (![VALIDATION_PREFIX, PARAMETER_VALIDATION_PREFIX, PARSE_VALIDATION_PREFIX].some((prefix) => content.startsWith(prefix))) return undefined;
+	return normalizeValidationDiagnostic(content);
+}
+
 export function readStructuredOutput(runtime: StructuredOutputRuntime): { value?: unknown; error?: string } {
 	if (!fs.existsSync(runtime.outputPath)) {
 		return { error: "Missing structured_output call; this step has outputSchema and must finish by calling structured_output." };
 	}
 	let value: unknown;
 	try {
-		value = JSON.parse(fs.readFileSync(runtime.outputPath, "utf-8"));
+		const envelope: unknown = JSON.parse(fs.readFileSync(runtime.outputPath, "utf-8"));
+		if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) {
+			throw new Error("Expected a capture envelope object.");
+		}
+		const capture = envelope as Record<string, unknown>;
+		if (capture.status === "error") {
+			if (typeof capture.message !== "string" || !capture.message.trim()) {
+				throw new Error("Error capture requires a nonempty message.");
+			}
+			return { error: `${VALIDATION_PREFIX} ${normalizeValidationDiagnostic(capture.message)}` };
+		}
+		if (capture.status !== "success") throw new Error("Unknown capture status.");
+		if (!Object.hasOwn(capture, "value")) throw new Error("Success capture requires a value.");
+		value = capture.value;
 	} catch (error) {
 		return { error: `Failed to read structured output: ${error instanceof Error ? error.message : String(error)}` };
 	}

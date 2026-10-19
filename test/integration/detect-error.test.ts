@@ -222,6 +222,32 @@ describe("detectSubagentError", { skip: !available ? "utils not importable" : un
 			"all errors have recovery — agent completed successfully");
 	});
 
+	const validationError = () => toolResult("structured_output", "Structured output validation failed: root: Expected string", true);
+	const structuredSuccess = () => toolResult("structured_output", "Structured output captured");
+	const correctionCases = [
+		{ name: "schema rejection then success", messages: [validationError(), structuredSuccess()], errorType: undefined },
+		{ name: "parameter rejection then success", messages: [toolResult("structured_output", 'Validation failed for tool "structured_output": value: Required', true), structuredSuccess()], errorType: undefined },
+		{ name: "argument parse rejection then success", messages: [toolResult("structured_output", 'Invalid arguments for tool "structured_output": malformed JSON', true), structuredSuccess()], errorType: undefined },
+		{ name: "two rejections then success", messages: [validationError(), validationError(), structuredSuccess()], errorType: undefined },
+		{ name: "only rejection", messages: [validationError()], errorType: "structured_output" },
+		{ name: "success then rejection", messages: [structuredSuccess(), validationError()], errorType: "structured_output" },
+		{ name: "rejection then tool call only", messages: [validationError(), assistantToolCall("structured_output")], errorType: "structured_output" },
+		{ name: "rejection then unrelated success", messages: [validationError(), toolResult("read", "ok")], errorType: "structured_output" },
+		{ name: "read error remains after correction", messages: [validationError(), toolResult("read", "read failed", true), structuredSuccess()], errorType: "read" },
+		{ name: "bash error remains after correction", messages: [toolResult("bash", "process exited with code 2"), validationError(), structuredSuccess()], errorType: "bash" },
+		{ name: "abort is not validation", messages: [toolResult("structured_output", "Tool execution aborted", true), structuredSuccess()], errorType: "structured_output" },
+		{ name: "truncation is not validation", messages: [toolResult("structured_output", "Tool call truncated: token limit exhausted", true), structuredSuccess()], errorType: "structured_output" },
+		{ name: "arbitrary failure is not validation", messages: [toolResult("structured_output", "Failed to write capture", true), structuredSuccess()], errorType: "structured_output" },
+		{ name: "another tool's validation is not superseded", messages: [toolResult("read", "Structured output validation failed: root: Expected string", true), structuredSuccess()], errorType: "read" },
+	];
+	for (const { name, messages, errorType } of correctionCases) {
+		it(`structured-output correction: ${name}`, () => {
+			const result = detectSubagentError(messages);
+			assert.equal(result.hasError, errorType !== undefined);
+			assert.equal(result.errorType, errorType);
+		});
+	}
+
 	// ---- Real-world regression test ----
 
 	it("real-world: 19-read review run with trailing EISDIR", () => {

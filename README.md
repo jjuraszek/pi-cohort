@@ -33,6 +33,8 @@ Four independent extensions for the [pi coding agent](https://github.com/earendi
 
 ## Installation
 
+Requires Pi >=1.3.0.
+
 ```bash
 pi install npm:pi-cohort
 ```
@@ -45,7 +47,7 @@ Children and detached coordinators use the originating parent's resolved Node ex
 
 External execution backends are currently unsupported on Windows, for both foreground and background runs. Native execution remains supported.
 
-`pi-cohort/execution-backend` requires Pi >=0.85.0 and is the public API for Pi extensions that add child execution surfaces. Pi's TypeScript-aware runtime loads the API; bare Node is not a supported execution path. Consumers outside Pi must supply a TypeScript-aware loader such as [jiti](https://github.com/unjs/jiti).
+`pi-cohort/execution-backend` requires Pi >=1.3.0 and is the public API for Pi extensions that add child execution surfaces. Pi's TypeScript-aware runtime loads the API; bare Node is not a supported execution path. Consumers outside Pi must supply a TypeScript-aware loader such as [jiti](https://github.com/unjs/jiti).
 
 An adapter registers its backend in extension load order. To make that backend available to background runs, registration also supplies an optional reload descriptor:
 

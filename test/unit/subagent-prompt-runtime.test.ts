@@ -3,8 +3,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, it } from "node:test";
+import { validateToolArguments } from "@earendil-works/pi-ai";
 import { SUBAGENT_FANOUT_CHILD_ENV } from "../../src/runs/shared/pi-args.ts";
-import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV } from "../../src/runs/shared/structured-output.ts";
+import { readStructuredOutput, STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV } from "../../src/runs/shared/structured-output.ts";
 import registerSubagentPromptRuntime, {
 	CHILD_FANOUT_BOUNDARY_INSTRUCTIONS,
 	CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS,
@@ -74,7 +75,7 @@ describe("subagent prompt runtime", () => {
 			assert.ok(execute, "structured_output tool should be registered");
 			const result = await execute("tool-1", { value: { ok: true } });
 			assert.equal(result.terminate, true);
-			assert.deepEqual(JSON.parse(fs.readFileSync(outputPath, "utf-8")), { ok: true });
+			assert.deepEqual(JSON.parse(fs.readFileSync(outputPath, "utf-8")), { status: "success", value: { ok: true } });
 		} finally {
 			fs.rmSync(dir, { recursive: true, force: true });
 		}
@@ -358,5 +359,233 @@ describe("subagent prompt runtime", () => {
 		];
 
 		assert.equal(contextHandler?.({ messages }), undefined);
+	});
+});
+
+const reaskSchema = { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } };
+let runtimeImportId = 0;
+
+async function withStructuredRuntime(run: (runtime: any) => Promise<void> | void, missing: string[] = [], schema: object = reaskSchema) {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-reask-"));
+	const saved = [STRUCTURED_OUTPUT_SCHEMA_ENV, STRUCTURED_OUTPUT_CAPTURE_ENV].map((key) => [key, process.env[key]] as const);
+	try {
+		const outputPath = path.join(dir, "output.json");
+		const schemaPath = path.join(dir, "schema.json");
+		fs.writeFileSync(schemaPath, JSON.stringify(schema));
+		process.env[STRUCTURED_OUTPUT_SCHEMA_ENV] = schemaPath;
+		process.env[STRUCTURED_OUTPUT_CAPTURE_ENV] = outputPath;
+		for (const key of missing) delete process.env[key];
+		const handlers = new Map<string, (event: any) => any>();
+		let tool: any;
+		const { default: register } = await import(`../../src/runs/shared/subagent-prompt-runtime.ts?reask=${++runtimeImportId}`);
+		register({ registerTool(value: any) { tool = value; }, on(name: string, handler: any) { handlers.set(name, handler); } });
+		const event = {
+			outcome: "completed",
+			entries: [{ type: "custom_message", customType: "report", content: "Report first", display: true }],
+			context: { canContinue: false, contextMessages: [{ role: "assistant", stopReason: "stop", content: [] }] },
+		};
+		const settle = (value = event) => {
+			assert.ok(handlers.has("agent_before_settle"), "expected settlement handler");
+			return handlers.get("agent_before_settle")!(value);
+		};
+		const attempt = (args: unknown, toolName = "structured_output", isError = true, text = 'Validation failed for tool "structured_output": invalid value') => {
+			assert.ok(handlers.has("tool_execution_start"), "expected attempt handlers");
+			handlers.get("tool_execution_start")!({ toolName, args, toolCallId: "call-1" });
+			handlers.get("tool_execution_end")!({ toolName, isError, toolCallId: "call-1", result: { content: [{ type: "text", text }] } });
+		};
+		const read = () => readStructuredOutput({ schema, schemaPath, outputPath });
+		await run({ dir, outputPath, handlers, tool, event, settle, attempt, read });
+	} finally {
+		for (const [key, value] of saved) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+describe("structured output settlement", () => {
+	it("appends the exact re-ask after existing drafts without mutation, once per module", async () => {
+		for (let processAttempt = 0; processAttempt < 2; processAttempt++) {
+			await withStructuredRuntime(({ event, settle }) => {
+				const original = structuredClone(event);
+				const result = settle();
+				assert.equal(result.continue, true);
+				assert.deepEqual(result.entries.slice(0, event.entries.length), event.entries);
+				assert.deepEqual(result.entries.at(-1), {
+					type: "custom_message", customType: "pi-cohort:structured-output-reask", display: true,
+					content: "You finished without calling `structured_output`. Call `structured_output` now with a `value` matching this schema, and send no other text:\n\n" + JSON.stringify(reaskSchema, null, 2),
+				});
+				assert.equal(result.entries.length, event.entries.length + 1);
+				assert.deepEqual(event, original);
+				assert.equal(settle(), undefined);
+			});
+		}
+	});
+
+	for (const row of [
+		{ name: "valid capture", capture: { status: "success", value: { ok: true } } },
+		{ name: "error capture", capture: { status: "error", message: "invalid value" } },
+		{ name: "aborted", outcome: "aborted" },
+		{ name: "provider error", outcome: "error" },
+		{ name: "token exhaustion with trailing non-assistant messages", stopReason: "length" },
+	]) {
+		it(`suppresses re-ask for ${row.name} without consuming the flag`, async () => {
+			await withStructuredRuntime(({ outputPath, event, settle }) => {
+				if (row.capture) fs.writeFileSync(outputPath, JSON.stringify(row.capture));
+				if (row.outcome) event.outcome = row.outcome;
+				if (row.stopReason) event.context.contextMessages = [
+					{ role: "assistant", stopReason: "stop" }, { role: "assistant", stopReason: row.stopReason },
+					{ role: "toolResult" }, { role: "custom" },
+				];
+				if (row.outcome) Object.defineProperty(event.context, "contextMessages", { get() { throw new Error("outcome must be checked first"); }, configurable: true });
+				assert.equal(settle(), undefined);
+				fs.rmSync(outputPath, { force: true });
+				event.outcome = "completed";
+				Object.defineProperty(event.context, "contextMessages", { value: [{ role: "assistant", stopReason: "stop" }], configurable: true });
+				assert.equal(settle().continue, true);
+			});
+		});
+	}
+
+	for (const missing of [[STRUCTURED_OUTPUT_CAPTURE_ENV], [STRUCTURED_OUTPUT_SCHEMA_ENV], [STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV]]) {
+		it(`registers no structured listeners without ${missing.join(" and ")}`, async () => {
+			await withStructuredRuntime(({ handlers, tool }) => {
+				assert.equal(tool, undefined);
+				for (const name of ["agent_before_settle", "tool_execution_start", "tool_execution_end"]) assert.equal(handlers.has(name), false);
+			}, missing);
+		});
+	}
+
+	for (const validation of ["parameters", "execute"]) {
+		it(`records invalid ${validation} calls and allows a same-turn valid correction`, async () => {
+			await withStructuredRuntime(async ({ outputPath, tool, attempt, settle, read }) => {
+				const args = { value: { ok: "yes" } };
+				let diagnostic = "";
+				const rejected = (error: Error) => {
+					diagnostic = error.message;
+					return true;
+				};
+				if (validation === "parameters") assert.throws(() => validateToolArguments(tool, { type: "toolCall", id: "call-1", name: tool.name, arguments: args }), rejected);
+				else await assert.rejects(tool.execute("call-1", args), rejected);
+				attempt(args, "structured_output", true, diagnostic);
+				const envelope = JSON.parse(fs.readFileSync(outputPath, "utf-8"));
+				assert.equal(envelope.status, "error");
+				assert.ok(envelope.message.length > 0);
+				assert.ok(!envelope.message.includes("Received arguments:"));
+				assert.deepEqual(read(), { error: validation === "parameters"
+					? "Structured output validation failed: - value.ok: must be boolean"
+					: "Structured output validation failed: ok: must be boolean" });
+				assert.equal(fs.statSync(outputPath).mode & 0o777, 0o600);
+				assert.equal(settle(), undefined);
+				const result = await tool.execute("call-2", { value: { ok: true } });
+				assert.equal(result.terminate, true);
+				attempt(args);
+				attempt(args, "structured_output", false);
+				assert.deepEqual(JSON.parse(fs.readFileSync(outputPath, "utf-8")), { status: "success", value: { ok: true } });
+				assert.equal(settle(), undefined);
+			});
+		});
+	}
+
+	it("rejects missing arguments under a null schema through Pi validation, writer, and reader", async () => {
+		await withStructuredRuntime(async ({ outputPath, handlers, tool, settle, read }) => {
+			let diagnostic = "";
+			assert.throws(() => validateToolArguments(tool, { type: "toolCall", id: "null-call", name: tool.name, arguments: {} }), (error: Error) => {
+				diagnostic = error.message;
+				return diagnostic.startsWith('Validation failed for tool "structured_output":');
+			});
+			handlers.get("tool_execution_end")({ toolName: tool.name, isError: true, result: { content: [{ type: "text", text: diagnostic }] } });
+			assert.deepEqual(read(), { error: "Structured output validation failed: - value: must have required properties value" });
+			assert.equal(settle(), undefined);
+			await tool.execute("valid-null", { value: null });
+			assert.deepEqual(JSON.parse(fs.readFileSync(outputPath, "utf-8")), { status: "success", value: null });
+			assert.deepEqual(read(), { value: null });
+			handlers.get("tool_execution_end")({ toolName: tool.name, isError: true, result: { content: [{ type: "text", text: diagnostic }] } });
+			assert.deepEqual(read(), { value: null });
+		}, [], { type: "null" });
+	});
+
+	it("accepts a valid follow-up as a terminating structured capture", async () => {
+		await withStructuredRuntime(async ({ outputPath, tool, attempt, settle }) => {
+			assert.equal(settle().continue, true);
+			const result = await tool.execute("call-1", { value: { ok: true } });
+			attempt({ value: { ok: true } }, "structured_output", false);
+			assert.equal(result.terminate, true);
+			assert.deepEqual(JSON.parse(fs.readFileSync(outputPath, "utf-8")), { status: "success", value: { ok: true } });
+			assert.equal(settle(), undefined);
+		});
+	});
+
+	it("does not send a third request after an invalid follow-up followed by prose", async () => {
+		await withStructuredRuntime(async ({ outputPath, tool, attempt, settle }) => {
+			assert.equal(settle().continue, true);
+			await assert.rejects(tool.execute("call-1", { value: { ok: "yes" } }), /Structured output validation failed:/);
+			attempt({ value: { ok: "yes" } });
+			assert.equal(settle(), undefined);
+			fs.unlinkSync(outputPath);
+			assert.equal(settle(), undefined);
+		});
+	});
+
+	for (const row of [
+		{ text: "Structured output validation failed: Structured output validation failed: bad value\nReceived arguments: SENTINEL", message: "bad value" },
+		{ text: 'Validation failed for tool "structured_output": bad parameter\nReceived arguments: SENTINEL', message: "bad parameter" },
+		{ text: "Structured output validation failed: \nReceived arguments: SENTINEL", message: "Invalid structured_output arguments" },
+		{ text: 'Invalid arguments for tool "structured_output": SENTINEL', message: "Invalid structured_output arguments" },
+	]) {
+		it(`normalizes diagnostic ${row.text.split("\n")[0]}`, async () => {
+			await withStructuredRuntime(({ attempt, read }) => {
+				attempt({}, "structured_output", true, row.text);
+				assert.deepEqual(read(), { error: `Structured output validation failed: ${row.message}` });
+			});
+		});
+	}
+
+	it("does not record non-validation failures or recover a truncated attempted call", async () => {
+		await withStructuredRuntime(({ attempt, outputPath, event, settle }) => {
+			const text = 'Tool call "structured_output" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.';
+			attempt({}, "read");
+			attempt({}, "structured_output", false);
+			assert.equal(fs.existsSync(outputPath), false);
+			attempt({}, "structured_output", true, text);
+			event.context.contextMessages = [{ role: "assistant", stopReason: "length" }, { role: "toolResult", content: [{ type: "text", text }] }];
+			assert.equal(settle(), undefined);
+			assert.equal(fs.existsSync(outputPath), false);
+			assert.equal(event.context.contextMessages[1].content[0].text, text);
+		});
+	});
+
+	it("suppresses recovery on inspection failures and preserves unknown captures on recording", async () => {
+		await withStructuredRuntime(({ outputPath, attempt, settle }) => {
+			fs.mkdirSync(outputPath);
+			assert.doesNotThrow(() => attempt({}));
+			assert.ok(fs.statSync(outputPath).isDirectory());
+			assert.equal(settle(), undefined);
+		});
+		await withStructuredRuntime(({ dir, outputPath, settle }) => {
+			fs.rmSync(dir, { recursive: true });
+			fs.writeFileSync(dir, "not a directory");
+			assert.doesNotThrow(() => assert.equal(settle(), undefined));
+		});
+	});
+
+	it("retains successful execute write failures as thrown failures without recovery", async () => {
+		await withStructuredRuntime(async ({ outputPath, tool, settle }) => {
+			fs.mkdirSync(outputPath);
+			await assert.rejects(tool.execute("call-1", { value: { ok: true } }), /EISDIR/);
+			fs.rmSync(outputPath, { recursive: true });
+			assert.equal(settle(), undefined);
+		});
+	});
+
+	it("swallows attempt-record write failures without creating directories", async () => {
+		await withStructuredRuntime(({ dir, outputPath, attempt, settle }) => {
+			fs.rmSync(dir, { recursive: true });
+			assert.doesNotThrow(() => attempt({ value: { ok: "yes" } }));
+			assert.equal(fs.existsSync(outputPath), false);
+			assert.equal(fs.existsSync(dir), false);
+			assert.equal(settle(), undefined);
+		});
 	});
 });

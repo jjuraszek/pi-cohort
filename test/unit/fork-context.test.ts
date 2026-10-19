@@ -96,13 +96,12 @@ describe("createForkContextResolver", () => {
 		}
 	});
 
-	it("creates forked sessions through the default package opener", () => {
+	it("forks a persisted user-only parent through the default package opener", () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cohort-fork-default-"));
 		try {
 			const sessionDir = path.join(tempDir, "sessions");
 			const parent = SessionManager.create(tempDir, sessionDir);
 			parent.appendMessage({ role: "user", content: "parent prompt" });
-			parent.appendMessage({ role: "assistant", content: "parent response" });
 			const parentSessionFile = parent.getSessionFile();
 			const leafId = parent.getLeafId();
 
@@ -121,17 +120,20 @@ describe("createForkContextResolver", () => {
 			assert.equal(path.dirname(childSessionFile), fs.realpathSync.native(path.join(tempDir, "run-0")));
 			assert.equal(resolver.sessionFileForIndex(0), childSessionFile);
 			assert.equal(fs.existsSync(childSessionFile), true);
+			assert.deepEqual(SessionManager.open(childSessionFile).getBranch(leafId), parent.getBranch(leafId));
+			assert.equal(parent.getSessionFile(), parentSessionFile);
+			assert.equal(parent.getLeafId(), leafId);
 		} finally {
 			fs.rmSync(tempDir, { recursive: true, force: true });
 		}
 	});
 
-	it("fails clearly for an unflushed user-only parent", () => {
+	it("fails clearly for an unflushed setup-only parent", () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cohort-fork-user-only-"));
 		try {
 			const sessionDir = path.join(tempDir, "sessions");
 			const parent = SessionManager.create(tempDir, sessionDir);
-			parent.appendMessage({ role: "user", content: "first turn prompt" });
+			parent.appendThinkingLevelChange("off");
 			const parentSessionFile = parent.getSessionFile();
 			const leafId = parent.getLeafId();
 

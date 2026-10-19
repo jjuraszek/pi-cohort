@@ -433,7 +433,7 @@ describe("runExternalSingleAttempt", () => {
 			// Written from the resultFactory (mimicking the child writing it during the
 			// owner attempt) so it lands after initializeAttempt's pre-run cleanup.
 			const { owner } = makeOwner(() => {
-				fs.writeFileSync(outputPath, JSON.stringify({ ok: true }), "utf-8");
+				fs.writeFileSync(outputPath, JSON.stringify({ status: "success", value: { ok: true } }), "utf-8");
 				return baseAttemptResult();
 			});
 			const result = await runExternalSingleAttempt({

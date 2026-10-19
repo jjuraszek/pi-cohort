@@ -228,6 +228,7 @@ type ChildMessage = Message & {
 
 interface ChildEvent {
 	type?: string;
+	aborted?: boolean;
 	message?: ChildMessage;
 	toolName?: string;
 	args?: Record<string, unknown>;
@@ -255,6 +256,8 @@ function runPiStreaming(
 	childEventContext?: ChildEventContext,
 	registerInterrupt?: (interrupt: (() => void) | undefined) => void,
 	onChildEvent?: (event: ChildEvent) => void,
+	structuredRun = false,
+	controlConfig: ResolvedControlConfig = DEFAULT_CONTROL_CONFIG,
 ): Promise<RunPiStreamingResult> {
 	return new Promise((resolve, reject) => {
 		const spawnSpec = getPiSpawnCommand(args, runtime);
@@ -321,6 +324,13 @@ function runPiStreaming(
 			appendChildEvent(event);
 			onChildEvent?.(event);
 
+			if (structuredRun && event.type === "agent_settled") {
+				clearSettlementWait();
+				cleanTerminalAssistantStopReceived = !event.aborted && !assistantError && !error && !interrupted;
+				if (event.aborted && !error) error = "Subagent aborted before structured settlement.";
+				startFinalDrain();
+			}
+
 			if (event.type === "tool_execution_start" && event.toolName) {
 				observedMutationAttempt = observedMutationAttempt || isMutatingTool(event.toolName, event.args);
 				const toolArgs = extractToolArgsPreview(event.args ?? {});
@@ -351,7 +361,8 @@ function runPiStreaming(
 				if (stopReason === "stop" && !hasToolCall) {
 					if (!event.message.errorMessage && extractTextFromContent(event.message.content).trim()) assistantError = undefined;
 					cleanTerminalAssistantStopReceived ||= !event.message.errorMessage;
-					startFinalDrain();
+					if (structuredRun) startSettlementWait();
+					else startFinalDrain();
 				}
 			}
 		};
@@ -379,8 +390,31 @@ function runPiStreaming(
 		let finalDrainTimer: NodeJS.Timeout | undefined;
 		let finalHardKillTimer: NodeJS.Timeout | undefined;
 		let settled = false;
+		let lastStreamActivityAt = Date.now();
+		let settlementWaitTimer: NodeJS.Timeout | undefined;
+		function clearSettlementWait(): void {
+			if (settlementWaitTimer) clearInterval(settlementWaitTimer);
+			settlementWaitTimer = undefined;
+		}
+		function startSettlementWait(): void {
+			if (settlementWaitTimer || settled || childExited) return;
+			settlementWaitTimer = setInterval(() => {
+				if (settled || childExited || interrupted) return;
+				const silenceMs = Date.now() - lastStreamActivityAt;
+				if (silenceMs >= controlConfig.inFlightSilenceCeilingMs) {
+					error ??= "Subagent awaiting structured settlement exceeded its silence ceiling. Forcing termination.";
+					cleanTerminalAssistantStopReceived = false;
+					startFinalDrain();
+				}
+				if (silenceMs >= controlConfig.inFlightSilenceKillMs) {
+					forcedTerminationSignal = trySignalChild(child, "SIGKILL") || forcedTerminationSignal;
+				}
+			}, Math.min(1000, controlConfig.inFlightSilenceCeilingMs / 4));
+			settlementWaitTimer.unref?.();
+		}
 		const clearStdioGuard = attachPostExitStdioGuard(child, { idleMs: 2000, hardMs: 8000 });
 		child.stdout.on("data", (chunk: Buffer) => {
+			lastStreamActivityAt = Date.now();
 			const text = chunk.toString();
 			stdoutBuf += text;
 			const lines = stdoutBuf.split("\n");
@@ -389,11 +423,13 @@ function runPiStreaming(
 		});
 
 		child.stderr.on("data", (chunk: Buffer) => {
+			lastStreamActivityAt = Date.now();
 			processStderrText(chunk.toString());
 		});
 		registerInterrupt?.(() => {
 			if (settled) return;
 			interrupted = true;
+			clearSettlementWait();
 			if (!error) error = "Interrupted. Waiting for explicit next action.";
 			trySignalChild(child, "SIGINT");
 			setTimeout(() => {
@@ -401,6 +437,7 @@ function runPiStreaming(
 			}, 1000).unref?.();
 		});
 		const clearDrainTimers = () => {
+			clearSettlementWait();
 			if (finalDrainTimer) {
 				clearTimeout(finalDrainTimer);
 				finalDrainTimer = undefined;
@@ -590,6 +627,7 @@ export interface SingleStepContext {
 	onChildEvent?: (event: ChildEvent) => void;
 	executionBackendCoordinator?: DetachedExecutionBackendCoordinator;
 	executionBackendConfig?: DetachedExecutionBackendConfig;
+	controlConfig?: ResolvedControlConfig;
 }
 
 /** Execute one detached-runner leaf. */
@@ -909,6 +947,8 @@ export async function runSingleStep(
 				{ eventsPath, runId: ctx.id, stepIndex: ctx.flatIndex, agent: step.agent },
 				ctx.registerInterrupt,
 				ctx.onChildEvent,
+				effectiveStructuredOutput !== undefined,
+				ctx.controlConfig ?? DEFAULT_CONTROL_CONFIG,
 			);
 		} catch (error) {
 			if (!(error instanceof PiRuntimeLaunchError)) throw error;
@@ -1927,6 +1967,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					flatIndex: fi, flatStepCount: Math.max(statusPayload.steps.length, 1),
 					outputFile: path.join(asyncDir, `output-${fi}.log`),
 					runtime: config.runtime,
+					controlConfig: config.controlConfig,
 					forwardedFlags: config.forwardedFlags,
 					executionBackendCoordinator,
 					executionBackendConfig,
@@ -2183,6 +2224,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 							flatIndex: fi, flatStepCount: flatSteps.length,
 							outputFile: path.join(asyncDir, `output-${fi}.log`),
 							runtime: config.runtime,
+							controlConfig: config.controlConfig,
 							forwardedFlags: config.forwardedFlags,
 							executionBackendCoordinator,
 							executionBackendConfig,
@@ -2361,6 +2403,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				flatIndex, flatStepCount: flatSteps.length,
 				outputFile: path.join(asyncDir, `output-${flatIndex}.log`),
 				runtime: config.runtime,
+				controlConfig: config.controlConfig,
 				forwardedFlags: config.forwardedFlags,
 				executionBackendCoordinator,
 				executionBackendConfig,

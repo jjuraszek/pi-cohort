@@ -12,8 +12,11 @@ interface MockPiResponse {
 	delay?: number;
 	keepAliveAfterFinalMessageMs?: number;
 	jsonl?: unknown[];
+	structuredOutput?: unknown;
 	steps?: Array<{
 		delay?: number;
+		structuredOutput?: unknown;
+		structuredOutputError?: string;
 		jsonl?: unknown[];
 		stderr?: string;
 	}>;
