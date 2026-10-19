@@ -33,6 +33,7 @@ export interface RunnerSubagentStep {
 
 export interface ParallelStepGroup {
 	parallel: RunnerSubagentStep[];
+	cwd?: string;
 	concurrency?: number;
 	failFast?: boolean;
 	worktree?: boolean;

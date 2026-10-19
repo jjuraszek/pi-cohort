@@ -46,14 +46,14 @@ import {
 	MAX_PARALLEL_CONCURRENCY,
 } from "../shared/parallel-utils.ts";
 import { buildPiArgs, cleanupTempDir, runDirEnv } from "../shared/pi-args.ts";
-import { ChainOutputValidationError, outputEntryFromAsyncResult, resolveOutputReferences } from "../shared/chain-outputs.ts";
+import { ChainOutputValidationError, TreeRegistry, outputEntryFromAsyncResult, resolveOutputReferences } from "../shared/chain-outputs.ts";
 import { buildStopRecord, evaluateStopCondition } from "../shared/stop-conditions.ts";
 import { createStructuredOutputRuntime, readStructuredOutput } from "../shared/structured-output.ts";
 import { collectDynamicResults, DynamicFanoutError, materializeDynamicParallelStep, validateDynamicCollection } from "../shared/dynamic-fanout.ts";
 import { nestedSummaryFromAsyncStatus, writeNestedEvent } from "../shared/nested-events.ts";
 import { formatModelAttemptNote, isRetryableModelFailure } from "../shared/model-fallback.ts";
 import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
-import { detectSubagentError, extractTextFromContent, extractToolArgsPreview, getFinalOutput } from "../../shared/utils.ts";
+import { detectSubagentError, extractTextFromContent, extractToolArgsPreview, getFinalOutput, resolveChildCwd } from "../../shared/utils.ts";
 import { blockedLine, evaluateCompletionMutationGuard } from "../shared/completion-guard.ts";
 import {
 	createMutatingFailureState,
@@ -70,6 +70,7 @@ import { parseSessionTokens } from "../../shared/session-tokens.ts";
 import type { TokenUsage } from "../../shared/types.ts";
 import {
 	cleanupWorktrees,
+	removeTrees,
 	createWorktrees,
 	diffWorktrees,
 	findWorktreeTaskCwdConflict,
@@ -570,6 +571,7 @@ function writeRunLog(
 export interface SingleStepContext {
 	previousOutput: string;
 	outputs?: ChainOutputMap;
+	trees?: TreeRegistry;
 	placeholder: string;
 	cwd: string;
 	sessionEnabled: boolean;
@@ -612,10 +614,20 @@ export async function runSingleStep(
 	acceptance?: import("../../shared/types.ts").AcceptanceLedger;
 	executionSurface?: ExecutionSurfaceResult;
 }> {
+	let childCwd: string;
+	const placeholderRegex = new RegExp(ctx.placeholder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g");
+	let task = step.task.replace(placeholderRegex, () => ctx.previousOutput);
+	try {
+		childCwd = resolveChildCwd(ctx.cwd, resolveOutputReferences(step.cwd ?? ctx.cwd, ctx.outputs ?? {}, ctx.trees));
+		task = resolveOutputReferences(task, ctx.outputs ?? {}, ctx.trees);
+	} catch (error) {
+		if (!(error instanceof ChainOutputValidationError)) throw error;
+		return { agent: step.agent, output: error.message, exitCode: 1, error: error.message, sessionFile: step.sessionFile };
+	}
 	let backendSelection: import("../../execution-backend/selection.ts").ExecutionBackendSelectionResult;
 	try {
 		backendSelection = await selectConfiguredExecutionBackend({
-			cwd: step.cwd ?? ctx.cwd,
+			cwd: childCwd,
 			userConfig: { executionBackend: ctx.executionBackendConfig?.userPreference },
 			preparation: ctx.executionBackendCoordinator,
 		});
@@ -635,17 +647,9 @@ export async function runSingleStep(
 	const effectiveStructuredOutput = step.structuredOutput ?? (step.structuredOutputSchema
 		? createStructuredOutputRuntime(step.structuredOutputSchema, path.join(path.dirname(ctx.outputFile), "structured-output"))
 		: undefined);
-	const placeholderRegex = new RegExp(ctx.placeholder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g");
-	let task = step.task.replace(placeholderRegex, () => ctx.previousOutput);
-	try {
-		task = resolveOutputReferences(task, ctx.outputs ?? {});
-	} catch (error) {
-		if (!(error instanceof ChainOutputValidationError)) throw error;
-		return { agent: step.agent, output: error.message, exitCode: 1, error: error.message, sessionFile: step.sessionFile };
-	}
 	const taskForCompletionGuard = task;
 	if (step.effectiveAcceptance) {
-		const acceptancePrompt = formatAcceptancePrompt(step.effectiveAcceptance);
+		const acceptancePrompt = formatAcceptancePrompt(step.effectiveAcceptance, { structuredOutput: Boolean(effectiveStructuredOutput) });
 		if (acceptancePrompt) task = `${task}\n${acceptancePrompt}`;
 	}
 	const sessionEnabled = Boolean(step.sessionFile) || ctx.sessionEnabled;
@@ -689,7 +693,7 @@ export async function runSingleStep(
 				runId: ctx.id,
 				childId: `${step.agent}-${ctx.flatIndex}`,
 				backend: selection.backend,
-				cwd: step.cwd ?? ctx.cwd,
+				cwd: childCwd,
 				title: step.agent,
 				signal: ownerController.signal,
 			});
@@ -735,7 +739,7 @@ export async function runSingleStep(
 					extensions: step.extensions,
 					systemPrompt: step.systemPrompt,
 					systemPromptMode: step.systemPromptMode,
-					cwd: step.cwd ?? ctx.cwd,
+					cwd: childCwd,
 					promptFileStem: step.agent,
 					runId: ctx.id,
 					childAgentName: step.agent,
@@ -760,7 +764,7 @@ export async function runSingleStep(
 							attemptId: `${ctx.id}-${ctx.flatIndex}-attempt-${index}`,
 							args,
 							environment: mergedEnv,
-							cwd: step.cwd ?? ctx.cwd,
+							cwd: childCwd,
 							sessionFile: attemptSessionFile,
 							interruptSignal: interruptController.signal,
 							onChildEvent: ctx.onChildEvent,
@@ -881,7 +885,7 @@ export async function runSingleStep(
 			extensions: step.extensions,
 			systemPrompt: step.systemPrompt,
 			systemPromptMode: step.systemPromptMode,
-			cwd: step.cwd ?? ctx.cwd,
+			cwd: childCwd,
 			promptFileStem: step.agent,
 			runId: ctx.id,
 			childAgentName: step.agent,
@@ -897,7 +901,7 @@ export async function runSingleStep(
 		try {
 			run = await runPiStreaming(
 				args,
-				step.cwd ?? ctx.cwd,
+				childCwd,
 				ctx.outputFile,
 				env,
 				ctx.runtime,
@@ -1014,7 +1018,7 @@ export async function runSingleStep(
 			? await evaluateAcceptance({
 				acceptance: step.effectiveAcceptance,
 				output: outputForAcceptance,
-				cwd: step.cwd ?? ctx.cwd,
+				cwd: childCwd,
 			})
 			: undefined;
 		const acceptanceFailure = acceptance ? acceptanceFailureMessage(acceptance) : undefined;
@@ -1204,8 +1208,9 @@ function prepareParallelTaskRun(
 	cwd: string,
 	worktreeSetup: WorktreeSetup | undefined,
 	taskIndex: number,
+	groupCwd?: string,
 ): { taskForRun: SubagentStep; taskCwd: string } {
-	if (!worktreeSetup) return { taskForRun: task, taskCwd: cwd };
+	if (!worktreeSetup) return { taskForRun: { ...task, cwd: task.cwd ?? groupCwd }, taskCwd: cwd };
 	return {
 		taskForRun: { ...task, cwd: undefined },
 		taskCwd: worktreeSetup.worktrees[taskIndex]!.agentCwd,
@@ -1251,6 +1256,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	const overallStartTime = Date.now();
 	const shareEnabled = config.share === true;
 	const asyncDir = config.asyncDir;
+	const trees = new TreeRegistry(asyncDir);
 	const executionBackendConfig = config.executionBackends ?? {
 		protocolVersion: 1 as const,
 		registrations: [],
@@ -1669,7 +1675,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		if (interrupted || statusPayload.state !== "running") return;
 		interrupted = true;
 		const now = Date.now();
-		statusPayload.state = "paused";
 		currentActivityState = undefined;
 		statusPayload.activityState = undefined;
 		statusPayload.lastUpdate = now;
@@ -1683,11 +1688,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			}
 		}
 		writeStatusPayload();
-		appendJsonl(eventsPath, JSON.stringify({
-			type: "subagent.run.paused",
-			ts: now,
-			runId: id,
-		}));
 		activeChildInterrupt?.();
 	};
 	process.on(ASYNC_INTERRUPT_SIGNAL, interruptRunner);
@@ -1705,6 +1705,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 
 	let flatIndex = 0;
 
+	try {
 	for (let stepIndex = 0; stepIndex < steps.length; stepIndex++) {
 		if (interrupted) break;
 		const step = steps[stepIndex];
@@ -1884,6 +1885,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				const singleResult = await runSingleStep(task, {
 					previousOutput, placeholder, cwd, sessionEnabled,
 					outputs,
+					trees,
 					sessionDir: config.sessionDir ? path.join(config.sessionDir, `dynamic-${stepIndex}-${taskIdx}`) : undefined,
 					artifactsDir, artifactConfig, id,
 					flatIndex: fi, flatStepCount: Math.max(statusPayload.steps.length, 1),
@@ -2022,13 +2024,14 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 
 		if (isParallelGroup(step)) {
 			const group = step;
+			const groupCwd = group.cwd?.includes("{outputs.") ? group.cwd : resolveChildCwd(cwd, group.cwd);
 			const concurrency = group.concurrency ?? MAX_PARALLEL_CONCURRENCY;
 			const failFast = group.failFast ?? false;
 			const groupStartFlatIndex = flatIndex;
 			let aborted = false;
 			let worktreeSetup: WorktreeSetup | undefined;
 			if (group.worktree) {
-				const worktreeTaskCwdConflict = findWorktreeTaskCwdConflict(group.parallel, cwd);
+				const worktreeTaskCwdConflict = findWorktreeTaskCwdConflict(group.parallel, groupCwd);
 				if (worktreeTaskCwdConflict) {
 					const failedAt = Date.now();
 					markParallelGroupSetupFailure({
@@ -2036,7 +2039,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 						results,
 						group,
 						groupStartFlatIndex,
-						setupError: formatWorktreeTaskCwdConflict(worktreeTaskCwdConflict, cwd),
+						setupError: formatWorktreeTaskCwdConflict(worktreeTaskCwdConflict, groupCwd),
 						failedAt,
 						statusPath,
 						eventsPath,
@@ -2048,7 +2051,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					break;
 				}
 				try {
-					worktreeSetup = createWorktrees(cwd, `${id}-s${stepIndex}`, group.parallel.length, {
+					worktreeSetup = createWorktrees(groupCwd, `${id}-s${stepIndex}`, group.parallel.length, {
 						agents: group.parallel.map((task) => task.agent),
 						setupHook: config.worktreeSetupHook
 							? { hookPath: config.worktreeSetupHook, timeoutMs: config.worktreeSetupHookTimeoutMs }
@@ -2076,7 +2079,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			}
 
 			try {
-				if (group.worktree) ensureParallelProgressFile(cwd, group);
+				if (group.worktree) ensureParallelProgressFile(groupCwd, group);
 				const groupStartTime = Date.now();
 				markParallelGroupRunning({
 					statusPayload,
@@ -2133,11 +2136,12 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 						const taskSessionDir = config.sessionDir
 							? path.join(config.sessionDir, `parallel-${fi}`)
 							: undefined;
-						const { taskForRun, taskCwd } = prepareParallelTaskRun(task, cwd, worktreeSetup, taskIdx);
+						const { taskForRun, taskCwd } = prepareParallelTaskRun(task, cwd, worktreeSetup, taskIdx, group.cwd);
 
 						const singleResult = await runSingleStep(taskForRun, {
 							previousOutput, placeholder, cwd: taskCwd, sessionEnabled,
 							outputs,
+							trees,
 							sessionDir: taskSessionDir,
 							artifactsDir, artifactConfig, id,
 							flatIndex: fi, flatStepCount: flatSteps.length,
@@ -2247,7 +2251,12 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 						agent: parallelResults[t]!.agent,
 						output: parallelResults[t]!.output,
 						structuredOutput: parallelResults[t]!.structuredOutput,
-					}, stepIndex, patchInfoForDiff(diffs[t]));
+					}, stepIndex, worktreeSetup ? {
+						...patchInfoForDiff(diffs[t]),
+						taskIndex: t,
+						baseCommit: worktreeSetup.baseCommit,
+						repoCwd: worktreeSetup.cwd,
+					} : undefined);
 				}
 				statusPayload.outputs = outputs;
 				if (!interrupted && group.stopOn) {
@@ -2310,6 +2319,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			const singleResult = await runSingleStep(seqStep, {
 				previousOutput, placeholder, cwd, sessionEnabled,
 				outputs,
+				trees,
 				sessionDir: config.sessionDir ? path.join(config.sessionDir, `parallel-${flatIndex}`) : undefined,
 				artifactsDir, artifactConfig, id,
 				flatIndex, flatStepCount: flatSteps.length,
@@ -2421,6 +2431,18 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				}
 			}
 		}
+	}
+
+	} finally {
+		removeTrees(trees.created);
+	}
+
+	if (interrupted) {
+		const pausedAt = Date.now();
+		statusPayload.state = "paused";
+		statusPayload.lastUpdate = pausedAt;
+		writeStatusPayload();
+		appendJsonl(eventsPath, JSON.stringify({ type: "subagent.run.paused", ts: pausedAt, runId: id }));
 	}
 
 	let summary = results.map((r) => `${r.agent}:\n${r.output}`).join("\n\n");

@@ -11,6 +11,7 @@ import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
+import defaultFs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { createEventBus, createMockPi, createTempDir, events, makeAgent, makeMinimalCtx, makeParentSessionCtx, removeTempDir, tryImport } from "../support/helpers.ts";
@@ -31,7 +32,7 @@ interface AsyncResultPayload {
 	mode?: string;
 	summary?: string;
 	results: Array<{ output?: string; success?: boolean; error?: string; model?: string; attemptedModels?: string[]; modelAttempts?: Array<{ success?: boolean; error?: string }>; structuredOutput?: unknown; acceptance?: { status?: string; childReport?: unknown } }>;
-	outputs?: Record<string, { text?: string; structured?: unknown; patchPath?: string }>;
+	outputs?: Record<string, { text?: string; structured?: unknown; patchPath?: string; treePath?: string; repoCwd?: string; baseCommit?: string; taskIndex?: number }>;
 	workflowGraph?: { nodes?: Array<{ kind?: string; label?: string; phase?: string; status?: string; error?: string; outputName?: string; structured?: boolean; children?: Array<{ label?: string; outputName?: string; itemKey?: string; status?: string; error?: string }> }> };
 }
 
@@ -87,6 +88,7 @@ interface TypesModule {
 	ASYNC_DIR: string;
 	RESULTS_DIR: string;
 	TEMP_ROOT_DIR: string;
+	getAsyncConfigPath(id: string): string;
 }
 
 interface ExecutorModule {
@@ -1054,6 +1056,302 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			} finally {
 				removeTempDir(repoDir);
 			}
+		});
+	}
+
+	it("async parallel cwd uses task then group then run defaults", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		for (const dir of ["group", "leaf"]) fs.mkdirSync(path.join(tempDir, dir));
+		for (let i = 0; i < 3; i++) mockPi.onCall({ output: "Inspect", echoCwd: true });
+		const id = `async-cwd-defaults-${Date.now().toString(36)}`;
+		const started = executeAsyncChain(id, {
+			chain: [
+				{ parallel: [{ agent: "reviewer", task: "Group default" }, { agent: "reviewer", task: "Task override", cwd: "leaf" }], cwd: "group", concurrency: 1 },
+				{ parallel: [{ agent: "reviewer", task: "Run default" }] },
+			], agents: [makeAgent("reviewer")], ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "cwd-defaults" },
+			artifactConfig: { enabled: false }, shareEnabled: false, maxSubagentDepth: 2,
+		});
+		assert.ok(!started.isError);
+		const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf8")) as AsyncResultPayload;
+		assert.equal(payload.success, true, JSON.stringify(payload));
+		for (const [index, expected] of ["group", "leaf", ""].entries()) {
+			assert.equal(JSON.parse(payload.results[index]!.output!.split("\n").at(-1)!).cwd, fs.realpathSync(path.join(tempDir, expected)));
+		}
+	});
+
+	for (const ending of ["normal", "stopOn", "failFast", "checked"] as const) {
+		it(`async tree cwd preserves templates, shares snapshots and cleans up after ${ending}`, { skip: process.platform === "win32" || !isAsyncAvailable() ? "requires shell hooks and jiti" : undefined }, async () => {
+			const repoDir = createRepo("pi-async-tree-");
+			const id = `async-tree-${ending}-${Date.now().toString(36)}`;
+			const treeTemplate = "{outputs.impl.treePath}";
+			let serialized: any;
+			const originalWrite = defaultFs.writeFileSync;
+			try {
+				const hookPath = path.join(tempDir, "tree-hook.sh");
+				fs.writeFileSync(hookPath, '#!/bin/sh\ncat >/dev/null\necho patched >> input.md\necho "{}"\n');
+				fs.chmodSync(hookPath, 0o755);
+				fs.writeFileSync(path.join(repoDir, "read.md"), "runner reads");
+				writePackageSkill(repoDir, "tree-skill");
+				git(repoDir, ["add", "."]);
+				git(repoDir, ["commit", "-m", "Add preparation inputs"]);
+				mockPi.onCall({ output: "Produced" });
+				const report = "```acceptance-report\n" + JSON.stringify({ criteriaSatisfied: [{ id: "criterion-1", status: "satisfied", evidence: "read patch" }], changedFiles: [], testsAddedOrUpdated: [], commandsRun: [], validationOutput: [], residualRisks: [], noStagedFiles: true, notes: "reviewed" }) + "\n```";
+				mockPi.onCall({ output: report, echoCwd: true, echoFiles: ["input.md"], requireAcceptanceStructuredOrder: true, structuredOutput: { verdict: "FAIL" } });
+				if (ending === "failFast") mockPi.onCall({ output: "Failed review", exitCode: 1 });
+				if (ending === "normal") {
+					mockPi.onCall({ output: "Repeated", echoCwd: true, echoFiles: ["input.md"] });
+					mockPi.onCall({ output: "Override", echoCwd: true });
+				}
+				defaultFs.writeFileSync = ((file: any, data: any, ...rest: any[]) => {
+					if (file === typesMod!.getAsyncConfigPath(id)) serialized = JSON.parse(String(data));
+					return (originalWrite as any)(file, data, ...rest);
+				}) as typeof originalWrite;
+				let started: AsyncExecutionResult;
+				try {
+					started = executeAsyncChain(id, {
+						chain: [
+							{ parallel: [{ agent: "worker", task: "Produce", as: "impl", output: false, progress: false }], worktree: true },
+							{ agent: "reviewer", task: `Review ${treeTemplate}`, cwd: treeTemplate, reads: ["read.md"], skill: ["tree-skill"], output: "review.md", progress: false, outputSchema: { type: "object" }, as: "review", acceptance: { level: ending === "checked" ? "checked" : "attested", criteria: ["Read patch"] }, ...(ending === "stopOn" ? { stopOn: { path: "/verdict", in: ["FAIL"] } } : {}) },
+							{ parallel: [
+								{ agent: "reviewer", task: "Review again", output: false, progress: false },
+								{ agent: "reviewer", task: "Review override", cwd: repoDir, output: false, progress: false },
+							], cwd: treeTemplate, concurrency: 1, failFast: ending === "failFast" },
+						],
+						agents: [makeAgent("worker", { completionGuard: false }), makeAgent("reviewer")],
+						ctx: { pi: { events: { emit() {} } }, cwd: repoDir, currentSessionId: "tree" },
+						worktreeSetupHook: hookPath, artifactConfig: { enabled: false }, shareEnabled: false, maxSubagentDepth: 2,
+					});
+				} finally {
+					defaultFs.writeFileSync = originalWrite;
+				}
+				assert.ok(!started!.isError, started!.content[0]?.text);
+				const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf-8")) as AsyncResultPayload;
+				assert.equal(serialized.steps[1].cwd, treeTemplate);
+				assert.equal(serialized.steps[2].cwd, treeTemplate);
+				assert.equal(serialized.steps[2].parallel[0].cwd, treeTemplate);
+				assert.equal(serialized.steps[2].parallel[1].cwd, repoDir);
+				assert.equal(serialized.steps[1].outputPath, path.join(repoDir, "review.md"));
+				assert.ok(serialized.steps[1].task.includes(`[Read from: ${path.join(repoDir, "read.md")}]`));
+				assert.deepEqual(serialized.steps[1].skills, ["tree-skill"]);
+				const tree = payload.outputs?.impl?.treePath;
+				assert.ok(tree, JSON.stringify(payload));
+				assert.equal(payload.outputs?.impl?.repoCwd, fs.realpathSync(repoDir));
+				assert.equal(payload.outputs?.impl?.baseCommit, git(repoDir, ["rev-parse", "HEAD"]));
+				assert.equal(payload.outputs?.impl?.taskIndex, 0);
+				assert.equal(fs.existsSync(tree), false);
+				assert.doesNotMatch(git(repoDir, ["worktree", "list", "--porcelain"]), /worktree-trees/);
+				if (ending === "checked") {
+					assert.equal(payload.success, false);
+					assert.match(payload.results[1]?.error ?? "", /Staged files present:.*input\.md/);
+				} else {
+					assert.equal(payload.results[1]?.acceptance?.status, "attested", JSON.stringify(payload));
+					const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf8"));
+					assert.equal(status.workflowGraph.nodes[1].acceptanceStatus, "attested");
+					assert.deepEqual(payload.results[1]?.structuredOutput, { verdict: "FAIL" });
+					assert.equal(payload.outputs?.review?.text, '{"verdict":"FAIL"}');
+				}
+				if (ending === "failFast") {
+					assert.equal(payload.success, false);
+					assert.match(payload.results[3]?.output ?? "", /skipped.*fail-fast/);
+					assert.equal(mockPi.callCount(), 3);
+				}
+				if (ending === "normal") {
+					assert.equal(payload.success, true, JSON.stringify(payload));
+					assert.ok(payload.results[2]?.output?.includes(tree));
+					assert.match(payload.results[2]?.output ?? "", /input\\npatched/);
+					assert.ok(payload.results[3]?.output?.includes(fs.realpathSync(repoDir)));
+				}
+			} finally {
+				defaultFs.writeFileSync = originalWrite;
+				removeTempDir(repoDir);
+			}
+		});
+	}
+
+	it("runner publishes a pause after tree cleanup before optional finalization", () => {
+		const source = fs.readFileSync(new URL("../../src/runs/background/subagent-runner.ts", import.meta.url), "utf8");
+		const cleanup = source.indexOf("removeTrees(trees.created);");
+		const summary = source.indexOf("let summary = results.map", cleanup);
+		const pause = source.indexOf('type: "subagent.run.paused"', cleanup);
+		assert.ok(cleanup >= 0 && pause > cleanup && pause < summary, "pause event must follow cleanup and precede summary/share work");
+		const publication = source.slice(cleanup, summary);
+		assert.match(publication, /statusPayload\.state = "paused"/);
+		assert.match(publication, /writeStatusPayload\(\)/);
+	});
+
+	for (const fanout of ["count", "dynamic", "interrupt"] as const) {
+		it(`async ${fanout} children share a tree and cleanup precedes publication`, { skip: process.platform === "win32" || !isAsyncAvailable() ? "requires POSIX hooks and signals" : undefined }, async () => {
+			const repoDir = createRepo("pi-tree-fanout-");
+			let runnerPid: number | undefined;
+			let runId: string | undefined;
+			try {
+				const hookPath = path.join(tempDir, "fanout-hook.sh");
+				fs.writeFileSync(hookPath, '#!/bin/sh\ncat >/dev/null\necho patched >> input.md\necho "{}"\n');
+				fs.chmodSync(hookPath, 0o755);
+				mockPi.onCall({ output: "Produced", structuredOutput: { items: ["one", "two"] } });
+				mockPi.onCall({ output: "Review", echoCwd: true, echoFiles: ["input.md"], ...(fanout === "interrupt" ? { delay: 30_000 } : {}), requireAcceptanceStructuredOrder: fanout === "dynamic", structuredOutput: { ok: true } });
+				if (fanout !== "interrupt") mockPi.onCall({ output: "Review", echoCwd: true, echoFiles: ["input.md"], structuredOutput: { ok: true }, requireAcceptanceStructuredOrder: fanout === "dynamic" });
+				const executor = createSubagentExecutor({
+					pi: { events: createEventBus(), getSessionName: () => undefined },
+					state: { baseCwd: repoDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
+					config: { worktreeSetupHook: hookPath }, asyncByDefault: false, tempArtifactsDir: tempDir,
+					getSubagentSessionRoot: () => tempDir, expandTilde: (p: string) => p,
+					discoverAgents: () => ({ agents: [makeAgent("worker", { completionGuard: false }), makeAgent("reviewer")] }),
+				});
+				const consumer = fanout === "dynamic" ? {
+					expand: { from: { output: "impl", path: "/items" }, item: "target", maxItems: 2 },
+					parallel: { agent: "reviewer", task: "Review {target}", cwd: "{outputs.impl.treePath}", output: false, progress: false, outputSchema: { type: "object" }, acceptance: { level: "attested", criteria: ["Inspect input"] } },
+					collect: { as: "reviews" }, concurrency: 1,
+				} : {
+					parallel: [{ agent: "reviewer", task: "Inspect", count: fanout === "count" ? 2 : 1, output: false, progress: false }],
+					cwd: "{outputs.impl.treePath}", concurrency: 1,
+				};
+				const started = await executor.execute("tree-fanout", { chain: [
+					{ parallel: [{ agent: "worker", task: "Produce", as: "impl", output: false, progress: false, outputSchema: { type: "object" } }], worktree: true }, consumer,
+				], async: true, clarify: false, acceptance: { level: "none", reason: "Only observing cwd and lifecycle" } }, new AbortController().signal, undefined, makeMinimalCtx(repoDir));
+				const id = started.details?.asyncId;
+				runId = id;
+				assert.ok(id, JSON.stringify(started));
+				if (fanout === "interrupt") {
+					const statusPath = path.join(ASYNC_DIR, id, "status.json");
+					const deadline = Date.now() + 10_000;
+					while (true) {
+						const status = fs.existsSync(statusPath) ? JSON.parse(fs.readFileSync(statusPath, "utf8")) : undefined;
+						if (status?.pid) runnerPid = status.pid;
+						if (status?.steps?.[1]?.status === "running" && status.outputs?.impl?.treePath && fs.existsSync(status.outputs.impl.treePath) && mockPi.callCount() === 2) break;
+						assert.ok(Date.now() < deadline, "Timed out waiting for tree child");
+						await new Promise((resolve) => setTimeout(resolve, 25));
+					}
+					process.kill(runnerPid!, "SIGUSR2");
+					while (true) {
+						const status = JSON.parse(fs.readFileSync(statusPath, "utf8"));
+						if (status.state === "paused") {
+							assert.equal(fs.existsSync(status.outputs.impl.treePath), false, "terminal status preceded tree cleanup");
+							break;
+						}
+						assert.ok(Date.now() < deadline, "Timed out waiting for paused status");
+						await new Promise((resolve) => setTimeout(resolve, 25));
+					}
+				}
+				const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf8")) as AsyncResultPayload;
+				runnerPid = undefined;
+				const tree = payload.outputs?.impl?.treePath;
+				assert.ok(tree, JSON.stringify(payload));
+				assert.equal(fs.existsSync(tree), false);
+				assert.doesNotMatch(git(repoDir, ["worktree", "list", "--porcelain"]), /worktree-trees/);
+				if (fanout === "interrupt") {
+					assert.equal(payload.state, "paused");
+				} else {
+					assert.equal(payload.success, true, JSON.stringify(payload));
+					for (const result of payload.results.slice(1)) {
+						assert.ok(result.output?.includes(tree), result.output);
+						assert.match(result.output ?? "", /input\\npatched/);
+						if (fanout === "dynamic") {
+							assert.equal(result.acceptance?.status, "attested", JSON.stringify(result));
+							assert.deepEqual(result.structuredOutput, { ok: true });
+						}
+					}
+					assert.equal(mockPi.callCount(), 3);
+				}
+			} finally {
+				if (runnerPid) {
+					try { process.kill(runnerPid, "SIGUSR2"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+					if (runId) await waitForAsyncResultFile(runId);
+				}
+				removeTempDir(repoDir);
+			}
+		});
+	}
+
+	for (const source of ["runtime", "schema"] as const) {
+		it(`runSingleStep attests a ${source} child without folding its report into structured output`, async () => {
+			const runner = await tryImport<typeof import("../../src/runs/background/subagent-runner.ts")>("./src/runs/background/subagent-runner.ts");
+			const structured = await tryImport<typeof import("../../src/runs/shared/structured-output.ts")>("./src/runs/shared/structured-output.ts");
+			const acceptance = await tryImport<typeof import("../../src/runs/shared/acceptance.ts")>("./src/runs/shared/acceptance.ts");
+			assert.ok(runner && structured && acceptance);
+			mockPi.onCall({ output: "Inspected", structuredOutput: { verdict: "PASS" }, requireAcceptanceStructuredOrder: true });
+			const result = await runner.runSingleStep({
+				agent: "reviewer", task: "Inspect the input", inheritProjectContext: true, inheritSkills: true,
+				...(source === "runtime"
+					? { structuredOutput: structured.createStructuredOutputRuntime({ type: "object" }, path.join(tempDir, "structured")) }
+					: { structuredOutputSchema: { type: "object" } }),
+				effectiveAcceptance: acceptance.resolveEffectiveAcceptance({ agentName: "reviewer", task: "Inspect", explicit: { level: "attested", criteria: ["Inspect input"] } }),
+			}, {
+				cwd: tempDir, previousOutput: "", placeholder: "{previous}", sessionEnabled: false, id: "single-schema", flatIndex: 0, flatStepCount: 1,
+				outputFile: path.join(tempDir, "output.log"), runtime: mockPi.runtime,
+			});
+			assert.equal(result.exitCode, 0, result.error);
+			assert.equal(result.acceptance?.status, "attested");
+			assert.deepEqual(result.structuredOutput, { verdict: "PASS" });
+			assert.doesNotMatch(result.output, /acceptance-report/);
+		});
+	}
+
+	for (const failure of ["add", "apply", "backend"] as const) {
+		it(`runSingleStep resolves trees before ${failure === "backend" ? "backend selection" : `git ${failure} failure`}`, async () => {
+			const runner = await tryImport<typeof import("../../src/runs/background/subagent-runner.ts")>("./src/runs/background/subagent-runner.ts");
+			const chainOutputs = await tryImport<typeof import("../../src/runs/shared/chain-outputs.ts")>("./src/runs/shared/chain-outputs.ts");
+			const worktree = await tryImport<typeof import("../../src/runs/shared/worktree.ts")>("./src/runs/shared/worktree.ts");
+			assert.ok(runner && chainOutputs && worktree);
+			const repoDir = createRepo("pi-tree-probe-");
+			const trees = new chainOutputs.TreeRegistry(tempDir);
+			try {
+				fs.mkdirSync(path.join(repoDir, ".pi"));
+				fs.writeFileSync(path.join(repoDir, ".pi/settings.json"), JSON.stringify({ subagents: { executionBackend: "tree-selection-probe" } }));
+				git(repoDir, ["add", "."]);
+				git(repoDir, ["commit", "-m", "Configure tree backend"]);
+				const baseCommit = git(repoDir, ["rev-parse", "HEAD"]);
+				fs.appendFileSync(path.join(repoDir, "input.md"), "patched\n");
+				const patchPath = path.join(tempDir, "probe.patch");
+				fs.writeFileSync(patchPath, failure === "apply" ? "invalid patch" : git(repoDir, ["diff", "--binary"]) + "\n");
+				git(repoDir, ["checkout", "--", "input.md"]);
+				const preferences: unknown[] = [];
+				const result = await runner.runSingleStep({ agent: "reviewer", task: "Inspect {outputs.impl.treePath}", cwd: "{outputs.impl.treePath}", inheritProjectContext: true, inheritSkills: true, sessionFile: path.join(tempDir, "session.jsonl") }, {
+					cwd: tempDir, trees, outputs: { impl: { text: "Produced", agent: "worker", stepIndex: 0, taskIndex: 0, repoCwd: repoDir, baseCommit: failure === "add" ? "invalid-base" : baseCommit, patchPath } },
+					previousOutput: "", placeholder: "{previous}", sessionEnabled: false, id: "probe", flatIndex: 0, flatStepCount: 1,
+					outputFile: path.join(tempDir, "output.log"), runtime: mockPi.runtime,
+					executionBackendConfig: { protocolVersion: 1, registrations: [], userPreference: "native" },
+					executionBackendCoordinator: { async prepare(preference) { preferences.push(preference); throw new Error("deliberate probe"); } } as any,
+				});
+				assert.equal(result.exitCode, 1);
+				assert.equal(result.output, result.error);
+				assert.equal(result.sessionFile, path.join(tempDir, "session.jsonl"));
+				assert.equal(mockPi.callCount(), 0);
+				if (failure === "backend") {
+					assert.deepEqual(preferences, ["tree-selection-probe"]);
+					assert.equal(result.error, "Execution backend selection failed.");
+				} else {
+					assert.match(result.error ?? "", /Output 'impl' tree build failed:/);
+					assert.deepEqual(preferences, []);
+				}
+			} finally {
+				worktree.removeTrees(trees.created);
+				assert.ok(trees.created.every(({ dir }) => !fs.existsSync(dir)));
+				removeTempDir(repoDir);
+			}
+		});
+	}
+
+	for (const concurrency of [1, 2]) {
+		it(`async missing tree patch fails only its leaf at concurrency ${concurrency}`, { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+			const repoDir = createRepo("pi-async-tree-empty-");
+			try {
+				mockPi.onCall({ output: "No changes" });
+				mockPi.onCall({ output: "Sibling completed" });
+				const id = `async-tree-empty-${concurrency}-${Date.now().toString(36)}`;
+				const started = executeAsyncChain(id, {
+					chain: [
+						{ parallel: [{ agent: "worker", task: "Produce", as: "impl", output: false, progress: false }], worktree: true },
+						{ parallel: [{ agent: "worker", task: "Review", cwd: "{outputs.impl.treePath}" }, { agent: "worker", task: "Sibling" }], concurrency },
+					], agents: [makeAgent("worker", { completionGuard: false })],
+					ctx: { pi: { events: { emit() {} } }, cwd: repoDir, currentSessionId: "empty" },
+					artifactConfig: { enabled: false }, shareEnabled: false, maxSubagentDepth: 2,
+				});
+				assert.ok(!started.isError);
+				const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf-8")) as AsyncResultPayload;
+				assert.match(payload.results[1]?.error ?? "", /Output 'impl' has no patch \(no changes\)\./);
+				assert.equal(payload.results[2]?.output, "Sibling completed");
+				assert.equal(mockPi.callCount(), 2);
+			} finally { removeTempDir(repoDir); }
 		});
 	}
 

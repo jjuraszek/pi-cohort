@@ -446,13 +446,16 @@ export function executeAsyncChain(
 			...(s.model ? { model: s.model } : {}),
 		};
 	};
-	const buildSeqStep = (s: SequentialStep, sessionFile?: string, behaviorCwd?: string, progressPrecreated = false, resolvedBehavior?: ResolvedStepBehavior, isolatedLeaf?: { runDir: string; index: number }) => {
+	const buildSeqStep = (s: SequentialStep, sessionFile?: string, behaviorCwd?: string, progressPrecreated = false, resolvedBehavior?: ResolvedStepBehavior, isolatedLeaf?: { runDir: string; index: number }, groupCwd?: string) => {
 		const a = agents.find((x) => x.name === s.agent)!;
-		const stepCwd = resolveChildCwd(runnerCwd, s.cwd);
-		const instructionCwd = behaviorCwd ?? stepCwd;
+		const effectiveCwd = s.cwd ?? groupCwd;
+		const templatedCwd = effectiveCwd?.includes("{outputs.");
+		const stepCwd = templatedCwd ? effectiveCwd : resolveChildCwd(runnerCwd, effectiveCwd);
+		const preparationCwd = templatedCwd ? runnerCwd : stepCwd;
+		const instructionCwd = behaviorCwd ?? preparationCwd;
 		const behavior = suppressProgressForReadOnlyTask(resolvedBehavior ?? resolveStepBehavior(a, buildStepOverrides(s), chainSkills), s.task, originalTask);
 		const skillNames = behavior.skills === false ? [] : behavior.skills;
-		const { resolved: resolvedSkills, missing: missingSkills } = resolveSkillsWithFallback(skillNames, stepCwd, ctx.cwd);
+		const { resolved: resolvedSkills, missing: missingSkills } = resolveSkillsWithFallback(skillNames, preparationCwd, ctx.cwd);
 		if (missingSkills.includes("pi-cohort")) throw new UnavailableSubagentSkillError(UNAVAILABLE_SUBAGENT_SKILL_ERROR);
 
 		let systemPrompt = a.systemPrompt?.trim() ?? "";
@@ -536,13 +539,14 @@ export function executeAsyncChain(
 	try {
 		steps = chain.map((s, stepIndex) => {
 			if (isParallelStep(s)) {
+				const groupCwd = s.cwd?.includes("{outputs.") ? runnerCwd : resolveChildCwd(runnerCwd, s.cwd);
 				const parallelBehaviors = s.parallel.map((task) => {
 					const agent = agents.find((candidate) => candidate.name === task.agent)!;
 					return suppressProgressForReadOnlyTask(resolveStepBehavior(agent, buildStepOverrides(task), chainSkills), task.task, originalTask);
 				});
 				const progressPrecreated = parallelBehaviors.some((behavior) => behavior.progress);
 				if (progressPrecreated) {
-					if (!s.worktree) writeInitialProgressFile(runnerCwd);
+					if (!s.worktree) writeInitialProgressFile(groupCwd);
 					progressInstructionCreated = true;
 				}
 				return {
@@ -550,7 +554,7 @@ export function executeAsyncChain(
 						let behaviorCwd: string | undefined;
 						if (s.worktree) {
 							try {
-								behaviorCwd = resolveExpectedWorktreeAgentCwd(runnerCwd, `${id}-s${stepIndex}`, taskIndex);
+								behaviorCwd = resolveExpectedWorktreeAgentCwd(groupCwd, `${id}-s${stepIndex}`, taskIndex);
 							} catch {
 								behaviorCwd = undefined;
 							}
@@ -562,8 +566,10 @@ export function executeAsyncChain(
 							progressPrecreated,
 							parallelBehaviors[taskIndex],
 							s.worktree ? { runDir: path.join(asyncDir, `step-${stepIndex}`), index: taskIndex } : undefined,
+							s.cwd,
 						);
 					}),
+					cwd: s.cwd,
 					concurrency: s.concurrency,
 					failFast: s.failFast,
 					worktree: s.worktree,

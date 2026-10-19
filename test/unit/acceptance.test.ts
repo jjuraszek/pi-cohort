@@ -72,6 +72,58 @@ describe("acceptance gates", () => {
 		assert.match(prompt, /```acceptance-report/);
 	});
 
+	it("preserves the prompt unless structured output requires report-first ordering", () => {
+		const acceptance = resolveEffectiveAcceptance({
+			agentName: "reviewer",
+			task: "Review-only.",
+			explicit: { level: "attested", criteria: ["Review the change"] },
+		});
+		const expected = `
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Review the change
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged \`acceptance-report\` in this shape:
+\`\`\`acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [],
+  "testsAddedOrUpdated": [],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [],
+  "residualRisks": [],
+  "noStagedFiles": true,
+  "notes": "anything else the parent should know"
+}
+\`\`\``;
+
+		assert.equal(formatAcceptancePrompt(acceptance), expected);
+		assert.equal(formatAcceptancePrompt(acceptance, { structuredOutput: false }), expected);
+		const structuredPrompt = formatAcceptancePrompt(acceptance, { structuredOutput: true });
+		assert.equal(structuredPrompt, expected.replace(
+			"Finish with a fenced JSON block tagged `acceptance-report` in this shape:",
+			"Write a fenced JSON block tagged `acceptance-report` in your final text message, then call `structured_output` as your final action. Shape:",
+		));
+		assert.doesNotMatch(structuredPrompt, /Finish with a fenced JSON block/);
+	});
+
 	it("parses only explicit acceptance-report fences", () => {
 		const parsed = parseAcceptanceReport(report());
 
@@ -99,6 +151,9 @@ describe("acceptance gates", () => {
 
 		assert.equal(acceptance.level, "none");
 		assert.deepEqual(acceptance.evidence, []);
+		assert.equal(formatAcceptancePrompt(acceptance), "");
+		assert.equal(formatAcceptancePrompt(acceptance, { structuredOutput: false }), "");
+		assert.equal(formatAcceptancePrompt(acceptance, { structuredOutput: true }), "");
 	});
 
 	it("checked mode rejects missing required evidence", async () => {

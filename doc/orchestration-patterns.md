@@ -47,6 +47,10 @@ Acceptance provenance is stored separately from child prose:
 
 For `attested` or stricter levels, the child prompt includes a standardized acceptance section and asks for a fenced `acceptance-report` JSON block. Explicit failed gates fail the run. Inferred gates are persisted for observability without breaking older calls that omit `acceptance`.
 
+When a child also has `outputSchema`, it writes the fenced `acceptance-report` in its final text message, then calls `structured_output` as its final action. The report stays in prose; the schema value stays in the tool payload and in `{outputs.name}` without the report.
+
+Use `acceptance: { level: "attested" }` for tree-backed reviewers. Their patches are staged by construction, so `checked`, `verified`, and `reviewed` fail the `no-staged-files` runtime check with `Staged files present: ...`.
+
 ## Worktree isolation
 
 Parallel agents can clobber each other if they edit the same checkout. `worktree: true` gives each parallel child its own git worktree branched from `HEAD`.
@@ -76,6 +80,12 @@ Requirements:
 - configured `worktreeSetupHook` must return valid JSON before timeout - see [configuration.md](configuration.md#worktreesetuphook)
 
 After a worktree parallel step completes, per-agent diff stats are appended to the output and full patch files are written to a run-scoped directory (`<session artifacts>/<runId>/worktree-diffs`), so concurrent or sequential worktree dispatches from the same session never overwrite each other's patches. Background keeps `<asyncDir>/worktree-diffs/step-<i>` and chain keeps `<chainDir>/worktree-diffs/step-<i>` - both already run-scoped. A later chain step references a task's patch by name with `{outputs.name.patchPath}` instead of the directory layout; the reference resolves only when the task made changes and the capture succeeded (see [Chain variables](agents-and-chains.md#chain-variables)). The diff is captured before every post-execution return - normal or interrupted - so the summary is attached even when a run ends early; a capture failure is reported in the summary rather than showing up as an empty patch. Worktrees and temp branches are still cleaned up in `finally` blocks.
+
+A later chain child can use `cwd: "{outputs.impl_1.treePath}"` to review a named implementer's files. On first reference, the chain creates a detached checkout of the producer's base commit and applies its captured patch with `git apply --index`. The checkout root is `<chainDir>/worktree-trees/step-N/task-I-<agent>/` in foreground runs or `<asyncDir>/worktree-trees/step-N/task-I-<agent>/` in background runs (indices are 0-based). No patch means no tree: the referencing task fails before dispatch; a build failure also fails that task. Repeated references to the same name share one tree, including `count` copies. Read-only use is a persona convention, not enforced; tree-backed changes are not captured as another patch.
+
+These trees are plain checkouts: no `node_modules` symlink, setup hook, or reapplication of the implementer's cwd subdirectory. They last only until the chain call or background run ends and are removed on completion, `stopOn`, abort, or error; cleanup failures are logged without changing the result. A consuming `worktree: true` step cannot use output references in `cwd`. See [Chain variables](agents-and-chains.md#chain-variables) for cwd rules and [Acceptance gates](#acceptance-gates) for the staged-patch caveat.
+
+For a tree-backed async step, `reads:` instructions are rendered at start time against `runnerCwd`, not the later tree. Use absolute paths or name files in task text instead.
 
 Patches include binary payloads for modifications, additions, and deletions, so `git apply <patchPath>` preserves exact binary contents when applied to the captured base commit. Git writes the patch directly to its artifact file without buffering its payload in the parent process.
 

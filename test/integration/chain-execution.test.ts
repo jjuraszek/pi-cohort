@@ -108,7 +108,7 @@ interface ChainExecutionResult {
 		};
 		currentStepIndex?: number;
 		stop?: unknown;
-		outputs?: Record<string, { text: string; structured?: unknown; patchPath?: string }>;
+		outputs?: Record<string, { text: string; structured?: unknown; patchPath?: string; treePath?: string; taskIndex?: number; baseCommit?: string; repoCwd?: string }>;
 	};
 }
 
@@ -215,6 +215,7 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 			makeChainParams(
 				[{ agent: "analyst", task: "Analyze the code" }, { agent: "reporter" }],
 				agents,
+				{ onUpdate(update: ChainExecutionResult) { assert.ok(update.details.results.length > 0, "updates come from child execution, not step boundaries"); } },
 			),
 		);
 
@@ -574,8 +575,8 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 			output: "targets",
 			structuredOutput: { items: [{ path: "src/a.ts" }, { path: "src/b.ts" }] },
 		});
-		mockPi.onCall({ output: acceptanceReport({ changedFiles: ["src/a.ts"] }), structuredOutput: { ok: "a" } });
-		mockPi.onCall({ output: acceptanceReport({ changedFiles: ["src/b.ts"] }), structuredOutput: { ok: "b" } });
+		mockPi.onCall({ output: acceptanceReport({ changedFiles: ["src/a.ts"] }), structuredOutput: { ok: "a" }, requireAcceptanceStructuredOrder: true });
+		mockPi.onCall({ output: acceptanceReport({ changedFiles: ["src/b.ts"] }), structuredOutput: { ok: "b" }, requireAcceptanceStructuredOrder: true });
 		const agents = [makeAgent("scout"), makeAgent("reviewer", { completionGuard: false })];
 
 		const result = await executeChain(
@@ -1060,6 +1061,128 @@ describe("chain execution — parallel steps", { skip: !available ? "pi packages
 		return JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")).args as string[];
 	}
 
+	it("applies parallel cwd defaults with task overrides and run fallback", async () => {
+		for (const name of ["group", "leaf"]) fs.mkdirSync(path.join(tempDir, name));
+		for (let i = 0; i < 3; i++) mockPi.onCall({ echoCwd: true });
+		const result = await executeChain(makeChainParams([
+			{ parallel: [{ agent: "reviewer", task: "default" }, { agent: "reviewer", task: "override", cwd: "leaf" }], cwd: "group", concurrency: 1 },
+			{ parallel: [{ agent: "reviewer", task: "fallback" }] },
+		], [makeAgent("reviewer")]));
+		assert.ok(!result.isError, result.content[0].text);
+		assert.deepEqual(result.details.results.map((r) => JSON.parse(r.finalOutput!.trim()).cwd), [path.join(tempDir, "group"), path.join(tempDir, "leaf"), tempDir].map((dir) => fs.realpathSync(dir)));
+	});
+
+	for (const ending of ["normal", "stop", "failFast", "throw", "corrupt", "absent", "sequentialAbsent", "dynamic", "attested", "checked"]) {
+		it(`runs output trees and cleans up on ${ending}`, { skip: process.platform === "win32" }, async () => {
+			const repoDir = path.join(tempDir, "repo");
+			fs.mkdirSync(path.join(repoDir, "nested"), { recursive: true });
+			const git = (...args: string[]) => execFileSync("git", args, { cwd: repoDir, stdio: "pipe" }).toString().trim();
+			git("init");
+			git("config", "user.email", "tests@example.com");
+			git("config", "user.name", "Tree Tests");
+			fs.writeFileSync(path.join(repoDir, "nested", "input.md"), "input\n");
+			git("add", "-A");
+			git("commit", "-m", "initial");
+			const baseCommit = git("rev-parse", "HEAD");
+			const hook = path.join(tempDir, "hook.sh");
+			const absent = ending === "absent" || ending === "sequentialAbsent";
+			fs.writeFileSync(hook, '#!/bin/sh\ncat > /dev/null\n' + (absent ? "" : 'echo patched >> nested/input.md\n') + 'echo "{}"\n');
+			fs.chmodSync(hook, 0o755);
+			const schema = { type: "object", properties: { verdict: { type: "string" } }, required: ["verdict"] };
+			const report = "```acceptance-report\n" + JSON.stringify({ criteriaSatisfied: [{ id: "criterion-1", status: "satisfied", evidence: "reviewed" }], changedFiles: [], testsAddedOrUpdated: [], commandsRun: [{ command: "review", result: "passed", summary: "reviewed" }], validationOutput: ["reviewed"], residualRisks: [], noStagedFiles: true, notes: "done" }) + "\n```";
+			mockPi.onCall({ output: "implemented", structuredOutput: { items: ["a", "b"] } });
+			if (ending === "corrupt") mockPi.onCall({ output: "inspect captured patch" });
+			const acceptance = ending === "attested" || ending === "checked";
+			mockPi.onCall(absent || ending === "corrupt" ? { output: "sibling finished" } : acceptance
+				? { output: report, structuredOutput: { verdict: "PASS" }, requireAcceptanceStructuredOrder: true }
+				: { echoCwd: true, echoFiles: ["nested/input.md"], structuredOutput: ending === "stop" ? { verdict: "FAIL" } : undefined });
+			mockPi.onCall({ echoCwd: true, structuredOutput: ending === "stop" ? { verdict: "PASS" } : undefined });
+			mockPi.onCall({ echoCwd: true });
+			const treeRef = "{outputs.impl_1.treePath}";
+			const reviewer: TestParallelTask = { agent: "reviewer", task: "Review " + treeRef, as: "review", ...(ending === "stop" || acceptance ? { outputSchema: schema } : {}), ...(acceptance ? { acceptance: { level: ending } } : {}) };
+			let consumers: TestChainStep[] = [
+				{ parallel: [reviewer, { agent: "reviewer", task: "copy", ...(ending === "stop" ? { outputSchema: schema } : {}) }], cwd: treeRef, concurrency: 1, ...(ending === "stop" ? { stopOn: { path: "/verdict", in: ["FAIL"] } } : {}) },
+				{ agent: "reviewer", task: "Reuse " + treeRef, cwd: treeRef },
+			];
+			if (ending === "failFast") consumers = [{ parallel: [reviewer, { agent: "reviewer", task: "bad", cwd: path.join(tempDir, "missing") }, { agent: "reviewer", task: "skipped" }], cwd: treeRef, concurrency: 1, failFast: true }];
+			if (ending === "corrupt" || absent) consumers = ending === "sequentialAbsent"
+				? [{ agent: "reviewer", task: "review", cwd: treeRef }]
+				: [{ parallel: [{ agent: "reviewer", task: "bad", cwd: treeRef }, { agent: "reviewer", task: "sibling" }], concurrency: 1 }];
+			if (ending === "corrupt") consumers.unshift({ agent: "reviewer", task: "Inspect captured patch" });
+			if (ending === "dynamic") consumers = [{ expand: { from: { output: "impl_1", path: "/items" }, maxItems: 2 }, parallel: { agent: "reviewer", task: "Review {item}", cwd: treeRef }, collect: { as: "reviews" }, concurrency: 1 }];
+			let observedTree: string | undefined;
+			let corrupted = false;
+			const promise = executeChain(makeChainParams([
+				{ parallel: [{ agent: "impl", task: "edit", as: "impl_1", outputSchema: { type: "object" } }], worktree: true },
+				...consumers,
+			], [makeAgent("impl", { completionGuard: false }), makeAgent("reviewer")], {
+				cwd: path.join(repoDir, "nested"), ctx: makeMinimalCtx(repoDir), worktreeSetupHook: hook,
+				chainDir: path.join(fs.realpathSync(tempDir), "chain"),
+				sessionDirForIndex: (index: number) => {
+					if (ending === "throw" && index === 3) {
+						assert.ok(observedTree, "tree observed before the following child is prepared");
+						throw new Error("boundary failure");
+					}
+					return undefined;
+				},
+				onUpdate: (update: ChainExecutionResult) => {
+					const producer = update.details.outputs?.impl_1;
+					if (ending === "corrupt" && producer?.patchPath && !corrupted) { fs.writeFileSync(producer.patchPath, "invalid patch\n"); corrupted = true; }
+					if (producer?.treePath) {
+						observedTree = producer.treePath;
+						assert.ok(fs.existsSync(observedTree));
+					}
+				},
+			}));
+			let result: ChainExecutionResult | undefined;
+			try {
+				if (ending === "throw") await assert.rejects(promise, /boundary failure/);
+				else result = await promise;
+			} finally {
+				assert.doesNotMatch(git("worktree", "list", "--porcelain"), /worktree-trees|pi-cohort-worktrees/);
+				if (observedTree) assert.equal(fs.existsSync(observedTree), false);
+			}
+			if (!result) return;
+			const producer = result.details.outputs!.impl_1;
+			assert.equal(producer.taskIndex, 0);
+			assert.equal(producer.baseCommit, baseCommit);
+			assert.equal(producer.repoCwd, fs.realpathSync(repoDir));
+			if (absent || ending === "corrupt") {
+				assert.equal(result.isError, true);
+				assert.match(result.content[0].text, ending === "corrupt" ? /Output 'impl_1' tree build failed:/ : /Output 'impl_1' has no patch/);
+				assert.equal(mockPi.callCount(), ending === "sequentialAbsent" ? 1 : ending === "corrupt" ? 3 : 2);
+				if (ending === "corrupt") assert.equal(corrupted, true);
+				return;
+			}
+			assert.ok(producer.treePath);
+			assert.match(producer.treePath, /worktree-trees\/step-0\/task-0-impl$/);
+			assert.equal(fs.existsSync(producer.treePath), false);
+			if (acceptance) {
+				assert.deepEqual(result.details.results[1].structuredOutput, { verdict: "PASS" });
+				if (ending === "attested") {
+					assert.equal(result.details.results[1].acceptance?.status, "attested");
+					assert.equal(result.details.workflowGraph?.nodes[1]?.children?.[0]?.acceptanceStatus, "attested");
+					assert.equal(result.details.outputs?.review?.text, '{"verdict":"PASS"}');
+				} else { assert.equal(result.isError, true); assert.match(result.content[0].text, /Staged files present:/); }
+			} else {
+				const observation = JSON.parse(result.details.results[1].finalOutput!.trim());
+				assert.equal(observation.cwd, producer.treePath);
+				assert.equal(observation.files["nested/input.md"], "input\npatched\n");
+				if (ending === "dynamic") {
+					assert.ok(!result.isError, result.content[0].text);
+					assert.equal(JSON.parse(result.details.results[2].finalOutput!.trim()).cwd, producer.treePath);
+				}
+				if (ending === "normal") {
+					assert.ok(!result.isError, result.content[0].text);
+					for (const r of result.details.results.slice(2)) assert.equal(JSON.parse(r.finalOutput!.trim()).cwd, producer.treePath);
+					assert.ok(result.details.results[3].task!.includes(producer.treePath));
+				}
+				if (ending === "failFast") { assert.equal(result.isError, true); assert.equal(result.details.results.at(-1)!.exitCode, -1); }
+				if (ending === "stop") assert.ok(result.details.stop);
+			}
+		});
+	}
+
 	for (const changes of [true, false]) {
 		it(changes ? "binds patchPath and resolves it in the next task" : "keeps producers when a missing patch reference fails", { skip: process.platform === "win32" }, async () => {
 			const repoDir = path.join(tempDir, "repo");
@@ -1099,7 +1222,7 @@ describe("chain execution — parallel steps", { skip: !available ? "pi packages
 	}
 
 	for (const concurrency of [1, 2]) {
-		it(`keeps sibling results when a parallel patch reference fails at concurrency ${concurrency}`, { skip: process.platform === "win32" }, async () => {
+		it(`keeps sibling results when a parallel tree cwd reference fails at concurrency ${concurrency}`, { skip: process.platform === "win32" }, async () => {
 			const repoDir = path.join(tempDir, "repo");
 			fs.mkdirSync(repoDir);
 			const git = (...args: string[]) => execFileSync("git", args, { cwd: repoDir, stdio: "pipe" });
@@ -1118,8 +1241,8 @@ describe("chain execution — parallel steps", { skip: !available ? "pi packages
 			const result = await executeChain(makeChainParams([
 				{ parallel: [{ agent: "impl", as: "impl_1", task: "edit" }, { agent: "impl", as: "impl_2", task: "noop" }], worktree: true, concurrency: 1 },
 				{ parallel: [
-					{ agent: "reviewer", as: "review", task: "Review {outputs.impl_1.patchPath}" },
-					{ agent: "reviewer", task: "Review {outputs.impl_2.patchPath}" },
+					{ agent: "reviewer", as: "review", task: "Review {outputs.impl_1.patchPath}", cwd: "{outputs.impl_1.treePath}" },
+					{ agent: "reviewer", task: "Review", cwd: "{outputs.impl_2.treePath}" },
 				], concurrency },
 			], [makeAgent("impl", { completionGuard: false }), makeAgent("reviewer")], { cwd: repoDir, ctx: makeMinimalCtx(repoDir), worktreeSetupHook: hook, chainDir: path.join(tempDir, "chain") }));
 			assert.equal(result.isError, true);
@@ -1127,7 +1250,11 @@ describe("chain execution — parallel steps", { skip: !available ? "pi packages
 			assert.equal(result.details.results.length, 4);
 			assert.equal(result.details.results[2].finalOutput, "valid consumer finished");
 			assert.equal(result.details.results[3].exitCode, 1);
+			assert.match(result.details.results[3].finalOutput ?? "", /Output 'impl_2' has no patch/);
+			assert.equal(mockPi.callCount(), 3);
 			assert.equal(result.details.outputs?.review?.text, "valid consumer finished");
+			assert.equal(fs.existsSync(result.details.outputs!.impl_1.treePath!), false);
+			assert.doesNotMatch(git("worktree", "list", "--porcelain").toString(), /worktree-trees/);
 		});
 	}
 

@@ -58,6 +58,10 @@ export interface ChainTaskOutputEntry {
 }
 
 export interface ChainOutputMapEntry {
+	taskIndex?: number;
+	baseCommit?: string;
+	repoCwd?: string;
+	treePath?: string;
 	text: string;
 	structured?: unknown;
 	agent: string;

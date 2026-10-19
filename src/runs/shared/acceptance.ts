@@ -238,7 +238,7 @@ export function resolveEffectiveAcceptance(input: {
 	};
 }
 
-export function formatAcceptancePrompt(acceptance: ResolvedAcceptanceConfig): string {
+export function formatAcceptancePrompt(acceptance: ResolvedAcceptanceConfig, options: { structuredOutput: boolean } = { structuredOutput: false }): string {
 	if (acceptance.level === "none") return "";
 	const lines = [
 		"",
@@ -264,7 +264,9 @@ export function formatAcceptancePrompt(acceptance: ResolvedAcceptanceConfig): st
 	}
 	lines.push(
 		"",
-		"Finish with a fenced JSON block tagged `acceptance-report` in this shape:",
+		options.structuredOutput
+			? "Write a fenced JSON block tagged `acceptance-report` in your final text message, then call `structured_output` as your final action. Shape:"
+			: "Finish with a fenced JSON block tagged `acceptance-report` in this shape:",
 		"```acceptance-report",
 		JSON.stringify({
 			criteriaSatisfied: [{ id: "criterion-1", status: "satisfied", evidence: "specific proof" }],

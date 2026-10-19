@@ -19,6 +19,9 @@ interface MockPiResponse {
 	}>;
 	echoEnv?: string[];
 	echoRuntime?: boolean;
+	echoFiles?: string[];
+	echoCwd?: boolean;
+	requireAcceptanceStructuredOrder?: boolean;
 }
 
 export interface MockPi {

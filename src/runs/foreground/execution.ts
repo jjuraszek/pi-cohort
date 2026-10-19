@@ -669,7 +669,7 @@ export async function runSync(
 		dynamic: options.acceptanceContext?.dynamic,
 		dynamicGroup: options.acceptanceContext?.dynamicGroup,
 	});
-	const acceptancePrompt = formatAcceptancePrompt(effectiveAcceptance);
+	const acceptancePrompt = formatAcceptancePrompt(effectiveAcceptance, { structuredOutput: Boolean(options.structuredOutput) });
 	const taskWithAcceptance = acceptancePrompt ? `${task}\n${acceptancePrompt}` : task;
 	const sessionEnabled = Boolean(options.sessionFile || options.sessionDir) || shareEnabled;
 	const skillNames = options.skills ?? agent.skills ?? [];

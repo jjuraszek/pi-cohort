@@ -313,7 +313,12 @@ Task templates support:
 | `{previous}` | Output from the prior step, or aggregated output from a parallel step. |
 | `{chain_dir}` | Path to the chain artifact directory. |
 | `{outputs.name}` | Text value from a prior step or completed parallel task with `as: "name"` (compact JSON when the step had an `outputSchema`). |
-| `{outputs.name.patchPath}` | Absolute path of the patch a `worktree: true` parallel task with `as: "name"` produced. Rejected pre-run when that step is not a worktree step; fails the chain at the referencing step when the task made no changes or the capture failed. The only sub-field. |
+| `{outputs.name.patchPath}` | Absolute path of the patch a `worktree: true` parallel task with `as: "name"` produced. Rejected pre-run when that step is not a worktree step; fails the chain at the referencing step when the task made no changes or the capture failed. |
+| `{outputs.name.treePath}` | Absolute checkout root of a prior `worktree: true` parallel task with `as: "name"`, built lazily from its base commit plus captured patch. Rejected pre-run for a non-worktree producer; fails the referencing task before dispatch when no patch is available. |
+
+See [Worktree isolation](orchestration-patterns.md#worktree-isolation) for lifecycle and acceptance constraints.
+
+In `cwd`, only `{outputs.name.treePath}` output references are allowed; `{outputs.name}` and `{outputs.name.patchPath}` are rejected before execution. A step with `worktree: true` cannot contain any `cwd` output references. Effective child cwd precedence is task `cwd` > step `cwd` > run `cwd`. Dynamic fanout leaves use the same rule, but `{item}` substitution in `cwd` is unsupported.
 
 Parallel outputs are aggregated with clear separators before being passed to the next step:
 

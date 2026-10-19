@@ -11,6 +11,8 @@ import {
 	diffWorktrees,
 	findWorktreeTaskCwdConflict,
 	formatWorktreeDiffSummary,
+	materializeTree,
+	removeTrees,
 	resolveExpectedWorktreeAgentCwd,
 	type WorktreeSetup,
 } from "../../src/runs/shared/worktree.ts";
@@ -530,6 +532,120 @@ describe("diffWorktrees capture failures", () => {
 		} finally {
 			cleanupWorktrees(setup);
 			cleanupRepo(repoDir);
+		}
+	});
+});
+
+describe("detached trees", () => {
+	it("replays a removed subdirectory producer's patch at the detached root", () => {
+		const repoCwd = createRepo("pi-tree-replay-");
+		const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-tree-output-"));
+		const dir = path.join(temp, "nested", "tree");
+		let setup: WorktreeSetup | undefined;
+		try {
+			fs.mkdirSync(path.join(repoCwd, "app"));
+			fs.writeFileSync(path.join(repoCwd, "app", "source.txt"), "source\n");
+			fs.writeFileSync(path.join(repoCwd, "data.bin"), Buffer.from([0, 1, 255]));
+			git(repoCwd, ["add", "-A"]);
+			git(repoCwd, ["commit", "-m", "fixtures"]);
+			const baseCommit = git(repoCwd, ["rev-parse", "HEAD"]);
+			setup = createWorktrees(path.join(repoCwd, "app"), path.basename(repoCwd), 1);
+			const producer = setup.worktrees[0]!;
+			const binary = Buffer.from([0, 255, 2, 0]);
+			fs.writeFileSync(path.join(producer.agentCwd, "added.txt"), "added\n");
+			fs.unlinkSync(path.join(producer.path, "tracked.txt"));
+			fs.writeFileSync(path.join(producer.path, "data.bin"), binary);
+			const [diff] = diffWorktrees(setup, ["worker"], path.join(temp, "patches"));
+			assert.ok(diff && !diff.captureError);
+			cleanupWorktrees(setup);
+			setup = undefined;
+			fs.writeFileSync(path.join(repoCwd, "tracked.txt"), "dirty primary\n");
+			assert.equal(materializeTree({ repoCwd, baseCommit, patchPath: diff.patchPath, dir }), dir);
+			assert.equal(fs.readFileSync(path.join(dir, "app", "added.txt"), "utf-8"), "added\n");
+			assert.equal(fs.readFileSync(path.join(dir, "app", "source.txt"), "utf-8"), "source\n");
+			assert.deepEqual(fs.readFileSync(path.join(dir, "data.bin")), binary);
+			assert.equal(fs.existsSync(path.join(dir, "tracked.txt")), false);
+			assert.equal(git(dir, ["rev-parse", "HEAD"]), baseCommit);
+			assert.equal(git(dir, ["rev-parse", "--abbrev-ref", "HEAD"]), "HEAD");
+			assert.equal(git(dir, ["diff", "--name-only"]), "");
+			assert.equal(git(dir, ["diff", "--cached", "--name-only"]), "app/added.txt\ndata.bin\ntracked.txt");
+		} finally {
+			if (setup) cleanupWorktrees(setup);
+			removeTrees([{ repoCwd, dir }]);
+			cleanupRepo(repoCwd);
+			cleanupRepo(temp);
+		}
+	});
+
+	for (const failure of ["add", "apply"]) {
+		it(`reports the first stderr line on ${failure} failure and permits cleanup`, () => {
+			const repoCwd = createRepo("pi-tree-failure-");
+			const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-tree-failure-output-"));
+			const dir = path.join(temp, "tree");
+			try {
+				const patchPath = path.join(temp, "invalid.patch");
+				fs.writeFileSync(patchPath, "not a patch\n");
+				const baseCommit = failure === "add" ? "missing-commit" : git(repoCwd, ["rev-parse", "HEAD"]);
+				assert.throws(() => materializeTree({ repoCwd, baseCommit, patchPath, dir }), (error: Error) => {
+					assert.equal(error.message.includes("\n"), false);
+					assert.match(error.message, failure === "add" ? /fatal: invalid reference: missing-commit/ : /error: No valid patches in input/);
+					return true;
+				});
+				assert.equal(fs.existsSync(dir), failure === "apply");
+			} finally {
+				removeTrees([{ repoCwd, dir }]);
+				assert.equal(fs.existsSync(dir), false);
+				assert.equal(git(repoCwd, ["worktree", "list", "--porcelain"]).split("worktree ").length - 1, 1);
+				cleanupRepo(repoCwd);
+				cleanupRepo(temp);
+			}
+		});
+	}
+
+	it("removes across repositories, skips missing dirs, and prunes each repository once", () => {
+		const repos = [createRepo("pi-tree-clean-a-"), createRepo("pi-tree-clean-b-")];
+		const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-tree-clean-output-"));
+		const entries = [repos[0]!, repos[0]!, repos[1]!].map((repoCwd, i) => ({ repoCwd, dir: path.join(temp, `tree-${i}`) }));
+		const trace = path.join(temp, "trace");
+		const previousTrace = process.env.GIT_TRACE;
+		try {
+			for (const { repoCwd, dir } of entries) git(repoCwd, ["worktree", "add", "--detach", dir, "HEAD"]);
+			process.env.GIT_TRACE = trace;
+			removeTrees([...entries, { repoCwd: repos[0]!, dir: path.join(temp, "missing") }]);
+			if (previousTrace === undefined) delete process.env.GIT_TRACE;
+			else process.env.GIT_TRACE = previousTrace;
+			assert.equal((fs.readFileSync(trace, "utf-8").match(/built-in: git worktree prune/g) ?? []).length, 2);
+			for (const { dir } of entries) assert.equal(fs.existsSync(dir), false);
+			for (const repo of repos) assert.equal(git(repo, ["worktree", "list", "--porcelain"]).split("worktree ").length - 1, 1);
+		} finally {
+			if (previousTrace === undefined) delete process.env.GIT_TRACE;
+			else process.env.GIT_TRACE = previousTrace;
+			removeTrees(entries);
+			for (const repo of repos) cleanupRepo(repo);
+			cleanupRepo(temp);
+		}
+	});
+
+	it("logs failed removal and prune without preventing later removal", () => {
+		const repoCwd = createRepo("pi-tree-best-effort-");
+		const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-tree-best-effort-output-"));
+		const dir = path.join(temp, "tree");
+		const failingDir = path.join(temp, "ordinary-dir");
+		const warnings: string[] = [];
+		const warn = console.warn;
+		try {
+			fs.mkdirSync(failingDir);
+			git(repoCwd, ["worktree", "add", "--detach", dir, "HEAD"]);
+			console.warn = (...args: unknown[]) => warnings.push(args.join(" "));
+			removeTrees([{ repoCwd: failingDir, dir: failingDir }, { repoCwd, dir }]);
+			assert.ok(warnings.some((message) => message.includes(failingDir)));
+			assert.ok(warnings.some((message) => message.includes("prune")));
+			assert.equal(fs.existsSync(dir), false);
+		} finally {
+			console.warn = warn;
+			removeTrees([{ repoCwd, dir }]);
+			cleanupRepo(repoCwd);
+			cleanupRepo(temp);
 		}
 	});
 });

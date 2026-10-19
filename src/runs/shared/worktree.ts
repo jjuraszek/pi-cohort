@@ -557,6 +557,38 @@ export function diffWorktrees(setup: WorktreeSetup, agents: string[], diffsDir: 
 	return diffs;
 }
 
+export function materializeTree({ repoCwd, baseCommit, patchPath, dir }: {
+	repoCwd: string;
+	baseCommit: string;
+	patchPath: string;
+	dir: string;
+}): string {
+	fs.mkdirSync(path.dirname(dir), { recursive: true });
+	const add = runGit(repoCwd, ["worktree", "add", "--detach", dir, baseCommit]);
+	if (add.status !== 0) {
+		throw new Error(add.stderr.split("\n").map((line) => line.trim()).find(Boolean) || "git worktree add failed");
+	}
+	const apply = runGit(dir, ["apply", "--index", patchPath]);
+	if (apply.status !== 0) {
+		throw new Error(apply.stderr.split("\n").map((line) => line.trim()).find(Boolean) || "git apply failed");
+	}
+	return dir;
+}
+
+export function removeTrees(entries: Array<{ repoCwd: string; dir: string }>): void {
+	for (const { repoCwd, dir } of entries) {
+		if (!fs.existsSync(dir)) continue;
+		try { runGitChecked(repoCwd, ["worktree", "remove", "--force", dir]); } catch (error) {
+			console.warn(`Failed to remove tree '${dir}': ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+	for (const repoCwd of new Set(entries.map((entry) => entry.repoCwd))) {
+		try { runGitChecked(repoCwd, ["worktree", "prune"]); } catch (error) {
+			console.warn(`Failed to prune worktrees in '${repoCwd}': ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+}
+
 export function cleanupWorktrees(setup: WorktreeSetup): void {
 	for (let index = setup.worktrees.length - 1; index >= 0; index--) {
 		cleanupSingleWorktree(setup.cwd, setup.worktrees[index]!);

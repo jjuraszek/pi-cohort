@@ -126,8 +126,8 @@ subagent({ async: false, chain: [
       { agent: "implementer", as: "impl_2", task: "Implement task 2", outputSchema: statusSchema },
     ], worktree: true, stopOn: { path: "/status", in: ["NEEDS_CONTEXT", "BLOCKED"] } },
   { parallel: [
-      { agent: "spec-reviewer", as: "sr_1", task: "Review {outputs.impl_1.patchPath}", outputSchema: verdictSchema },
-      { agent: "spec-reviewer", as: "sr_2", task: "Review {outputs.impl_2.patchPath}", outputSchema: verdictSchema },
+      { agent: "spec-reviewer", as: "sr_1", cwd: "{outputs.impl_1.treePath}", acceptance: { level: "attested" }, task: "Review {outputs.impl_1.patchPath}", outputSchema: verdictSchema },
+      { agent: "spec-reviewer", as: "sr_2", cwd: "{outputs.impl_2.treePath}", acceptance: { level: "attested" }, task: "Review {outputs.impl_2.patchPath}", outputSchema: verdictSchema },
     ], stopOn: { path: "/verdict", in: ["FAIL"] } },
 ]})
 ```

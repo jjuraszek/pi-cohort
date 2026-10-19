@@ -70,6 +70,19 @@ function taskRequestsAcceptance(args) {
 	return false;
 }
 
+function taskIncludesOrdering(args) {
+	const sentence = "Write a fenced JSON block tagged `acceptance-report` in your final text message, then call `structured_output` as your final action. Shape:";
+	return args.some((arg) => {
+		if (arg.includes(sentence)) return true;
+		if (!arg.startsWith("@")) return false;
+		try {
+			return fs.readFileSync(arg.slice(1), "utf-8").includes(sentence);
+		} catch {
+			return false;
+		}
+	});
+}
+
 function defaultAcceptanceReport() {
 	return [
 		"```acceptance-report",
@@ -223,6 +236,19 @@ async function main() {
 	const args = process.argv.slice(2);
 	const jsonMode = isJsonMode(args);
 	const response = claimNextResponse(queueDir) ?? defaultResponse();
+	if (response.requireAcceptanceStructuredOrder && taskRequestsAcceptance(args) && !taskIncludesOrdering(args)) {
+		fail("Expected report-then-structured-output ordering sentence.");
+	}
+	if (response.echoCwd || response.echoFiles !== undefined) {
+		const observation = {};
+		if (response.echoCwd) observation.cwd = process.cwd();
+		if (response.echoFiles !== undefined) {
+			observation.files = Object.fromEntries(response.echoFiles.map((file) => [
+				file, fs.readFileSync(path.resolve(process.cwd(), file), "utf-8"),
+			]));
+		}
+		response.output = `${response.output ?? ""}\n${JSON.stringify(observation)}`;
+	}
 	const persistMessage = sessionWriter(writeSessionFile(args));
 	fs.writeFileSync(
 		path.join(queueDir, `call-${Date.now()}-${process.pid}-${Math.random().toString(16).slice(2)}.json`),
