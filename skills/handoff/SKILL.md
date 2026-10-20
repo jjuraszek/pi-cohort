@@ -1,6 +1,7 @@
 ---
 name: handoff
 description: Use when the context window is nearly full and the work must continue in a fresh session.
+disable-model-invocation: true
 ---
 
 # Handoff brief

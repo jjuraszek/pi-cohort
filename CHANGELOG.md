@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- `handoff` skill sets `disable-model-invocation: true`: it runs only via an explicit `/skill:handoff`, never by model selection.
+
 ## [7.4.2] - 2026-10-19
 
 ### Added
