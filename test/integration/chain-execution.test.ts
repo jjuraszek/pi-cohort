@@ -447,8 +447,9 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 		assert.equal(result.isError, true);
 		assert.match(result.content[0]?.text ?? "", /BLOCKED: choose a target/);
 		assert.equal(result.details.results.length, 2);
-		assert.ok(result.details.results.some((item) => item.finalOutput === blocked));
-		assert.ok(result.details.results.some((item) => item.finalOutput === "Sibling completed"));
+		const outputs = JSON.stringify(result.details.results.map((item) => ({ agent: item.agent, exitCode: item.exitCode, error: item.error, finalOutput: item.finalOutput })));
+		assert.ok(result.details.results.some((item) => item.finalOutput === blocked), outputs);
+		assert.ok(result.details.results.some((item) => item.finalOutput === "Sibling completed"), outputs);
 		assert.equal(mockPi.callCount(), 2);
 	});
 
