@@ -169,7 +169,7 @@ describe("TreeRegistry", () => {
 			assert.equal(x.treePath, first);
 			assert.equal(trees.created.length, 1);
 			assert.equal(trees.built.size, 1);
-			assert.equal(fs.readFileSync(path.join(first, "file"), "utf8"), "changed\n");
+			assert.equal(fs.readFileSync(path.join(first, "file"), "utf8").replace(/\r\n/g, "\n"), "changed\n");
 			assert.equal(git(first, ["diff", "--cached", "--name-only"]), "file");
 			assert.notEqual(trees.resolve("y", { ...x, taskIndex: 1 }), first);
 			const invalid = path.join(root, "invalid.patch");

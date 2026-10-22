@@ -561,8 +561,8 @@ describe("detached trees", () => {
 			setup = undefined;
 			fs.writeFileSync(path.join(repoCwd, "tracked.txt"), "dirty primary\n");
 			assert.equal(materializeTree({ repoCwd, baseCommit, patchPath: diff.patchPath, dir }), dir);
-			assert.equal(fs.readFileSync(path.join(dir, "app", "added.txt"), "utf-8"), "added\n");
-			assert.equal(fs.readFileSync(path.join(dir, "app", "source.txt"), "utf-8"), "source\n");
+			assert.equal(fs.readFileSync(path.join(dir, "app", "added.txt"), "utf-8").replace(/\r\n/g, "\n"), "added\n");
+			assert.equal(fs.readFileSync(path.join(dir, "app", "source.txt"), "utf-8").replace(/\r\n/g, "\n"), "source\n");
 			assert.deepEqual(fs.readFileSync(path.join(dir, "data.bin")), binary);
 			assert.equal(fs.existsSync(path.join(dir, "tracked.txt")), false);
 			assert.equal(git(dir, ["rev-parse", "HEAD"]), baseCommit);

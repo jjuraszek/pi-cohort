@@ -476,7 +476,7 @@ describe("structured output settlement", () => {
 				assert.deepEqual(read(), { error: validation === "parameters"
 					? "Structured output validation failed: - value.ok: must be boolean"
 					: "Structured output validation failed: ok: must be boolean" });
-				assert.equal(fs.statSync(outputPath).mode & 0o777, 0o600);
+				if (process.platform !== "win32") assert.equal(fs.statSync(outputPath).mode & 0o777, 0o600);
 				assert.equal(settle(), undefined);
 				const result = await tool.execute("call-2", { value: { ok: true } });
 				assert.equal(result.terminate, true);
@@ -563,11 +563,14 @@ describe("structured output settlement", () => {
 			assert.ok(fs.statSync(outputPath).isDirectory());
 			assert.equal(settle(), undefined);
 		});
-		await withStructuredRuntime(({ dir, outputPath, settle }) => {
-			fs.rmSync(dir, { recursive: true });
-			fs.writeFileSync(dir, "not a directory");
-			assert.doesNotThrow(() => assert.equal(settle(), undefined));
-		});
+		// Windows reports ENOENT for a file parent, so recovery legitimately re-asks.
+		if (process.platform !== "win32") {
+			await withStructuredRuntime(({ dir, outputPath, settle }) => {
+				fs.rmSync(dir, { recursive: true });
+				fs.writeFileSync(dir, "not a directory");
+				assert.doesNotThrow(() => assert.equal(settle(), undefined));
+			});
+		}
 	});
 
 	it("retains successful execute write failures as thrown failures without recovery", async () => {
