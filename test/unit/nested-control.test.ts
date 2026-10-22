@@ -33,7 +33,8 @@ const savedEnv = {
 };
 
 afterEach(() => {
-	for (const root of routeRoots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+	// Detached runners keep writing events/log/result after status.json turns terminal.
+	for (const root of routeRoots.splice(0)) fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 	for (const [key, value] of Object.entries(savedEnv)) {
 		if (value === undefined) delete process.env[key];
 		else process.env[key] = value;
