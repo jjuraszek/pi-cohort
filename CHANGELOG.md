@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Async run status reads no longer serve a stale `running` state after an atomic `status.json` replacement that lands on the same mtime; the read cache now also compares inode and size.
+- The Tests workflow passes on Windows again: CRLF, POSIX file-mode, ENOTDIR, and SIGUSR2 assumptions in tests are normalized or skipped on win32, and run-dir cleanup retries while detached runners finish writing.
+
 ## [7.4.3] - 2026-10-20
 
 ### Changed
