@@ -2519,7 +2519,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 	});
 
 	for (const scenario of ["delayed", "tool-only", "corrected", "unrelated-error", "missing-settlement", "activity", "silent-tool", "aborted", "provider-error", "cancelled"] as const) {
-		it(`background structured settlement: ${scenario}`, { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async (t) => {
+		it(`background structured settlement: ${scenario}`, { skip: !isAsyncAvailable() ? "jiti not available" : scenario === "cancelled" && process.platform === "win32" ? "requires POSIX signals" : undefined }, async (t) => {
 			const runRoot = fs.mkdtempSync(path.join(ASYNC_DIR, `settlement-${scenario}-`));
 			const id = path.basename(runRoot);
 			fs.rmdirSync(runRoot);
