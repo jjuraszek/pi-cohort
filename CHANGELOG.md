@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [7.4.4] - 2026-10-22
 
 ### Fixed
 - Async run status reads no longer serve a stale `running` state after an atomic `status.json` replacement that lands on the same mtime; the read cache now also compares inode and size.
