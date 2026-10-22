@@ -6,6 +6,8 @@ import { describe, it } from "node:test";
 import { inspectSubagentStatus } from "../../src/runs/background/run-status.ts";
 import { createNestedRoute, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
 import { LEGACY_ASYNC_DIR, TEMP_ROOT_DIR } from "../../src/shared/types.ts";
+import { writeAtomicJson } from "../../src/shared/atomic-json.ts";
+import { readStatus } from "../../src/shared/utils.ts";
 
 function errno(code: string): NodeJS.ErrnoException {
 	const error = new Error(code) as NodeJS.ErrnoException;
@@ -670,6 +672,22 @@ describe("async run status inspection", () => {
 			assert.match(text, /Result: /);
 			assert.match(text, /Revive: subagent\(\{ action: "resume", id: "run-result-only", message: "\.\.\." \}\)/);
 			assert.match(text, /result survived missing status/);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("readStatus sees an atomic replacement that lands on the same mtime", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-status-cache-"));
+		try {
+			const statusPath = path.join(root, "status.json");
+			const sameSecond = new Date(Math.floor(Date.now() / 1000) * 1000);
+			fs.writeFileSync(statusPath, JSON.stringify({ runId: "cached", state: "running" }));
+			fs.utimesSync(statusPath, sameSecond, sameSecond);
+			assert.equal(readStatus(root)?.state, "running");
+			writeAtomicJson(statusPath, { runId: "cached", state: "failed" });
+			fs.utimesSync(statusPath, sameSecond, sameSecond);
+			assert.equal(readStatus(root)?.state, "failed");
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}

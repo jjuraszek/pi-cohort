@@ -16,7 +16,9 @@ import type { AgentProgress, AsyncStatus, Details, DisplayItem, ErrorInfo, Singl
 
 export { getAgentDir } from "./agent-dir.ts";
 
-const statusCache = new Map<string, { mtime: number; status: AsyncStatus }>();
+// Keyed on inode too: writeAtomicJson renames a fresh file in, and a coarse
+// filesystem clock can give the replacement the same mtime as the original.
+const statusCache = new Map<string, { mtime: number; ino: number; size: number; status: AsyncStatus }>();
 
 function getErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
@@ -35,7 +37,7 @@ function isNotFoundError(error: unknown): boolean {
 }
 
 /**
- * Read async job status from disk (with mtime-based caching)
+ * Read async job status from disk (with stat-based caching)
  */
 export function readStatus(asyncDir: string): AsyncStatus | null {
 	const statusPath = path.join(asyncDir, "status.json");
@@ -51,7 +53,7 @@ export function readStatus(asyncDir: string): AsyncStatus | null {
 	}
 
 	const cached = statusCache.get(statusPath);
-	if (cached && cached.mtime === stat.mtimeMs) {
+	if (cached && cached.mtime === stat.mtimeMs && cached.ino === stat.ino && cached.size === stat.size) {
 		return cached.status;
 	}
 
@@ -74,7 +76,7 @@ export function readStatus(asyncDir: string): AsyncStatus | null {
 		});
 	}
 
-	statusCache.set(statusPath, { mtime: stat.mtimeMs, status });
+	statusCache.set(statusPath, { mtime: stat.mtimeMs, ino: stat.ino, size: stat.size, status });
 	if (statusCache.size > 50) {
 		const firstKey = statusCache.keys().next().value;
 		if (firstKey) statusCache.delete(firstKey);
