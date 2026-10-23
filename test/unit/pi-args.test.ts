@@ -294,7 +294,8 @@ describe("buildPiArgs system prompt mode wiring", () => {
 		assert.equal(env[SUBAGENT_PARENT_DEPTH_ENV], "1");
 		assert.deepEqual(JSON.parse(env[SUBAGENT_PARENT_PATH_ENV] ?? "[]"), [{ runId: "parent-run", stepIndex: 1 }]);
 		assert.equal(env[SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV], "token-1");
-		assert.ok(extensionArgs.some((arg) => arg.endsWith(path.join("src", "extension", "fanout-child.ts"))));
+		assert.ok(!args.includes("--no-extensions"));
+		assert.equal(extensionArgs.filter((arg) => arg.endsWith(path.join("src", "extension", "fanout-child.ts"))).length, 1);
 	});
 
 	it("clears all fanout routing env values for non-fanout children", () => {
@@ -415,8 +416,26 @@ describe("buildPiArgs system prompt mode wiring", () => {
 		const extensionArgs = args.filter((arg, index) => args[index - 1] === "--extension");
 		assert.ok(args.includes("--no-extensions"));
 		assert.equal(env[SUBAGENT_FANOUT_CHILD_ENV], "1");
-		assert.ok(extensionArgs.some((arg) => arg.endsWith(path.join("src", "extension", "fanout-child.ts"))));
+		assert.equal(extensionArgs.filter((arg) => arg.endsWith(path.join("src", "extension", "fanout-child.ts"))).length, 1);
 		assert.ok(extensionArgs.includes("./agent-allowed-ext.ts"));
+	});
+
+	it("keeps exactly one fanout extension with an empty extensions allowlist", () => {
+		const { args, env } = buildPiArgs({
+			baseArgs: ["-p"],
+			task: "hello",
+			sessionEnabled: false,
+			inheritProjectContext: false,
+			inheritSkills: false,
+			tools: ["subagent"],
+			extensions: [],
+		});
+
+		const extensionArgs = args.filter((arg, index) => args[index - 1] === "--extension");
+		assert.ok(args.includes("--no-extensions"));
+		assert.equal(env[SUBAGENT_FANOUT_CHILD_ENV], "1");
+		assert.equal(extensionArgs.filter((arg) => arg.endsWith(path.join("src", "extension", "fanout-child.ts"))).length, 1);
+		assert.ok(!extensionArgs.includes("[]"));
 	});
 
 	it("emits an empty prompt file when replace mode is used with an empty prompt", () => {
