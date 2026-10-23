@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [7.4.5] - 2026-10-23
 
 ### Fixed
 - Child personas that allow `subagent` and inherit extensions now start without a duplicate-tool error; the explicit child extension is the only registrant. (#26)
