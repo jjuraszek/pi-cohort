@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { describe, it } from "node:test";
+import { after, before, describe, it } from "node:test";
 import {
 	cleanupWorktrees,
 	createWorktrees,
@@ -652,26 +652,27 @@ describe("detached trees", () => {
 });
 
 describe("worktree teardown", () => {
+	let repo: string;
+	before(() => { repo = createRepo("pi-teardown-validation-"); });
+	after(() => { cleanupRepo(repo); });
+
 	for (const [name, hookPath, timeoutMs, message] of [
 		["bare", "node", undefined, /absolute path or a repo-relative path/],
 		["missing", "./missing", undefined, /not found/],
 		["directory", "./", undefined, /got directory/],
 		["empty", "", undefined, /cannot be empty/],
 		["whitespace", "  ", undefined, /cannot be empty/],
-		...[0, -1, 1.5, NaN, Infinity].map((value) => [`timeout-${value}`, "./tracked.txt", value, /timeout must be an integer greater than 0/]),
+		...[0, -1, 1.5, NaN, Infinity, null as unknown as number].map((value) => [`timeout-${value}`, "./tracked.txt", value, /timeout must be an integer greater than 0/]),
 	] as const) {
 		it(`rejects ${name} before creating a checkout`, () => {
-			const repo = createRepo("pi-teardown-validation-");
 			const runId = randomBytes(8).toString("hex");
-			try {
-				assert.throws(() => createWorktrees(repo, runId, 1, { teardownHook: { hookPath, timeoutMs } }), (error: Error) => {
-					assert.match(error.message, /worktree teardown hook/);
-					assert.match(error.message, message);
-					return true;
-				});
-				assert.equal(fs.existsSync(path.join(os.tmpdir(), `pi-worktree-${runId}-0`)), false);
-				assert.equal(git(repo, ["branch", "--list", `pi-parallel-${runId}-*`]), "");
-			} finally { cleanupRepo(repo); }
+			assert.throws(() => createWorktrees(repo, runId, 1, { teardownHook: { hookPath, timeoutMs } }), (error: Error) => {
+				assert.match(error.message, /worktree teardown hook/);
+				assert.match(error.message, message);
+				return true;
+			});
+			assert.equal(fs.existsSync(path.join(os.tmpdir(), `pi-worktree-${runId}-0`)), false);
+			assert.equal(git(repo, ["branch", "--list", `pi-parallel-${runId}-*`]), "");
 		});
 	}
 });

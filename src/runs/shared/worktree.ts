@@ -269,7 +269,7 @@ function resolveWorktreeTeardownHook(
 		throw new Error(`worktree teardown hook must be a file, got directory: ${resolvedPath}`);
 	}
 
-	const timeoutMs = config.timeoutMs ?? 30000;
+	const timeoutMs = config.timeoutMs === undefined ? 30000 : config.timeoutMs;
 	if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
 		throw new Error("worktree teardown hook timeout must be an integer greater than 0");
 	}
