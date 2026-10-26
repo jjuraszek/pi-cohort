@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [7.6.0] - 2026-10-26
 
 ### Breaking
 - All extension settings now come only from `settings.json#subagents`: the profile is below project levels, and the nearest defined value wins. Move the legacy configuration object's keys under `subagents` in the profile's `settings.json` or project `.pi/settings.json`; the old file is ignored and triggers one top-level session-start migration warning. Hooks and backend selection follow each execution unit's effective cwd, including detached runs. (#29)
