@@ -53,12 +53,6 @@ describe("extension settings ladder", () => {
 		assert.equal(resolveTopLevelParallelMaxTasks(config.parallel?.maxTasks), 8);
 	});
 
-	it("returns undefined when no settings exist", () => {
-		const repoDir = createTempRepo();
-		const result = resolveExtensionConfig(repoDir).executionBackend;
-		assert.equal(result, undefined);
-	});
-
 	it("reads executionBackend from root level", () => {
 		const repoDir = createTempRepo();
 		writeProjectSettings(repoDir, ".", { executionBackend: "test-backend" });

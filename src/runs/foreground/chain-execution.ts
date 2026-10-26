@@ -650,9 +650,9 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 			if (isParallelStep(step)) {
 				const parallelTemplates = stepTemplates as string[];
 				const parallelCwd = resolveChildCwd(cwd ?? ctx.cwd, step.cwd === undefined ? undefined : resolveOutputReferences(step.cwd, outputs, trees));
-				const groupConfig = params.resolveConfig?.(parallelCwd) ?? params;
 				let worktreeSetup: WorktreeSetup | undefined;
 				if (step.worktree) {
+					const groupConfig = params.resolveConfig?.(parallelCwd) ?? params;
 					const resolvedTasks = step.parallel.map((task) => ({ ...task, cwd: task.cwd === undefined ? undefined : resolveOutputReferences(task.cwd, outputs, trees) }));
 					const worktreeTaskCwdConflict = findWorktreeTaskCwdConflict(resolvedTasks, parallelCwd);
 					if (worktreeTaskCwdConflict) {

@@ -1017,6 +1017,24 @@ describe("effective cwd settings", { skip: !piAvailable ? "pi packages not avail
 		assert.deepEqual(reads, [a, b]);
 	});
 
+	it("non-worktree group resolves settings only at task cwd", async () => {
+		const a = project("call");
+		const group = project("group");
+		const task = project("task");
+		fs.writeFileSync(path.join(group, ".pi", "settings.json"), JSON.stringify({ subagents: { executionBackend: 42 } }));
+		const reads: string[] = [];
+		mockPi.onCall({ output: "done" });
+		mockPi.onCall({ output: "done" });
+		const result = await executor(a, reads).execute("group", {
+			async: false,
+			chain: [{ parallel: [{ agent: "worker", task: "Work", cwd: task }, { agent: "worker", task: "Work", cwd: task }], cwd: group }],
+		}, new AbortController().signal, undefined, makeMinimalCtx(a));
+		assert.equal(result.isError, undefined, JSON.stringify(result));
+		assert.equal(result.details.results.length, 2);
+		assert.ok(result.details.results.every((result) => result.exitCode === 0));
+		assert.equal(reads.includes(group), false);
+	});
+
 	it("resolves settings at the interpolated group cwd before the clean-tree check rejects a staged materialized tree", async () => {
 		const a = project("source");
 		const b = project("target");
