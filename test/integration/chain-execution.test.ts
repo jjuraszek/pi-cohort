@@ -10,7 +10,7 @@
 
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { MockPi } from "../support/helpers.ts";
@@ -1864,6 +1864,44 @@ describe("chain execution - stopOn", { skip: !available }, () => {
 
 	const verdictSchema = { type: "object", properties: { verdict: { type: "string" } }, required: ["verdict"] };
 	const stopRecordOf = (text: string) => JSON.parse(text.slice(text.indexOf("## Stop")).split("```json\n")[1]!.split("\n```")[0]!);
+
+	for (const mode of ["record", "empty"]) {
+		it(`tears down the worktree-owning stopOn group (${mode})`, { skip: mode === "record" && process.platform === "win32" }, async () => {
+			const repo = path.join(tempDir, "repo");
+			fs.mkdirSync(repo);
+			const git = (args: string[]) => {
+				const r = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+				assert.equal(r.status, 0, r.stderr);
+				return r.stdout.trim();
+			};
+			git(["init"]); git(["config", "user.email", "tests@example.com"]); git(["config", "user.name", "Tests"]);
+			fs.writeFileSync(path.join(repo, "input.md"), "input\n");
+			git(["add", "."]); git(["-c", "commit.gpgsign=false", "commit", "-m", "initial"]);
+			const record = path.join(tempDir, "teardown.jsonl");
+			const hook = path.join(tempDir, "teardown.cjs");
+			fs.writeFileSync(hook, `#!${process.execPath}\nconst fs = require('node:fs'); const p = JSON.parse(fs.readFileSync(0, 'utf8')); if (!fs.existsSync(p.worktreePath) || process.cwd() !== fs.realpathSync(p.worktreePath)) process.exit(9); fs.appendFileSync(${JSON.stringify(record)}, JSON.stringify(p)+'\\n');\n`);
+			fs.chmodSync(hook, 0o755);
+			mockPi.onCall({ output: "Gate failed", structuredOutput: { verdict: "FAIL" } });
+			const result = await executeChain(makeChainParams([
+				{ parallel: [{ agent: "reviewer", task: "Gate", outputSchema: verdictSchema }], worktree: true, stopOn: { path: "/verdict", in: ["FAIL"] } },
+				{ agent: "reviewer", task: "sentinel must not run" },
+			], [makeAgent("reviewer")], { cwd: repo, ctx: makeMinimalCtx(repo), worktreeTeardownHook: mode === "empty" ? "" : hook, worktreeTeardownHookTimeoutMs: mode === "empty" ? -1 : 5000 }));
+			assert.ok(!result.isError);
+			assert.equal(mockPi.callCount(), 1);
+			assert.equal(result.details.stop.reason, "condition");
+			assert.doesNotMatch(git(["worktree", "list", "--porcelain"]), /pi-worktree-/);
+			if (mode === "empty") assert.equal(fs.existsSync(record), false);
+			else {
+				const records = fs.readFileSync(record, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+				assert.equal(records.length, 1);
+				const p = records[0];
+				assert.equal(p.version, 1); assert.equal(p.index, 0); assert.equal(p.agent, "reviewer");
+				assert.equal(p.repoRoot, fs.realpathSync(repo)); assert.equal(p.baseCommit, git(["rev-parse", "HEAD"]));
+				assert.equal(p.agentCwd, p.worktreePath); assert.ok(p.runId);
+				assert.equal(fs.existsSync(p.worktreePath), false); assert.equal(git(["branch", "--list", p.branch]), "");
+			}
+		});
+	}
 
 	for (const delayed of [false, true]) {
 		it(`stops after a sequential step whose ${delayed ? "delayed" : "first-turn"} structured output matches`, async () => {

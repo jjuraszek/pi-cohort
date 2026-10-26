@@ -12,6 +12,7 @@ import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
+import fsSink from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { MockPi } from "../support/helpers.ts";
@@ -636,6 +637,100 @@ describe("parallel worktree artifact scoping", { skip: !piAvailable || !createSu
 	beforeEach(() => {
 		mockPi.reset();
 	});
+
+	for (const terminal of ["normal", "error", "abort", "nonzero", "timeout", "empty", "absent", "invalid-path", "invalid-timeout", "invalid-whitespace"]) {
+		it(`forwards teardown configuration on ${terminal}`, { skip: ["empty", "absent", "invalid-path", "invalid-timeout", "invalid-whitespace"].includes(terminal) ? undefined : hookScriptSkip }, async () => {
+			const repo = createParallelRepo("pi-teardown-parallel-");
+			const hooks = fs.mkdtempSync(path.join(os.tmpdir(), "pi-teardown-hooks-"));
+			const record = path.join(hooks, "records.jsonl");
+			const hook = path.join(hooks, "hook.cjs");
+			fs.writeFileSync(hook, `#!${process.execPath}\nconst fs = require('node:fs'); const p = JSON.parse(fs.readFileSync(0, 'utf8')); if (!fs.existsSync(p.worktreePath) || process.cwd() !== fs.realpathSync(p.worktreePath)) process.exit(9); fs.appendFileSync(${JSON.stringify(record)}, JSON.stringify(p)+'\\n'); ${terminal === "nonzero" ? "process.exit(7)" : terminal === "timeout" ? "setInterval(() => {}, 1000)" : ""}\n`);
+			fs.chmodSync(hook, 0o755);
+			const controller = new AbortController();
+			let pending: Promise<any> | undefined;
+			const warnings: string[] = [];
+			const originalWrite = fsSink.write;
+			if (["nonzero", "timeout"].includes(terminal)) {
+				fsSink.write = ((...args) => {
+					if (args[0] === 2 && typeof args[1] === "string" && args[1].includes("worktree teardown hook")) {
+						warnings.push(args[1]);
+						queueMicrotask(() => args.at(-1)(null));
+						return;
+					}
+					return originalWrite(...args);
+				}) as typeof fsSink.write;
+			}
+			try {
+				mockPi.onCall(terminal === "abort" ? { delay: 10_000 } : terminal === "error" ? { exitCode: 1, stderr: "teardown-task-error" } : { output: "teardown success" });
+				const config = {
+					worktreeTeardownHook: terminal === "empty" ? "" : terminal === "absent" ? undefined : terminal === "invalid-path" ? "missing-hook" : terminal === "invalid-whitespace" ? "   " : hook,
+					worktreeTeardownHookTimeoutMs: ["empty", "absent", "invalid-timeout"].includes(terminal) ? -1 : terminal === "timeout" ? 1500 : 5000,
+				};
+				const executor = createSubagentExecutor({
+					pi: { events: createEventBus(), getSessionName: () => undefined },
+					state: { baseCwd: repo, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
+					config, asyncByDefault: false, tempArtifactsDir: repo, getSubagentSessionRoot: () => repo,
+					expandTilde: (value: string) => value, discoverAgents: () => ({ agents: [makeAgent("worker")] }),
+				});
+				pending = executor.execute(`teardown-${terminal}`, { tasks: [{ agent: "worker", task: "Work", count: terminal === "normal" ? 2 : 1, output: "report.md" }], worktree: true }, controller.signal, undefined, makeMinimalCtx(repo));
+				if (terminal === "abort") {
+					const deadline = Date.now() + 5000;
+					while (!(mockPi.callCount() > 0 && gitIn(repo, ["worktree", "list", "--porcelain"]).includes("pi-worktree-"))) {
+						assert.ok(Date.now() < deadline, "task must start in a real checkout before abort");
+						await new Promise((resolve) => setTimeout(resolve, 20));
+					}
+					controller.abort();
+				}
+				const result = await pending;
+				if (terminal.startsWith("invalid")) {
+					assert.equal(result.isError, true);
+					assert.match(result.content[0].text, terminal === "invalid-timeout" ? /worktree teardown hook timeout must be an integer greater than 0/ : /worktree teardown hook/);
+					assert.equal(mockPi.callCount(), 0);
+				} else {
+					assert.equal(result.isError, undefined);
+					assert.equal(result.details.results[0].exitCode === 0, terminal !== "error" && terminal !== "abort");
+					if (terminal === "error") assert.match(JSON.stringify(result), /teardown-task-error/);
+					if (!["error", "abort"].includes(terminal)) assert.match(JSON.stringify(result), /teardown success/);
+				}
+				if (terminal === "normal") {
+					for (const index of [0, 1]) {
+						const runDir = path.join(TEMP_ARTIFACTS_DIR!, result.details.runId);
+						assert.match(fs.readFileSync(path.join(runDir, `task-${index}`, "report.md"), "utf8"), /teardown success/);
+						assert.equal(fs.existsSync(path.join(runDir, "worktree-diffs", `task-${index}-worker.patch`)), true);
+					}
+				}
+				const records = fs.existsSync(record) ? fs.readFileSync(record, "utf8").trim().split("\n").map((line) => JSON.parse(line)) : [];
+				const expected = ["empty", "absent", "invalid-path", "invalid-timeout", "invalid-whitespace"].includes(terminal) ? 0 : terminal === "normal" ? 2 : 1;
+				assert.equal(records.length, expected);
+				assert.deepEqual(records.map((p) => p.index).sort(), Array.from({ length: expected }, (_, i) => i));
+				for (const p of records) {
+					assert.equal(p.version, 1);
+					assert.equal(p.repoRoot, fs.realpathSync(repo));
+					assert.equal(p.agentCwd, p.worktreePath);
+					assert.equal(p.agent, "worker");
+					assert.equal(p.runId, result.details.runId);
+					assert.equal(p.baseCommit, gitIn(repo, ["rev-parse", "HEAD"]));
+					assert.equal(fs.existsSync(p.worktreePath), false);
+					assert.equal(gitIn(repo, ["branch", "--list", p.branch]), "");
+				}
+				if (["nonzero", "timeout"].includes(terminal)) {
+					const cause = terminal === "nonzero" ? /exit\s+code\s+7\b/i : /tim(?:ed?\s*out|eout).*\b1500\s*ms\b/i;
+					for (const p of records) {
+						assert.ok(warnings.some((warning) => warning.split("\n").some((line) =>
+							line.includes(p.worktreePath) && cause.test(line))),
+							`missing teardown warning with checkout path and ${terminal} cause: ${warnings.join("")}`);
+					}
+				}
+				assert.doesNotMatch(gitIn(repo, ["worktree", "list", "--porcelain"]), /pi-worktree-/);
+			} finally {
+				fsSink.write = originalWrite;
+				controller.abort();
+				await pending?.catch(() => {});
+				removeTempDir(repo);
+				removeTempDir(hooks);
+			}
+		});
+	}
 
 	it("run-scoped patch directories differ across two dispatches", async () => {
 		const repoA = createParallelRepo("pi-parallel-worktree-a-");
