@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [7.5.0] - 2026-10-26
 
 ### Added
 - `worktreeTeardownHook` and `worktreeTeardownHookTimeoutMs` let consumers clean up external resources before task checkout removal, including setup rollback; failures produce best-effort warnings without changing task results. (#27)
