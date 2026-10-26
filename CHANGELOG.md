@@ -5,6 +5,9 @@
 ### Added
 - `worktreeTeardownHook` and `worktreeTeardownHookTimeoutMs` let consumers clean up external resources before task checkout removal, including setup rollback; failures produce best-effort warnings without changing task results. (#27)
 
+### Fixed
+- The Tests workflow passes on Windows again: the fanout extension-inheritance integration test hands its preload to `--import` as a `file://` URL instead of a bare drive-letter path.
+
 ## [7.4.5] - 2026-10-23
 
 ### Fixed
