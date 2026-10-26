@@ -777,8 +777,10 @@ describe("teardown resolution", () => {
 		const repo = createRepo("pi-teardown-paths-");
 		const home = fs.mkdtempSync(path.join(os.tmpdir(), "pi-teardown-home-"));
 		const previousHome = process.env.HOME;
+		const previousUserProfile = process.env.USERPROFILE;
 		try {
 			process.env.HOME = home;
+			process.env.USERPROFILE = home;
 			fs.writeFileSync(path.join(home, "hook"), "");
 			fs.mkdirSync(path.join(repo, "nested"));
 			fs.writeFileSync(path.join(repo, "nested", "hook"), "");
@@ -792,6 +794,7 @@ describe("teardown resolution", () => {
 			cleanupWorktrees(setup);
 		} finally {
 			if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+			if (previousUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = previousUserProfile;
 			cleanupRepo(repo); cleanupRepo(home);
 		}
 	});
