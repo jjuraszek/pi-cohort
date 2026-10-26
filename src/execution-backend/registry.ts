@@ -54,6 +54,10 @@ function assertBackend(backend: ExecutionBackend): void {
 	for (const method of ["detect", "launch", "reattach", "close"] as const) {
 		if (typeof backend[method] !== "function") throw new Error(`Execution backend ${method} must be a function`);
 	}
+	const prefixes = backend.surfaceEnvironmentPrefixes;
+	if (prefixes !== undefined && (!Array.isArray(prefixes) || prefixes.some(prefix => typeof prefix !== "string" || prefix === ""))) {
+		throw new Error("Execution backend surfaceEnvironmentPrefixes must be nonblank strings");
+	}
 }
 
 export function registerExecutionBackend(

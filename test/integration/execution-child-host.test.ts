@@ -134,6 +134,18 @@ describe("execution child host", unixOnly, () => {
 		});
 	});
 
+	it("gives attempts the surface's own values for surface-owned environment keys", async () => {
+		const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "child-host-surface-env-")); const output = path.join(fixture, "env.json");
+		const fake = fakeBackend(); const launch = fake.backend.launch;
+		const backend: ExecutionBackend = { ...fake.backend, surfaceEnvironmentPrefixes: ["SURFACE_"], launch: request => launch({ ...request, environment: { ...request.environment, SURFACE_ID: "child-pane" } }) };
+		const controller = await createChildHostController({ backend, runId: "run", childId: "child", cwd: fixture, signal: AbortSignal.timeout(5_000) });
+		await controller.ready;
+		const script = "require('fs').writeFileSync(process.env.OUT, JSON.stringify({ id: process.env.SURFACE_ID, stale: process.env.SURFACE_STALE, other: process.env.OTHER }))";
+		await controller.startAttempt({ attemptId: "one", command: process.execPath, args: ["-e", script], cwd: fixture, environment: { OUT: output, SURFACE_ID: "parent-pane", SURFACE_STALE: "parent", OTHER: "kept" } });
+		assert.deepEqual(JSON.parse(fs.readFileSync(output, "utf8")), { id: "child-pane", other: "kept" });
+		await controller.shutdown(); await fake.reap(); fs.rmSync(fixture, { recursive: true, force: true });
+	});
+
 	it("rejects concurrent and repeated attempts without another launch", async () => {
 		const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "child-host-busy-"));
 		const fake = fakeBackend(); const aborter = new AbortController();

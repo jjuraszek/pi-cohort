@@ -79,6 +79,8 @@ The descriptor has exactly four fields. `packageJsonUrl` must be an absolute `fi
 
 Cohort serializes only backend names and validated reload descriptors into its detached coordinator - never live backend objects or an environment capsule. The coordinator reloads registrations in their original order before selecting a backend, and every child launch receives its exact resolved `cwd`. Selecting `native` bypasses reload entirely. An explicit backend selection reports that backend's reload failure; `auto` reports any registered reload failure rather than silently changing policy. Once reload succeeds, normal auto-detection still falls back to native when no registered backend is available. Backends registered without `reload` remain usable in the foreground but cannot be reconstructed for a background run.
 
+A backend whose surface sets its own identity variables declares them with `surfaceEnvironmentPrefixes` (for example `["CMUX_"]`). Each child attempt then drops the parent's keys with those prefixes and takes the launched surface's values instead, so mux-aware tools in the child address the child's surface. Prefixes must be nonblank strings.
+
 ## Mental model
 
 Pi is the parent session. A subagent is a focused child Pi session with its own job. When you ask for a subagent, Pi starts the child, gives it the task, and brings the result back. Foreground runs stream in the conversation; background runs keep working and can be checked later.
