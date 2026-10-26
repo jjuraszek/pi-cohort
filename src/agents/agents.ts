@@ -6,7 +6,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AcceptanceInput, OutputMode, StopCondition } from "../shared/types.ts";
+import type { AcceptanceInput, ExtensionConfig, OutputMode, StopCondition } from "../shared/types.ts";
 import { getAgentDir } from "../shared/utils.ts";
 import { KNOWN_FIELDS } from "./agent-serializer.ts";
 import { parseChain, parseJsonChain } from "./chain-serializer.ts";
@@ -114,11 +114,28 @@ export interface AgentConfig {
 	override?: BuiltinAgentOverrideInfo;
 }
 
-interface SubagentSettings {
+interface SubagentSettings extends ExtensionConfig {
 	overrides: Record<string, BuiltinAgentOverrideConfig>;
 	disableBuiltins?: boolean;
 	executionBackend?: string;
 }
+
+const EXTENSION_SETTING_TYPES = {
+	asyncByDefault: "boolean",
+	forceTopLevelAsync: "boolean",
+	defaultSessionDir: "string",
+	maxSubagentDepth: "depth",
+	control: "object",
+	parallel: "object",
+	chain: "object",
+	worktreeSetupHook: "string",
+	worktreeSetupHookTimeoutMs: "timeout",
+	worktreeTeardownHook: "string",
+	worktreeTeardownHookTimeoutMs: "timeout",
+	showRosterOnStart: "boolean",
+	forwardParentFlags: "boolean",
+	executionBackend: "backend",
+} as const;
 
 const EMPTY_SUBAGENT_SETTINGS: SubagentSettings = { overrides: {} };
 
@@ -475,16 +492,28 @@ function readSubagentSettings(filePath: string | null): SubagentSettings {
 		executionBackend = trimmed;
 	}
 
+	const extension: Record<string, unknown> = {};
+	for (const [key, type] of Object.entries(EXTENSION_SETTING_TYPES)) {
+		if (type === "backend" || !(key in subagentsObject)) continue;
+		const value = subagentsObject[key];
+		const valid = type === "timeout"
+			|| (type === "depth" ? typeof value === "number" && Number.isInteger(value) && value >= 0
+				: type === "object" ? value !== null && typeof value === "object" && !Array.isArray(value)
+					: typeof value === type);
+		if (valid) extension[key] = value;
+		else console.warn(`Subagent settings in '${filePath}' have invalid '${key}'; expected ${type}.`);
+	}
+
 	const parsed: Record<string, BuiltinAgentOverrideConfig> = {};
 	const agentOverrides = subagentsObject.agentOverrides;
 	if (!agentOverrides || typeof agentOverrides !== "object" || Array.isArray(agentOverrides)) {
-		return { overrides: parsed, disableBuiltins, executionBackend };
+		return { ...extension, overrides: parsed, disableBuiltins, executionBackend };
 	}
 	for (const [name, value] of Object.entries(agentOverrides)) {
 		const override = parseBuiltinOverrideEntry(name, value, filePath);
 		if (override) parsed[name] = override;
 	}
-	return { overrides: parsed, disableBuiltins, executionBackend };
+	return { ...extension, overrides: parsed, disableBuiltins, executionBackend };
 }
 
 // Merge project .pi/settings.json across every enumerated level, farthest-first
@@ -498,7 +527,7 @@ function readMergedProjectSubagentSettings(cwd: string): SubagentSettings {
 
 	const overrides: Record<string, BuiltinAgentOverrideConfig> = {};
 	let disableBuiltins: boolean | undefined;
-	let executionBackend: string | undefined;
+	const extension: ExtensionConfig = {};
 	for (const level of levels) {
 		const settingsPath = path.join(level, ".pi", "settings.json");
 		let levelSettings: SubagentSettings;
@@ -519,16 +548,25 @@ function readMergedProjectSubagentSettings(cwd: string): SubagentSettings {
 		if (levelSettings.disableBuiltins !== undefined) {
 			disableBuiltins = levelSettings.disableBuiltins;
 		}
-		if (levelSettings.executionBackend !== undefined) {
-			executionBackend = levelSettings.executionBackend;
-		}
+		Object.assign(extension, projectExtensionSettings(levelSettings));
 	}
-	return { overrides, disableBuiltins, executionBackend };
+	return { ...extension, overrides, disableBuiltins };
 }
 
-export function readProjectExecutionBackend(cwd: string): string | undefined {
-	const merged = readMergedProjectSubagentSettings(cwd);
-	return merged.executionBackend;
+function projectExtensionSettings(settings: SubagentSettings): ExtensionConfig {
+	return Object.fromEntries(
+		Object.keys(EXTENSION_SETTING_TYPES)
+			.filter((key) => settings[key as keyof ExtensionConfig] !== undefined)
+			.map((key) => [key, settings[key as keyof ExtensionConfig]]),
+	);
+}
+
+export function resolveExtensionConfig(cwd: string): ExtensionConfig {
+	const profile = readSubagentSettings(getUserAgentSettingsPath());
+	return {
+		...projectExtensionSettings(profile),
+		...projectExtensionSettings(readMergedProjectSubagentSettings(cwd)),
+	};
 }
 
 function composeOverrideTools(

@@ -2,14 +2,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { discoverAgents } from "../agents/agents.ts";
+import { resolveExtensionConfig, discoverAgents } from "../agents/agents.ts";
 import { getArtifactsDir } from "../shared/artifacts.ts";
 import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
 import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../runs/shared/pi-args.ts";
 import { readNestedControlRequests, resolveNestedRouteFromEnv, writeNestedControlResult } from "../runs/shared/nested-events.ts";
 import { SubagentParams } from "./schemas.ts";
-import { loadConfig } from "./config.ts";
-import { deriveForwardedFlags } from "../runs/shared/forward-flags.ts";
 import { RUN_STATE_ROOT_DIR, type Details, type SubagentState } from "../shared/types.ts";
 import { emptyGrandTotal } from "./grand-total.ts";
 
@@ -126,18 +124,15 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 	if (registeredApis.has(pi)) return;
 	registeredApis.add(pi);
 
-	const config = loadConfig();
 	const state = createChildSafeState();
 	const executor = createSubagentExecutor({
 		pi,
 		state,
-		config,
-		asyncByDefault: config.asyncByDefault === true,
+		resolveConfig: resolveExtensionConfig,
 		tempArtifactsDir: getArtifactsDir(null),
 		getSubagentSessionRoot,
 		expandTilde,
 		discoverAgents,
-		forwardedFlags: deriveForwardedFlags(process.argv, config),
 		allowMutatingManagementActions: false,
 	});
 

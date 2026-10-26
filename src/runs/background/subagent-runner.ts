@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { PINNED_AGENT_DIR_OVERRIDE } from "../../shared/agent-dir.ts";
+import { resolveExtensionConfig } from "../../agents/agents.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -608,6 +609,7 @@ function writeRunLog(
 
 /** Internal context for one detached-runner leaf. */
 export interface SingleStepContext {
+	jobCwd?: string;
 	previousOutput: string;
 	outputs?: ChainOutputMap;
 	trees?: TreeRegistry;
@@ -666,9 +668,13 @@ export async function runSingleStep(
 	}
 	let backendSelection: import("../../execution-backend/selection.ts").ExecutionBackendSelectionResult;
 	try {
+		const unitConfig = resolveExtensionConfig(childCwd);
+		const jobPreference = path.resolve(childCwd) === path.resolve(ctx.jobCwd ?? ctx.cwd)
+			? ctx.executionBackendConfig?.userPreference
+			: undefined;
 		backendSelection = await selectConfiguredExecutionBackend({
 			cwd: childCwd,
-			userConfig: { executionBackend: ctx.executionBackendConfig?.userPreference },
+			userConfig: { executionBackend: unitConfig.executionBackend ?? jobPreference },
 			preparation: ctx.executionBackendCoordinator,
 		});
 	} catch (error) {
@@ -1961,6 +1967,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				writeStatusPayload();
 				appendJsonl(eventsPath, JSON.stringify({ type: "subagent.step.started", ts: taskStartTime, runId: id, stepIndex: fi, agent: task.agent }));
 				const singleResult = await runSingleStep(task, {
+					jobCwd: config.cwd,
 					previousOutput, placeholder, cwd, sessionEnabled,
 					outputs,
 					trees,
@@ -2102,8 +2109,37 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		}
 
 		if (isParallelGroup(step)) {
-			const group = step;
-			const groupCwd = group.cwd?.includes("{outputs.") ? group.cwd : resolveChildCwd(cwd, group.cwd);
+			let group = step;
+			let groupCwd = group.cwd?.includes("{outputs.") ? group.cwd : resolveChildCwd(cwd, group.cwd);
+			let groupConfig: ReturnType<typeof resolveExtensionConfig> = {};
+			if (group.worktree) {
+				try {
+					groupCwd = resolveChildCwd(cwd, resolveOutputReferences(group.cwd ?? cwd, outputs, trees));
+					group = {
+						...group,
+						parallel: group.parallel.map((task) => ({
+							...task,
+							cwd: task.cwd === undefined ? undefined : resolveChildCwd(cwd, resolveOutputReferences(task.cwd, outputs, trees)),
+						})),
+					};
+					const resolved = resolveExtensionConfig(groupCwd);
+					const fallback = path.resolve(groupCwd) === path.resolve(config.cwd) ? config : {};
+					groupConfig = {
+						worktreeSetupHook: resolved.worktreeSetupHook ?? fallback.worktreeSetupHook,
+						worktreeSetupHookTimeoutMs: resolved.worktreeSetupHookTimeoutMs === undefined ? fallback.worktreeSetupHookTimeoutMs : resolved.worktreeSetupHookTimeoutMs,
+						worktreeTeardownHook: resolved.worktreeTeardownHook ?? fallback.worktreeTeardownHook,
+						worktreeTeardownHookTimeoutMs: resolved.worktreeTeardownHookTimeoutMs === undefined ? fallback.worktreeTeardownHookTimeoutMs : resolved.worktreeTeardownHookTimeoutMs,
+					};
+				} catch (error) {
+					markParallelGroupSetupFailure({
+						statusPayload, results, group, groupStartFlatIndex: flatIndex,
+						setupError: error instanceof Error ? error.message : String(error), failedAt: Date.now(),
+						statusPath, eventsPath, asyncDir, runId: id, stepIndex,
+					});
+					flatIndex += group.parallel.length;
+					break;
+				}
+			}
 			const concurrency = group.concurrency ?? MAX_PARALLEL_CONCURRENCY;
 			const failFast = group.failFast ?? false;
 			const groupStartFlatIndex = flatIndex;
@@ -2132,11 +2168,11 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				try {
 					worktreeSetup = createWorktrees(groupCwd, `${id}-s${stepIndex}`, group.parallel.length, {
 						agents: group.parallel.map((task) => task.agent),
-						setupHook: config.worktreeSetupHook
-							? { hookPath: config.worktreeSetupHook, timeoutMs: config.worktreeSetupHookTimeoutMs }
+						setupHook: groupConfig.worktreeSetupHook
+							? { hookPath: groupConfig.worktreeSetupHook, timeoutMs: groupConfig.worktreeSetupHookTimeoutMs }
 							: undefined,
-						teardownHook: config.worktreeTeardownHook
-							? { hookPath: config.worktreeTeardownHook, timeoutMs: config.worktreeTeardownHookTimeoutMs }
+						teardownHook: groupConfig.worktreeTeardownHook
+							? { hookPath: groupConfig.worktreeTeardownHook, timeoutMs: groupConfig.worktreeTeardownHookTimeoutMs }
 							: undefined,
 					});
 				} catch (error) {
@@ -2218,9 +2254,10 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 						const taskSessionDir = config.sessionDir
 							? path.join(config.sessionDir, `parallel-${fi}`)
 							: undefined;
-						const { taskForRun, taskCwd } = prepareParallelTaskRun(task, cwd, worktreeSetup, taskIdx, group.cwd);
+						const { taskForRun, taskCwd } = prepareParallelTaskRun(task, cwd, worktreeSetup, taskIdx, groupCwd);
 
 						const singleResult = await runSingleStep(taskForRun, {
+							jobCwd: config.cwd,
 							previousOutput, placeholder, cwd: taskCwd, sessionEnabled,
 							outputs,
 							trees,
@@ -2400,6 +2437,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			}));
 
 			const singleResult = await runSingleStep(seqStep, {
+				jobCwd: config.cwd,
 				previousOutput, placeholder, cwd, sessionEnabled,
 				outputs,
 				trees,

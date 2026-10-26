@@ -443,8 +443,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		const executor = createSubagentExecutor!({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
 			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
-			config: {},
-			asyncByDefault: false,
+			resolveConfig: () => ({}),
 			tempArtifactsDir: tempDir,
 			getSubagentSessionRoot: () => tempDir,
 			expandTilde: (p: string) => p,
@@ -505,8 +504,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		const executor = createSubagentExecutor!({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
 			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
-			config: {},
-			asyncByDefault: false,
+			resolveConfig: () => ({}),
 			tempArtifactsDir: tempDir,
 			getSubagentSessionRoot: () => tempDir,
 			expandTilde: (p: string) => p,
@@ -546,7 +544,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		const executor = createSubagentExecutor!({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
 			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
-			config: {}, asyncByDefault: false, tempArtifactsDir: tempDir,
+			resolveConfig: () => ({}), tempArtifactsDir: tempDir,
 			getSubagentSessionRoot: () => tempDir, expandTilde: (p: string) => p,
 			discoverAgents: () => ({ agents: [makeAgent("worker", { output: "default-report.md", defaultProgress: true, defaultReads: ["input.md"] })] }),
 		});
@@ -574,7 +572,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		const executor = createSubagentExecutor!({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
 			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
-			config: {}, asyncByDefault: false, tempArtifactsDir: tempDir,
+			resolveConfig: () => ({}), tempArtifactsDir: tempDir,
 			getSubagentSessionRoot: () => tempDir, expandTilde: (p: string) => p,
 			discoverAgents: () => ({ agents: [makeAgent("worker", { output: "default-report.md" })] }),
 		});
@@ -643,8 +641,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		const executor = createSubagentExecutor!({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
 			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
-			config: {},
-			asyncByDefault: false,
+			resolveConfig: () => ({}),
 			tempArtifactsDir: tempDir,
 			getSubagentSessionRoot: () => tempDir,
 			expandTilde: (p: string) => p,
@@ -1089,9 +1086,11 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			let serialized: any;
 			const originalWrite = defaultFs.writeFileSync;
 			try {
-				const hookPath = path.join(tempDir, "tree-hook.sh");
+				const hookPath = path.join(repoDir, "tree-hook.sh");
 				fs.writeFileSync(hookPath, '#!/bin/sh\ncat >/dev/null\necho patched >> input.md\necho "{}"\n');
 				fs.chmodSync(hookPath, 0o755);
+				fs.mkdirSync(path.join(repoDir, ".pi"));
+				fs.writeFileSync(path.join(repoDir, ".pi/settings.json"), JSON.stringify({ subagents: { worktreeSetupHook: "./tree-hook.sh" } }));
 				fs.writeFileSync(path.join(repoDir, "read.md"), "runner reads");
 				writePackageSkill(repoDir, "tree-skill");
 				git(repoDir, ["add", "."]);
@@ -1196,7 +1195,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 				const executor = createSubagentExecutor({
 					pi: { events: createEventBus(), getSessionName: () => undefined },
 					state: { baseCwd: repoDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
-					config: { worktreeSetupHook: hookPath }, asyncByDefault: false, tempArtifactsDir: tempDir,
+					resolveConfig: () => ({ worktreeSetupHook: hookPath }), tempArtifactsDir: tempDir,
 					getSubagentSessionRoot: () => tempDir, expandTilde: (p: string) => p,
 					discoverAgents: () => ({ agents: [makeAgent("worker", { completionGuard: false }), makeAgent("reviewer")] }),
 				});
@@ -1289,8 +1288,266 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		});
 	}
 
+	it("async tree cwd dynamic parallel resolves B instead of serialized A preference", async () => {
+		const a = createRepo("pi-dynamic-a-");
+		const b = createRepo("pi-dynamic-b-");
+		try {
+			for (const repo of [a, b]) {
+				fs.mkdirSync(path.join(repo, ".pi"));
+				fs.writeFileSync(path.join(repo, ".pi/settings.json"), JSON.stringify({ subagents: { executionBackend: repo === a ? "native" : "dynamic-b-probe" } }));
+				git(repo, ["add", "."]); git(repo, ["commit", "-m", "Configure backend"]);
+			}
+			mockPi.onCall({ output: "Produced", echoCwd: true, structuredOutput: { items: ["one", "two"] } });
+			const id = `dynamic-matrix-${Date.now().toString(36)}`;
+			const started = executeAsyncChain(id, {
+				ctx: { pi: { events: { emit() {} } }, cwd: a, currentSessionId: "dynamic-matrix", executionBackend: "native" },
+				chain: [
+					{ parallel: [{ agent: "worker", task: "Produce", as: "impl", output: false, progress: false, outputSchema: { type: "object" } }], worktree: true },
+					{ expand: { from: { output: "impl", path: "/items" }, item: "target", maxItems: 2 }, parallel: { agent: "worker", task: "Inspect {target}", cwd: b, output: false, progress: false, outputSchema: { type: "object" } }, collect: { as: "reviews" }, concurrency: 1 },
+				], agents: [makeAgent("worker", { completionGuard: false })], artifactConfig: { enabled: false }, shareEnabled: false, maxSubagentDepth: 2,
+			});
+			assert.ok(!started.isError, started.content[0]?.text);
+			const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf8"));
+			assert.equal(payload.success, false, JSON.stringify(payload));
+			assert.equal(mockPi.callCount(), 1);
+			assert.equal(payload.results.length, 3);
+			assert.ok(payload.results.slice(1).every((r: any) => !r.success && r.error === "Execution backend selection failed."));
+			assert.deepEqual(payload.outputs.reviews.structured.map((row: any) => ({ item: row.item, exitCode: row.exitCode, error: row.error })), [{ item: "one", exitCode: 1, error: "Execution backend selection failed." }, { item: "two", exitCode: 1, error: "Execution backend selection failed." }]);
+			assert.doesNotMatch(git(a, ["worktree", "list", "--porcelain"]), /pi-worktree-/);
+			assert.doesNotMatch(git(b, ["worktree", "list", "--porcelain"]), /pi-worktree-/);
+		} finally { removeTempDir(a); removeTempDir(b); }
+	});
+
+	for (const source of ["committed", "untracked", "ignored"] as const) {
+		it(`async tree cwd nested fanout doctor uses checkout settings (${source})`, async () => {
+			const { default: registerFanoutChildSubagentExtension } = await import("../../src/extension/fanout-child.ts");
+			const { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV, SUBAGENT_PARENT_ROOT_RUN_ID_ENV } = await import("../../src/runs/shared/pi-args.ts");
+			const { createWorktrees, cleanupWorktrees } = await import("../../src/runs/shared/worktree.ts");
+			const { getAgentDir } = await import("../../src/shared/agent-dir.ts");
+			const repo = createRepo("pi-nested-settings-");
+			const profile = path.join(getAgentDir(), "settings.json");
+			const savedProfile = fs.existsSync(profile) ? fs.readFileSync(profile) : undefined;
+			const keys = [SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV, SUBAGENT_PARENT_ROOT_RUN_ID_ENV];
+			const savedEnv = keys.map(key => process.env[key]);
+			const profileMarker = path.join(tempDir, "profile-sessions");
+			const committedMarker = path.join(tempDir, "committed-sessions");
+			const sourceMarker = path.join(tempDir, "source-only-sessions");
+			let setup: ReturnType<typeof createWorktrees> | undefined;
+			try {
+				fs.mkdirSync(path.dirname(profile), { recursive: true });
+				fs.writeFileSync(profile, JSON.stringify({ subagents: { defaultSessionDir: profileMarker } }));
+				fs.mkdirSync(path.join(repo, ".pi"));
+				const settings = path.join(repo, ".pi/settings.json");
+				if (source === "committed") {
+					fs.writeFileSync(settings, JSON.stringify({ subagents: { defaultSessionDir: committedMarker } }));
+					git(repo, ["add", "."]); git(repo, ["commit", "-m", "Commit nested settings"]);
+				} else if (source === "ignored") {
+					fs.writeFileSync(path.join(repo, ".gitignore"), ".pi/settings.json\n");
+					git(repo, ["add", ".gitignore"]); git(repo, ["commit", "-m", "Ignore local settings"]);
+				}
+				setup = createWorktrees(repo, `nested-${source}-${Date.now().toString(36)}`, 1);
+				const checkout = setup.worktrees[0]!.agentCwd;
+				fs.writeFileSync(settings, JSON.stringify({ subagents: { defaultSessionDir: sourceMarker } }));
+				let tool: any;
+				process.env[SUBAGENT_CHILD_ENV] = "1";
+				process.env[SUBAGENT_FANOUT_CHILD_ENV] = "1";
+				delete process.env[SUBAGENT_PARENT_ROOT_RUN_ID_ENV];
+				registerFanoutChildSubagentExtension({ events: createEventBus(), registerTool(value: any) { tool = value; }, getSessionName() {} } as any);
+				assert.ok(tool);
+				const result = await tool.execute("checkout-doctor", { action: "doctor", cwd: checkout }, new AbortController().signal, undefined, makeMinimalCtx(checkout));
+				assert.equal(result.isError, undefined);
+				const text = result.content[0].text;
+				assert.ok(text.includes(source === "committed" ? committedMarker : profileMarker), text);
+				assert.ok(!text.includes(sourceMarker), text);
+				const checkoutSettings = path.join(checkout, ".pi/settings.json");
+				if (source === "committed") assert.equal(JSON.parse(fs.readFileSync(checkoutSettings, "utf8")).subagents.defaultSessionDir, committedMarker);
+				else assert.equal(fs.existsSync(checkoutSettings), false);
+			} finally {
+				for (const [index, key] of keys.entries()) { if (savedEnv[index] === undefined) delete process.env[key]; else process.env[key] = savedEnv[index]; }
+				if (savedProfile) fs.writeFileSync(profile, savedProfile); else fs.rmSync(profile, { force: true });
+				if (setup) cleanupWorktrees(setup);
+				assert.doesNotMatch(git(repo, ["worktree", "list", "--porcelain"]), /pi-worktree-/);
+				removeTempDir(repo);
+			}
+		});
+	}
+
+	for (const variant of ["warning", "invalid backend"] as const) {
+		it(`async tree cwd output-dependent group resolves settings before clean check (${variant})`, { skip: process.platform === "win32" || !isAsyncAvailable() ? "requires shell hooks and jiti" : undefined }, async () => {
+			const repo = createRepo("pi-output-settings-");
+			const record = path.join(tempDir, "output-settings-hooks.jsonl");
+			try {
+				const nested = variant === "warning" ? { worktreeTeardownHook: 42 } : { executionBackend: 42 };
+				fs.mkdirSync(path.join(repo, ".pi"));
+				fs.writeFileSync(path.join(repo, ".pi/settings.json"), JSON.stringify({ subagents: { worktreeSetupHook: "./produce.cjs" } }));
+				fs.writeFileSync(path.join(repo, "produce.cjs"), `#!${process.execPath}\nconst fs=require('node:fs'); const p=JSON.parse(fs.readFileSync(0,'utf8')); fs.appendFileSync(${JSON.stringify(record)},JSON.stringify(p)+'\\n'); fs.mkdirSync('target/.pi',{recursive:true}); fs.writeFileSync('target/.pi/settings.json',${JSON.stringify(JSON.stringify({ subagents: nested }))}); fs.appendFileSync('input.md','patched\\n'); console.log('{}');\n`);
+				fs.chmodSync(path.join(repo, "produce.cjs"), 0o755);
+				git(repo, ["add", "."]); git(repo, ["commit", "-m", "Configure producer"]);
+				mockPi.onCall({ output: "Produced", echoCwd: true });
+				const id = `output-settings-${variant.replaceAll(" ", "-")}-${Date.now().toString(36)}`;
+				const leaf = { agent: "worker", task: "Work", output: false, progress: false };
+				const started = executeAsyncChain(id, {
+					ctx: { pi: { events: { emit() {} } }, cwd: repo, currentSessionId: "output-settings" },
+					chain: [{ parallel: [{ ...leaf, as: "impl" }], worktree: true }, { parallel: [leaf], cwd: "{outputs.impl.treePath}/target", worktree: true }],
+					agents: [makeAgent("worker", { completionGuard: false })], artifactConfig: { enabled: false }, shareEnabled: false, maxSubagentDepth: 2,
+				});
+				assert.ok(!started.isError, started.content[0]?.text);
+				const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf8"));
+				assert.equal(payload.success, false);
+				assert.equal(mockPi.callCount(), 1);
+				assert.equal(payload.results.length, 2);
+				const tree = payload.outputs.impl.treePath;
+				assert.ok(tree);
+				assert.equal(fs.existsSync(tree), false);
+				assert.equal(fs.readFileSync(record, "utf8").trim().split("\n").length, 1);
+				const error = payload.results[1].error ?? payload.results[1].output;
+				if (variant === "warning") {
+					assert.match(error, /Worktree isolation requires a clean git working tree/i);
+					const log = fs.readFileSync(path.join(ASYNC_DIR, id, "runner.log"), "utf8");
+					assert.ok(log.includes(path.join(tree, "target/.pi/settings.json")), log);
+					assert.match(log, /invalid 'worktreeTeardownHook'; expected string/);
+				} else {
+					assert.ok(error.includes(path.join(tree, "target/.pi/settings.json")), error);
+					assert.match(error, /invalid 'executionBackend'; expected a string/);
+					assert.doesNotMatch(error, /clean git working tree/i);
+				}
+				assert.doesNotMatch(git(repo, ["worktree", "list", "--porcelain"]), /pi-worktree-|worktree-trees/);
+			} finally { removeTempDir(repo); }
+		});
+	}
+
+	for (const settings of ["bad backend", "malformed settings"] as const) {
+		it(`async tree cwd non-worktree group isolates ${settings} from task cwd override`, async () => {
+			const job = createRepo("pi-group-job-");
+			const bad = createRepo("pi-group-bad-");
+			const clean = createRepo("pi-group-clean-");
+			try {
+				fs.mkdirSync(path.join(bad, ".pi"));
+				fs.writeFileSync(path.join(bad, ".pi/settings.json"), JSON.stringify({ subagents: { executionBackend: settings === "malformed settings" ? 42 : "unknown-group-backend" } }));
+				mockPi.onCall({ output: "Clean task ran", echoCwd: true });
+				const id = `group-leaf-${settings.replaceAll(" ", "-")}-${Date.now().toString(36)}`;
+				const leaf = { agent: "worker", task: "Inspect", output: false, progress: false };
+				const started = executeAsyncChain(id, {
+					ctx: { pi: { events: { emit() {} } }, cwd: job, currentSessionId: "group-leaf" },
+					chain: [{ cwd: bad, parallel: [leaf, { ...leaf, cwd: clean }], concurrency: 1 }],
+					agents: [makeAgent("worker", { completionGuard: false })], artifactConfig: { enabled: false }, shareEnabled: false, maxSubagentDepth: 2,
+				});
+				assert.ok(!started.isError, started.content[0]?.text);
+				const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf8"));
+				assert.deepEqual(payload.results.map((r: any) => r.success), [false, true], JSON.stringify(payload));
+				assert.match(payload.results[0].error, /Execution backend selection failed/);
+				assert.equal(JSON.parse(payload.results[1].output.split("\n").at(-1)).cwd, fs.realpathSync(clean));
+				assert.equal(mockPi.callCount(), 1);
+			} finally { removeTempDir(job); removeTempDir(bad); removeTempDir(clean); }
+		});
+	}
+
+	it("async tree cwd cross-project static groups and leaf backend policy", { skip: process.platform === "win32" || !isAsyncAvailable() ? "requires shell hooks and jiti" : undefined }, async () => {
+		const a = createRepo("pi-matrix-a-");
+		const b = createRepo("pi-matrix-b-");
+		const record = path.join(tempDir, "matrix-hooks.jsonl");
+		try {
+			for (const [repo, label, timeout] of [[a, "a", 3000], [b, "b", 5000]] as const) {
+				fs.mkdirSync(path.join(repo, ".pi"));
+				for (const phase of ["setup", "teardown"]) {
+					const hook = `${label}-${phase}.cjs`;
+					fs.writeFileSync(path.join(repo, hook), `#!${process.execPath}\nconst fs=require('node:fs'); const p=JSON.parse(fs.readFileSync(0,'utf8')); fs.appendFileSync(${JSON.stringify(record)},JSON.stringify({label:${JSON.stringify(label)},phase:${JSON.stringify(phase)},...p})+'\\n'); console.log('{}');\n`);
+					fs.chmodSync(path.join(repo, hook), 0o755);
+				}
+				fs.writeFileSync(path.join(repo, ".pi/settings.json"), JSON.stringify({ subagents: { executionBackend: "native", worktreeSetupHook: `./${label}-setup.cjs`, worktreeTeardownHook: `./${label}-teardown.cjs`, worktreeSetupHookTimeoutMs: timeout, worktreeTeardownHookTimeoutMs: timeout + 1000 } }));
+				git(repo, ["add", "."]); git(repo, ["commit", "-m", "Configure matrix project"]);
+			}
+			for (let i = 0; i < 5; i++) mockPi.onCall({ output: "Project ran", echoCwd: true });
+			const id = `matrix-static-${Date.now().toString(36)}`;
+			const leaf = { agent: "worker", task: "Inspect", output: false, progress: false };
+			const started = executeAsyncChain(id, {
+				ctx: { pi: { events: { emit() {} } }, cwd: a, currentSessionId: "matrix", executionBackend: "matrix-a-probe" },
+				chain: [
+					{ cwd: a, parallel: [leaf], worktree: true },
+					{ cwd: b, parallel: [leaf], worktree: true },
+					{ ...leaf, cwd: b },
+					{ cwd: b, parallel: [leaf, { ...leaf, cwd: a }], concurrency: 1 },
+				], agents: [makeAgent("worker", { completionGuard: false })],
+				artifactConfig: { enabled: false }, shareEnabled: false, maxSubagentDepth: 2,
+			});
+			assert.ok(!started.isError, started.content[0]?.text);
+			const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf8"));
+			assert.deepEqual(payload.results.map((r: any) => r.success), [true, true, true, true, true], JSON.stringify(payload));
+			assert.equal(mockPi.callCount(), 5);
+			assert.ok(payload.results[4].output.includes(fs.realpathSync(a)));
+			for (const index of [2, 3]) assert.ok(payload.results[index].output.includes(fs.realpathSync(b)));
+			const records = fs.readFileSync(record, "utf8").trim().split("\n").map(line => JSON.parse(line));
+			assert.equal(records.length, 4);
+			for (const [repo, label] of [[a, "a"], [b, "b"]]) {
+				const rows = records.filter(p => p.repoRoot === fs.realpathSync(repo));
+				assert.equal(rows.length, 2);
+				assert.ok(rows.every(p => p.label === label));
+				assert.deepEqual(rows.map(p => p.phase), ["setup", "teardown"]);
+				assert.equal(new Set(rows.map(p => p.worktreePath)).size, 1);
+				assert.ok(rows.every(p => !fs.existsSync(p.worktreePath)));
+				assert.doesNotMatch(git(repo, ["worktree", "list", "--porcelain"]), /pi-worktree-/);
+			}
+			const aSettingsPath = path.join(a, ".pi/settings.json");
+			const aSettings = JSON.parse(fs.readFileSync(aSettingsPath, "utf8"));
+			aSettings.subagents.executionBackend = "matrix-a-probe";
+			fs.writeFileSync(aSettingsPath, JSON.stringify(aSettings));
+			mockPi.onCall({ output: "B sequential", echoCwd: true });
+			mockPi.onCall({ output: "B parallel", echoCwd: true });
+			const policyId = `${id}-leaf-policy`;
+			const policyStarted = executeAsyncChain(policyId, {
+				ctx: { pi: { events: { emit() {} } }, cwd: a, currentSessionId: "matrix-policy", executionBackend: "matrix-a-probe" },
+				chain: [{ ...leaf, cwd: b }, { cwd: b, parallel: [leaf, { ...leaf, cwd: a }], concurrency: 1 }],
+				agents: [makeAgent("worker", { completionGuard: false })], artifactConfig: { enabled: false }, shareEnabled: false, maxSubagentDepth: 2,
+			});
+			assert.ok(!policyStarted.isError, policyStarted.content[0]?.text);
+			const serialized = JSON.parse(fs.readFileSync(typesMod!.getAsyncConfigPath(policyId), "utf8"));
+			assert.deepEqual(serialized.executionBackends, { protocolVersion: 1, userPreference: "matrix-a-probe", registrations: [] });
+			assert.equal("jobCwd" in serialized, false);
+			assert.ok(serialized.steps.every((step: any) => !("jobCwd" in step)));
+			const policyPayload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(policyId), "utf8"));
+			assert.deepEqual(policyPayload.results.map((r: any) => r.success), [true, true, false], JSON.stringify(policyPayload));
+			assert.match(policyPayload.results[2].error, /Execution backend selection failed/);
+			assert.equal(mockPi.callCount(), 7);
+			assert.equal(fs.readFileSync(record, "utf8").trim().split("\n").length, 4);
+		} finally { removeTempDir(a); removeTempDir(b); }
+	});
+
+	for (const policy of ["same sparse", "same defined", "other sparse", "other defined", "malformed profile"] as const) {
+		it(`async tree cwd backend policy ${policy}`, async () => {
+			const runner = await import("../../src/runs/background/subagent-runner.ts");
+			const { getAgentDir } = await import("../../src/shared/agent-dir.ts");
+			const job = createRepo("pi-policy-job-");
+			const other = createRepo("pi-policy-other-");
+			const profile = path.join(getAgentDir(), "settings.json");
+			const saved = fs.existsSync(profile) ? fs.readFileSync(profile) : undefined;
+			try {
+				fs.mkdirSync(path.dirname(profile), { recursive: true });
+				fs.writeFileSync(profile, policy === "malformed profile" ? "{" : "{}");
+				const unit = policy.startsWith("other") ? other : job;
+				if (policy.endsWith("defined")) {
+					fs.mkdirSync(path.join(unit, ".pi"));
+					fs.writeFileSync(path.join(unit, ".pi/settings.json"), JSON.stringify({ subagents: { executionBackend: "unit-probe" } }));
+				}
+				const preferences: unknown[] = [];
+				const result = await runner.runSingleStep({ agent: "worker", task: "Probe", cwd: unit, sessionFile: path.join(tempDir, "policy.jsonl") }, {
+					cwd: unit, jobCwd: job, previousOutput: "", placeholder: "{previous}", sessionEnabled: false,
+					id: "policy", flatIndex: 0, flatStepCount: 1, outputFile: path.join(tempDir, "policy.log"), runtime: mockPi.runtime,
+					executionBackendConfig: { protocolVersion: 1, registrations: [], userPreference: "job-probe" },
+					executionBackendCoordinator: { async prepare(preference) { preferences.push(preference); throw new Error("probe"); } } as any,
+				});
+				assert.equal(result.exitCode, 1);
+				assert.equal(result.sessionFile, path.join(tempDir, "policy.jsonl"));
+				assert.deepEqual(preferences, policy === "malformed profile" ? [] : [policy.endsWith("defined") ? "unit-probe" : policy === "same sparse" ? "job-probe" : "auto"]);
+				assert.equal(mockPi.callCount(), 0);
+			} finally {
+				if (saved) fs.writeFileSync(profile, saved); else fs.rmSync(profile, { force: true });
+				removeTempDir(job); removeTempDir(other);
+			}
+		});
+	}
+
 	for (const failure of ["add", "apply", "backend"] as const) {
-		it(`runSingleStep resolves trees before ${failure === "backend" ? "backend selection" : `git ${failure} failure`}`, async () => {
+		it(`async tree cwd runSingleStep resolves trees before ${failure === "backend" ? "backend selection" : `git ${failure} failure`}`, async () => {
 			const runner = await tryImport<typeof import("../../src/runs/background/subagent-runner.ts")>("./src/runs/background/subagent-runner.ts");
 			const chainOutputs = await tryImport<typeof import("../../src/runs/shared/chain-outputs.ts")>("./src/runs/shared/chain-outputs.ts");
 			const worktree = await tryImport<typeof import("../../src/runs/shared/worktree.ts")>("./src/runs/shared/worktree.ts");
@@ -1358,20 +1615,65 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		});
 	}
 
-	for (const mode of ["normal", "nonzero", "empty", "single"]) {
+	for (const policy of ["same sparse", "other sparse", "other hooks", "other invalid"] as const) {
+		it(`async teardown group policy ${policy}`, { skip: process.platform === "win32" || !isAsyncAvailable() }, async () => {
+			const job = createRepo("pi-group-job-");
+			const other = createRepo("pi-group-other-");
+			const unit = policy === "same sparse" ? job : other;
+			const record = path.join(tempDir, "group-hooks.jsonl");
+			const hook = path.join(unit, "hook.cjs");
+			fs.writeFileSync(hook, `#!${process.execPath}\nconst fs = require('node:fs'); const p = JSON.parse(fs.readFileSync(0, 'utf8')); fs.appendFileSync(${JSON.stringify(record)}, JSON.stringify(p)+'\\n'); console.log('{}');\n`);
+			fs.chmodSync(hook, 0o755);
+			fs.mkdirSync(path.join(unit, ".pi"));
+			fs.writeFileSync(path.join(unit, ".pi/settings.json"), JSON.stringify({ subagents: policy === "other hooks" || policy === "other invalid" ? {
+				worktreeSetupHook: "./hook.cjs", worktreeTeardownHook: "./hook.cjs",
+				worktreeSetupHookTimeoutMs: policy === "other invalid" ? 0 : 5000,
+			} : {} }));
+			git(unit, ["add", "."]); git(unit, ["commit", "-m", "Configure group hooks"]);
+			try {
+				mockPi.onCall({ output: "first" }); mockPi.onCall({ output: "second" });
+				const id = `group-policy-${policy.replaceAll(" ", "-")}-${Date.now().toString(36)}`;
+				const started = executeAsyncChain(id, {
+					ctx: { pi: { events: { emit() {} } }, cwd: job, currentSessionId: "group-policy" },
+					chain: [{ cwd: unit, parallel: [{ agent: "worker", task: "One", progress: false }, { agent: "worker", task: "Two", progress: false }], worktree: true }],
+					agents: [makeAgent("worker")], worktreeSetupHook: hook, worktreeTeardownHook: hook,
+					artifactConfig: { enabled: false }, shareEnabled: false, maxSubagentDepth: 2,
+				});
+				assert.ok(!started.isError, started.content[0]?.text);
+				const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf8"));
+				assert.equal(payload.success, policy !== "other invalid", JSON.stringify(payload));
+				if (policy === "other invalid") {
+					assert.equal(mockPi.callCount(), 0);
+					assert.match(payload.results[0].output, /timeout must be an integer greater than 0/);
+				}
+				const records = fs.existsSync(record) ? fs.readFileSync(record, "utf8").trim().split("\n").map(line => JSON.parse(line)) : [];
+				assert.equal(records.length, ["same sparse", "other hooks"].includes(policy) ? 4 : 0);
+				for (const p of records) { assert.equal(p.repoRoot, fs.realpathSync(unit)); assert.equal(fs.existsSync(p.worktreePath), false); }
+				assert.doesNotMatch(git(unit, ["worktree", "list", "--porcelain"]), /pi-worktree-/);
+			} finally { removeTempDir(job); removeTempDir(other); }
+		});
+	}
+
+	for (const mode of ["normal", "nonzero", "timeout", "empty", "single"]) {
 		it(`async teardown settings survive serialization (${mode})`, { skip: (!["empty", "single"].includes(mode) && process.platform === "win32") || !isAsyncAvailable() }, async () => {
 			const repo = createRepo("pi-teardown-async-");
 			const record = path.join(tempDir, "teardown.jsonl");
-			const hook = path.join(tempDir, "teardown.cjs");
-			fs.writeFileSync(hook, `#!${process.execPath}\nconst fs = require('node:fs'); const p = JSON.parse(fs.readFileSync(0, 'utf8')); if (!fs.existsSync(p.worktreePath) || process.cwd() !== fs.realpathSync(p.worktreePath)) process.exit(9); fs.appendFileSync(${JSON.stringify(record)}, JSON.stringify(p)+'\\n'); ${mode === "nonzero" ? "process.exit(7)" : ""}\n`);
+			const hook = path.join(repo, "teardown.cjs");
+			fs.writeFileSync(hook, `#!${process.execPath}\nconst fs = require('node:fs'); const p = JSON.parse(fs.readFileSync(0, 'utf8')); if (!fs.existsSync(p.worktreePath) || process.cwd() !== fs.realpathSync(p.worktreePath)) process.exit(9); fs.appendFileSync(${JSON.stringify(record)}, JSON.stringify(p)+'\\n'); ${mode === "nonzero" ? "process.exit(7)" : mode === "timeout" ? "setInterval(() => {}, 1000)" : ""}\n`);
 			fs.chmodSync(hook, 0o755);
+			fs.mkdirSync(path.join(repo, ".pi"));
+			fs.writeFileSync(path.join(repo, ".pi/settings.json"), JSON.stringify({ subagents: {
+				worktreeTeardownHook: mode === "empty" ? "" : "./teardown.cjs", worktreeTeardownHookTimeoutMs: mode === "timeout" ? 500 : 5000,
+			} }));
+			git(repo, ["add", "."]);
+			git(repo, ["commit", "-m", "Configure project hooks"]);
 			const id = `teardown-${mode}-${Date.now().toString(36)}`;
 			try {
 				mockPi.onCall({ output: "async teardown success" });
 				const params = {
 					ctx: { pi: { events: { emit() {} } }, cwd: repo, currentSessionId: "teardown" },
-					worktreeTeardownHook: mode === "empty" ? "" : hook,
-					worktreeTeardownHookTimeoutMs: mode === "empty" ? -1 : 5000,
+					worktreeTeardownHook: mode === "single" ? hook : "./missing-serialized-hook",
+					worktreeTeardownHookTimeoutMs: 5000,
 					artifactConfig: { enabled: false }, shareEnabled: false, maxSubagentDepth: 2,
 				};
 				const started = mode === "single"
@@ -1398,11 +1700,11 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 					assert.equal(p.repoRoot, fs.realpathSync(repo)); assert.equal(p.agentCwd, p.worktreePath);
 					assert.equal(p.runId, `${id}-s0`); assert.equal(p.baseCommit, git(repo, ["rev-parse", "HEAD"]));
 					assert.equal(fs.existsSync(p.worktreePath), false); assert.equal(git(repo, ["branch", "--list", p.branch]), "");
-					if (mode === "nonzero") {
+					if (mode === "nonzero" || mode === "timeout") {
 						const logPath = path.join(ASYNC_DIR!, id, "runner.log");
 						let log = "";
 						while (!log.split("\n").some((line) =>
-							line.includes("worktree teardown hook") && line.includes(p.worktreePath) && /exit\s+code\s+7\b/i.test(line))) {
+							line.includes("worktree teardown hook") && line.includes(p.worktreePath) && (mode === "nonzero" ? /exit\s+code\s+7\b/i : /timed out/i).test(line))) {
 							assert.ok(Date.now() < deadline, `missing teardown warning: ${log}`);
 							await new Promise((resolve) => setTimeout(resolve, 20));
 							log = fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf8") : "";
@@ -1420,8 +1722,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			const executor = createSubagentExecutor!({
 				pi: { events: createEventBus(), getSessionName: () => undefined },
 				state: { baseCwd: repoDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
-				config: {},
-				asyncByDefault: false,
+				resolveConfig: () => ({}),
 				tempArtifactsDir: repoDir,
 				getSubagentSessionRoot: () => repoDir,
 				expandTilde: (p: string) => p,
@@ -1479,8 +1780,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			const executor = createSubagentExecutor!({
 				pi: { events: createEventBus(), getSessionName: () => undefined },
 				state: { baseCwd: repoDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
-				config: {},
-				asyncByDefault: false,
+				resolveConfig: () => ({}),
 				tempArtifactsDir: repoDir,
 				getSubagentSessionRoot: () => repoDir,
 				expandTilde: (p: string) => p,

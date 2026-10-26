@@ -1,12 +1,24 @@
 import assert from "node:assert/strict";
-import { describe, it, after } from "node:test";
+import { describe, it, after, beforeEach, afterEach } from "node:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { readProjectExecutionBackend } from "../../src/agents/agents.ts";
+import { resolveExtensionConfig } from "../../src/agents/agents.ts";
+import { resolveCurrentMaxSubagentDepth, resolveTopLevelParallelMaxTasks } from "../../src/shared/types.ts";
 
-describe("execution backend project settings", () => {
+describe("extension settings ladder", () => {
 	let tempDirs: string[] = [];
+	let previousProfile: string | undefined;
+	let profile: string;
+	beforeEach(() => {
+		previousProfile = process.env.PI_CODING_AGENT_DIR;
+		profile = createTempRepo();
+		process.env.PI_CODING_AGENT_DIR = profile;
+	});
+	afterEach(() => {
+		if (previousProfile === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousProfile;
+	});
 
 	after(() => {
 		for (const dir of tempDirs) {
@@ -28,16 +40,23 @@ describe("execution backend project settings", () => {
 		fs.writeFileSync(path.join(settingsDir, "settings.json"), JSON.stringify({ subagents: settings }));
 	}
 
-	it("returns undefined when no settings exist", () => {
-		const repoDir = createTempRepo();
-		const result = readProjectExecutionBackend(repoDir);
-		assert.equal(result, undefined);
+	it("leaves depth and parallel defaults in consumers", () => {
+		const config = resolveExtensionConfig(createTempRepo());
+		assert.deepEqual(config, {});
+		const previous = process.env.PI_SUBAGENT_MAX_DEPTH;
+		delete process.env.PI_SUBAGENT_MAX_DEPTH;
+		try {
+			assert.equal(resolveCurrentMaxSubagentDepth(config.maxSubagentDepth), 2);
+		} finally {
+			if (previous !== undefined) process.env.PI_SUBAGENT_MAX_DEPTH = previous;
+		}
+		assert.equal(resolveTopLevelParallelMaxTasks(config.parallel?.maxTasks), 8);
 	});
 
 	it("reads executionBackend from root level", () => {
 		const repoDir = createTempRepo();
 		writeProjectSettings(repoDir, ".", { executionBackend: "test-backend" });
-		const result = readProjectExecutionBackend(repoDir);
+		const result = resolveExtensionConfig(repoDir).executionBackend;
 		assert.equal(result, "test-backend");
 	});
 
@@ -49,7 +68,7 @@ describe("execution backend project settings", () => {
 		writeProjectSettings(repoDir, ".", { executionBackend: "root-backend" });
 		writeProjectSettings(repoDir, "nested", { executionBackend: "nested-backend" });
 
-		const result = readProjectExecutionBackend(subdir);
+		const result = resolveExtensionConfig(subdir).executionBackend;
 		assert.equal(result, "nested-backend");
 	});
 
@@ -61,7 +80,7 @@ describe("execution backend project settings", () => {
 		writeProjectSettings(repoDir, ".", { executionBackend: "root-backend" });
 		// nested level has no .pi/settings.json
 
-		const result = readProjectExecutionBackend(subdir);
+		const result = resolveExtensionConfig(subdir).executionBackend;
 		assert.equal(result, "root-backend");
 	});
 
@@ -76,21 +95,21 @@ describe("execution backend project settings", () => {
 		fs.mkdirSync(nestedDir, { recursive: true });
 		fs.writeFileSync(path.join(nestedDir, "settings.json"), "{ invalid json");
 
-		const result = readProjectExecutionBackend(subdir);
+		const result = resolveExtensionConfig(subdir).executionBackend;
 		assert.equal(result, "root-backend");
 	});
 
 	it("normalizes string value by trimming whitespace", () => {
 		const repoDir = createTempRepo();
 		writeProjectSettings(repoDir, ".", { executionBackend: "  spaced  " });
-		const result = readProjectExecutionBackend(repoDir);
+		const result = resolveExtensionConfig(repoDir).executionBackend;
 		assert.equal(result, "spaced");
 	});
 
 	it("returns undefined when executionBackend is not in subagents settings", () => {
 		const repoDir = createTempRepo();
 		writeProjectSettings(repoDir, ".", { disableBuiltins: true });
-		const result = readProjectExecutionBackend(repoDir);
+		const result = resolveExtensionConfig(repoDir).executionBackend;
 		assert.equal(result, undefined);
 	});
 
@@ -104,7 +123,7 @@ describe("execution backend project settings", () => {
 		writeProjectSettings(repoDir, "middle", { executionBackend: "middle" });
 		// deepest has no setting
 
-		const result = readProjectExecutionBackend(deepest);
+		const result = resolveExtensionConfig(deepest).executionBackend;
 		assert.equal(result, "middle");
 	});
 
@@ -121,7 +140,7 @@ describe("execution backend project settings", () => {
 		const unrelatedParent = createTempRepo();
 		writeProjectSettings(unrelatedParent, ".", { executionBackend: "unrelated" });
 
-		const result = readProjectExecutionBackend(nested);
+		const result = resolveExtensionConfig(nested).executionBackend;
 		assert.equal(result, "nested-backend");
 	});
 
@@ -132,7 +151,7 @@ describe("execution backend project settings", () => {
 		fs.writeFileSync(path.join(settingsDir, "settings.json"), JSON.stringify({ subagents: { executionBackend: "" } }));
 
 		assert.throws(
-			() => readProjectExecutionBackend(repoDir),
+			() => resolveExtensionConfig(repoDir).executionBackend,
 			/must not be blank/i,
 		);
 	});
@@ -144,7 +163,7 @@ describe("execution backend project settings", () => {
 		fs.writeFileSync(path.join(settingsDir, "settings.json"), JSON.stringify({ subagents: { executionBackend: "  \t  " } }));
 
 		assert.throws(
-			() => readProjectExecutionBackend(repoDir),
+			() => resolveExtensionConfig(repoDir).executionBackend,
 			/must not be blank/i,
 		);
 	});
@@ -156,8 +175,92 @@ describe("execution backend project settings", () => {
 		fs.writeFileSync(path.join(settingsDir, "settings.json"), JSON.stringify({ subagents: { executionBackend: 123 } }));
 
 		assert.throws(
-			() => readProjectExecutionBackend(repoDir),
+			() => resolveExtensionConfig(repoDir).executionBackend,
 			/invalid.*executionBackend/i,
 		);
 	});
+	const rows = [
+		["asyncByDefault", true, false, true],
+		["forceTopLevelAsync", false, true, false],
+		["showRosterOnStart", true, false, true],
+		["forwardParentFlags", false, true, false],
+		["defaultSessionDir", "profile", "root", "nearest"],
+		["maxSubagentDepth", 1, 2, 3],
+		["control", { a: 1 }, { b: 2 }, { c: 3 }],
+		["parallel", { maxTasks: 1, concurrency: 1 }, { maxTasks: 2 }, { concurrency: 3 }],
+		["chain", { dynamicFanout: { maxItems: 1 } }, { other: 2 }, {}],
+		["worktreeSetupHook", "profile", "root", "nearest"],
+		["worktreeTeardownHook", "profile", "root", "nearest"],
+		["worktreeSetupHookTimeoutMs", 1, 2, 3],
+		["worktreeTeardownHookTimeoutMs", 4, 5, 6],
+		["executionBackend", "profile", "root", "nearest"],
+	] as const;
+	for (const [key, user, root, nearest] of rows) {
+		it(`resolves sparse ${key} through nearest, root, profile, absence`, () => {
+			const repo = createTempRepo();
+			const nested = path.join(repo, "nested");
+			fs.mkdirSync(nested);
+			const profilePath = path.join(profile, "settings.json");
+			fs.writeFileSync(profilePath, JSON.stringify({ subagents: { [key]: user, disableBuiltins: true, agentOverrides: {} } }));
+			writeProjectSettings(repo, ".", { [key]: root });
+			writeProjectSettings(repo, "nested", { [key]: nearest });
+			assert.deepEqual(resolveExtensionConfig(nested), { [key]: nearest });
+			fs.unlinkSync(path.join(nested, ".pi", "settings.json"));
+			assert.deepEqual(resolveExtensionConfig(nested), { [key]: root });
+			fs.unlinkSync(path.join(repo, ".pi", "settings.json"));
+			assert.deepEqual(resolveExtensionConfig(nested), { [key]: user });
+			fs.unlinkSync(profilePath);
+			assert.deepEqual(resolveExtensionConfig(nested), {});
+		});
+	}
+
+	for (const [key, invalid] of [
+		["asyncByDefault", "true"], ["forceTopLevelAsync", 1],
+		["showRosterOnStart", null], ["forwardParentFlags", {}],
+		["defaultSessionDir", false], ["worktreeSetupHook", []], ["worktreeTeardownHook", 1],
+		["maxSubagentDepth", -1], ["maxSubagentDepth", 1.5], ["maxSubagentDepth", "2"],
+		["control", null], ["parallel", []], ["chain", "bad"],
+	] as const) {
+		it(`warns per read and drops only invalid ${key}=${JSON.stringify(invalid)}`, () => {
+			const repo = createTempRepo();
+			writeProjectSettings(repo, ".", { [key]: invalid, executionBackend: "native" });
+			const warnings: string[] = [];
+			const warn = console.warn;
+			console.warn = (message) => warnings.push(String(message));
+			try {
+				for (let read = 0; read < 2; read++) assert.deepEqual(resolveExtensionConfig(repo), { executionBackend: "native" });
+			} finally { console.warn = warn; }
+			assert.equal(warnings.length, 2);
+			for (const warning of warnings) {
+				assert.ok(warning.includes(path.join(repo, ".pi", "settings.json")));
+				assert.ok(warning.includes(key));
+			}
+		});
+	}
+	for (const value of [0, -1, 1.5, "invalid"]) {
+		it(`preserves timeout ${value} for consumer validation`, () => {
+			const repo = createTempRepo();
+			writeProjectSettings(repo, ".", { worktreeSetupHookTimeoutMs: value, worktreeTeardownHookTimeoutMs: value });
+			assert.deepEqual(resolveExtensionConfig(repo), { worktreeSetupHookTimeoutMs: value, worktreeTeardownHookTimeoutMs: value });
+		});
+	}
+	it("preserves empty hook paths", () => {
+		const repo = createTempRepo();
+		writeProjectSettings(repo, ".", { worktreeSetupHook: "", worktreeTeardownHook: "" });
+		assert.deepEqual(resolveExtensionConfig(repo), { worktreeSetupHook: "", worktreeTeardownHook: "" });
+	});
+	it("throws on malformed profile JSON", () => {
+		fs.writeFileSync(path.join(profile, "settings.json"), "{");
+		assert.throws(() => resolveExtensionConfig(createTempRepo()));
+	});
+	it("reads a marked non-git ancestor but not an unmarked cwd", () => {
+		const repo = createTempRepo();
+		fs.rmdirSync(path.join(repo, ".git"));
+		const nested = path.join(repo, "nested");
+		fs.mkdirSync(nested);
+		assert.deepEqual(resolveExtensionConfig(nested), {});
+		writeProjectSettings(repo, ".", { maxSubagentDepth: 0 });
+		assert.deepEqual(resolveExtensionConfig(nested), { maxSubagentDepth: 0 });
+	});
+
 });

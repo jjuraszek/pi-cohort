@@ -167,8 +167,7 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		return createSubagentExecutor!({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
 			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
-			config: {},
-			asyncByDefault: false,
+			resolveConfig: () => ({}),
 			tempArtifactsDir: tempDir,
 			getSubagentSessionRoot: () => tempDir,
 			expandTilde: (value: string) => value,
@@ -184,7 +183,7 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		fs.writeFileSync(path.join(base, "existing.jsonl"), "keep existing\n");
 		const executor = executorMod!.createSubagentExecutor({
 			captureRuntime: () => { captures++; return mockPi.captureRuntime(); },
-			pi: { events: createEventBus(), getSessionName: () => undefined }, state, config: {}, asyncByDefault: false,
+			pi: { events: createEventBus(), getSessionName: () => undefined }, state, resolveConfig: () => ({}),
 			tempArtifactsDir: tempDir, getSubagentSessionRoot: () => tempDir,
 			expandTilde: value => value, discoverAgents: () => ({ agents: [makeAgent("echo")] }),
 		});

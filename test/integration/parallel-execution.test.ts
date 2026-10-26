@@ -28,6 +28,7 @@ import {
 	removeTempDir,
 	tryImport,
 } from "../support/helpers.ts";
+import { resolveExtensionConfig } from "../../src/agents/agents.ts";
 import { resolveExpectedWorktreeAgentCwd } from "../../src/runs/shared/worktree.ts";
 
 // Top-level await: try importing pi-dependent modules
@@ -129,8 +130,7 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 		return createSubagentExecutor({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
 			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
-			config: {},
-			asyncByDefault: false,
+			resolveConfig: () => ({}),
 			tempArtifactsDir: tempDir,
 			getSubagentSessionRoot: () => tempDir,
 			expandTilde: (value: string) => value,
@@ -602,8 +602,7 @@ function makeExecutorForImpl(cwd: string, agents, captureRuntime) {
 		captureRuntime,
 		pi: { events: createEventBus(), getSessionName: () => undefined },
 		state,
-		config: {},
-		asyncByDefault: false,
+		resolveConfig: () => ({}),
 		tempArtifactsDir: cwd,
 		getSubagentSessionRoot: () => cwd,
 		expandTilde: (value: string) => value,
@@ -638,13 +637,16 @@ describe("parallel worktree artifact scoping", { skip: !piAvailable || !createSu
 		mockPi.reset();
 	});
 
-	for (const terminal of ["normal", "error", "abort", "nonzero", "timeout", "empty", "absent", "invalid-path", "invalid-timeout", "invalid-whitespace"]) {
-		it(`forwards teardown configuration on ${terminal}`, { skip: ["empty", "absent", "invalid-path", "invalid-timeout", "invalid-whitespace"].includes(terminal) ? undefined : hookScriptSkip }, async () => {
+	for (const terminal of ["normal", "error", "abort", "nonzero", "timeout", "empty", "absent", "invalid-path", "invalid-timeout", "invalid-timeout-zero", "invalid-timeout-fraction", "invalid-timeout-string", "invalid-whitespace"]) {
+		it(`forwards teardown configuration on ${terminal}`, { skip: ["empty", "absent", "invalid-path", "invalid-timeout", "invalid-timeout-zero", "invalid-timeout-fraction", "invalid-timeout-string", "invalid-whitespace"].includes(terminal) ? undefined : hookScriptSkip }, async () => {
 			const repo = createParallelRepo("pi-teardown-parallel-");
 			const hooks = fs.mkdtempSync(path.join(os.tmpdir(), "pi-teardown-hooks-"));
 			const record = path.join(hooks, "records.jsonl");
 			const hook = path.join(hooks, "hook.cjs");
 			fs.writeFileSync(hook, `#!${process.execPath}\nconst fs = require('node:fs'); const p = JSON.parse(fs.readFileSync(0, 'utf8')); if (!fs.existsSync(p.worktreePath) || process.cwd() !== fs.realpathSync(p.worktreePath)) process.exit(9); fs.appendFileSync(${JSON.stringify(record)}, JSON.stringify(p)+'\\n'); ${terminal === "nonzero" ? "process.exit(7)" : terminal === "timeout" ? "setInterval(() => {}, 1000)" : ""}\n`);
+			if (terminal === "timeout") {
+				fs.writeFileSync(hook, `#!/bin/sh\npayload=$(cat)\ncheckout=$(printf '%s' "$payload" | sed 's/.*"worktreePath":"\\([^" ]*\\)".*/\\1/')\n[ -d "$checkout" ] && [ "$(pwd -P)" = "$(cd "$checkout" && pwd -P)" ] || exit 9\nprintf '%s\\n' "$payload" >> '${record}'\nwhile :; do :; done\n`);
+			}
 			fs.chmodSync(hook, 0o755);
 			const controller = new AbortController();
 			let pending: Promise<any> | undefined;
@@ -664,12 +666,16 @@ describe("parallel worktree artifact scoping", { skip: !piAvailable || !createSu
 				mockPi.onCall(terminal === "abort" ? { delay: 10_000 } : terminal === "error" ? { exitCode: 1, stderr: "teardown-task-error" } : { output: "teardown success" });
 				const config = {
 					worktreeTeardownHook: terminal === "empty" ? "" : terminal === "absent" ? undefined : terminal === "invalid-path" ? "missing-hook" : terminal === "invalid-whitespace" ? "   " : hook,
-					worktreeTeardownHookTimeoutMs: ["empty", "absent", "invalid-timeout"].includes(terminal) ? -1 : terminal === "timeout" ? 1500 : 5000,
+					worktreeTeardownHookTimeoutMs: terminal === "invalid-timeout-zero" ? 0 : terminal === "invalid-timeout-fraction" ? 1.5 : terminal === "invalid-timeout-string" ? "bad" : ["empty", "absent", "invalid-timeout"].includes(terminal) ? -1 : terminal === "timeout" ? 1500 : 5000,
 				};
+				fs.mkdirSync(path.join(repo, ".pi"), { recursive: true });
+				fs.writeFileSync(path.join(repo, ".pi", "settings.json"), JSON.stringify({ subagents: config }));
+				gitIn(repo, ["add", ".pi/settings.json"]);
+				gitIn(repo, ["commit", "-m", "configure worktree hooks"]);
 				const executor = createSubagentExecutor({
 					pi: { events: createEventBus(), getSessionName: () => undefined },
 					state: { baseCwd: repo, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
-					config, asyncByDefault: false, tempArtifactsDir: repo, getSubagentSessionRoot: () => repo,
+					resolveConfig: resolveExtensionConfig, tempArtifactsDir: repo, getSubagentSessionRoot: () => repo,
 					expandTilde: (value: string) => value, discoverAgents: () => ({ agents: [makeAgent("worker")] }),
 				});
 				pending = executor.execute(`teardown-${terminal}`, { tasks: [{ agent: "worker", task: "Work", count: terminal === "normal" ? 2 : 1, output: "report.md" }], worktree: true }, controller.signal, undefined, makeMinimalCtx(repo));
@@ -684,7 +690,7 @@ describe("parallel worktree artifact scoping", { skip: !piAvailable || !createSu
 				const result = await pending;
 				if (terminal.startsWith("invalid")) {
 					assert.equal(result.isError, true);
-					assert.match(result.content[0].text, terminal === "invalid-timeout" ? /worktree teardown hook timeout must be an integer greater than 0/ : /worktree teardown hook/);
+					assert.match(result.content[0].text, terminal.startsWith("invalid-timeout") ? /worktree teardown hook timeout must be an integer greater than 0/ : /worktree teardown hook/);
 					assert.equal(mockPi.callCount(), 0);
 				} else {
 					assert.equal(result.isError, undefined);
@@ -700,7 +706,7 @@ describe("parallel worktree artifact scoping", { skip: !piAvailable || !createSu
 					}
 				}
 				const records = fs.existsSync(record) ? fs.readFileSync(record, "utf8").trim().split("\n").map((line) => JSON.parse(line)) : [];
-				const expected = ["empty", "absent", "invalid-path", "invalid-timeout", "invalid-whitespace"].includes(terminal) ? 0 : terminal === "normal" ? 2 : 1;
+				const expected = ["empty", "absent", "invalid-path", "invalid-timeout", "invalid-timeout-zero", "invalid-timeout-fraction", "invalid-timeout-string", "invalid-whitespace"].includes(terminal) ? 0 : terminal === "normal" ? 2 : 1;
 				assert.equal(records.length, expected);
 				assert.deepEqual(records.map((p) => p.index).sort(), Array.from({ length: expected }, (_, i) => i));
 				for (const p of records) {
@@ -884,8 +890,7 @@ describe("parallel worktree artifact scoping", { skip: !piAvailable || !createSu
 			const executor = createSubagentExecutor({
 				pi: { events: createEventBus(), getSessionName: () => undefined },
 				state,
-				config: { worktreeSetupHook: hookPath },
-				asyncByDefault: false,
+				resolveConfig: () => ({ worktreeSetupHook: hookPath }),
 				tempArtifactsDir: repoDir,
 				getSubagentSessionRoot: () => repoDir,
 				expandTilde: (value: string) => value,
@@ -951,4 +956,106 @@ describe("parallel worktree artifact scoping", { skip: !piAvailable || !createSu
 
 
 
+});
+
+describe("effective cwd settings", { skip: !piAvailable ? "pi packages not available" : hookScriptSkip }, () => {
+	let mockPi: MockPi;
+	let roots: string[];
+	before(() => { mockPi = createMockPi(); mockPi.install(); });
+	after(() => mockPi.uninstall());
+	beforeEach(() => { mockPi.reset(); roots = []; });
+	afterEach(() => { for (const root of roots) removeTempDir(root); });
+
+	function project(name: string, backend = "native") {
+		const root = createParallelRepo(`pi-settings-${name}-`);
+		roots.push(root);
+		fs.mkdirSync(path.join(root, ".pi"));
+		fs.writeFileSync(path.join(root, ".pi", "settings.json"), JSON.stringify({ subagents: { executionBackend: backend, worktreeSetupHook: "./setup.cjs", worktreeTeardownHook: "./teardown.cjs", worktreeSetupHookTimeoutMs: 5000, worktreeTeardownHookTimeoutMs: 5000 } }));
+		for (const kind of ["setup", "teardown"]) {
+			const hook = path.join(root, `${kind}.cjs`);
+			fs.writeFileSync(hook, `#!${process.execPath}\nconst fs = require('node:fs'); const p = JSON.parse(fs.readFileSync(0, 'utf8')); fs.appendFileSync(${JSON.stringify(path.join(root, "hooks.jsonl"))}, JSON.stringify({kind: ${JSON.stringify(kind)}, repoRoot: p.repoRoot, index: p.index})+'\\n'); ${kind === "setup" ? "fs.appendFileSync(require('node:path').join(p.worktreePath, 'input.md'), 'hook patch\\n'); console.log('{}');" : ""}\n`);
+			fs.chmodSync(hook, 0o755);
+		}
+		fs.writeFileSync(path.join(root, ".gitignore"), "hooks.jsonl\nsessions/\n");
+		gitIn(root, ["add", "-A"]);
+		gitIn(root, ["commit", "-m", "configure project settings"]);
+		return root;
+	}
+
+	function executor(root: string, reads: string[]) {
+		return createSubagentExecutor({
+			captureRuntime: mockPi.captureRuntime,
+			pi: { events: createEventBus(), getSessionName: () => undefined },
+			state: { baseCwd: root, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
+			resolveConfig: (cwd: string) => { reads.push(cwd); return resolveExtensionConfig(cwd); },
+			tempArtifactsDir: root, getSubagentSessionRoot: () => path.join(root, "sessions"),
+			expandTilde: (value: string) => value, discoverAgents: () => ({ agents: [makeAgent("worker")] }),
+		});
+	}
+
+	it("reuses single call settings and resolves mixed parallel and chain leaves before backend selection", async () => {
+		const a = project("a");
+		const b = project("b", "missing-settings-backend");
+		const reads: string[] = [];
+		const run = executor(a, reads);
+		const execute = (params) => run.execute("settings", { async: false, ...params }, new AbortController().signal, undefined, makeMinimalCtx(a));
+		mockPi.onCall({ echoCwd: true });
+		const single = await execute({ cwd: a, agent: "worker", task: "Work" });
+		assert.equal(single.isError, undefined);
+		assert.match(JSON.stringify(single), new RegExp(a));
+		assert.deepEqual(reads.splice(0), [a]);
+		const other = await execute({ cwd: b, agent: "worker", task: "Work" });
+		assert.match(JSON.stringify(other), /missing-settings-backend.*not registered/);
+		assert.deepEqual(reads.splice(0), [b]);
+		mockPi.onCall({ echoCwd: true });
+		const parallel = await execute({ tasks: [{ agent: "worker", task: "Work", cwd: a }, { agent: "worker", task: "Work", cwd: b }] });
+		assert.equal(parallel.details.results[0].exitCode, 0);
+		assert.match(parallel.details.results[1].error, /missing-settings-backend.*not registered/);
+		assert.deepEqual(reads.splice(0), [a, a, b]);
+		const chain = await execute({ chain: [{ agent: "worker", task: "Work", cwd: b }] });
+		assert.match(JSON.stringify(chain), /missing-settings-backend.*not registered/);
+		assert.deepEqual(reads, [a, b]);
+	});
+
+	it("non-worktree group resolves settings only at task cwd", async () => {
+		const a = project("call");
+		const group = project("group");
+		const task = project("task");
+		fs.writeFileSync(path.join(group, ".pi", "settings.json"), JSON.stringify({ subagents: { executionBackend: 42 } }));
+		const reads: string[] = [];
+		mockPi.onCall({ output: "done" });
+		mockPi.onCall({ output: "done" });
+		const result = await executor(a, reads).execute("group", {
+			async: false,
+			chain: [{ parallel: [{ agent: "worker", task: "Work", cwd: task }, { agent: "worker", task: "Work", cwd: task }], cwd: group }],
+		}, new AbortController().signal, undefined, makeMinimalCtx(a));
+		assert.equal(result.isError, undefined, JSON.stringify(result));
+		assert.equal(result.details.results.length, 2);
+		assert.ok(result.details.results.every((result) => result.exitCode === 0));
+		assert.equal(reads.includes(group), false);
+	});
+
+	it("resolves settings at the interpolated group cwd before the clean-tree check rejects a staged materialized tree", async () => {
+		const a = project("source");
+		const b = project("target");
+		const reads: string[] = [];
+		mockPi.onCall({ output: b });
+		mockPi.onCall({ output: "done" });
+		mockPi.onCall({ output: "done" });
+		const result = await executor(a, reads).execute("group", {
+			async: false,
+			chain: [{ parallel: [{ agent: "worker", task: "Select project", as: "target", output: false }], cwd: b, worktree: true }, { parallel: [{ agent: "worker", task: "Work" }, { agent: "worker", task: "Work" }], cwd: "{outputs.target.treePath}", worktree: true }],
+		}, new AbortController().signal, undefined, makeMinimalCtx(a));
+		assert.equal(result.isError, true, JSON.stringify(result));
+		assert.match(result.content[0].text, /worktree isolation requires a clean git working tree/);
+		assert.equal(result.details.results.length, 1);
+		assert.equal(fs.existsSync(path.join(a, "hooks.jsonl")), false);
+		const records = fs.readFileSync(path.join(b, "hooks.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+		assert.deepEqual(records.map((r) => r.kind), ["setup", "teardown"]);
+		assert.ok(records.every((r) => r.repoRoot === fs.realpathSync(b) && r.index === 0));
+		assert.deepEqual(reads.slice(0, 2), [a, b]);
+		assert.match(reads[3], /worktree-trees/);
+		assert.equal(reads[3], result.details.outputs.target.treePath);
+		assert.equal(reads.length, 4);
+	});
 });

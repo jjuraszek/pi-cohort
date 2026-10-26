@@ -63,41 +63,14 @@ describe("configured execution backend selection", () => {
 		assert.equal(selection.kind, "native");
 	});
 
-	it("nearest project level wins over user config", async () => {
-		const available = createFakeBackend("test-backend", { available: true, version: "1.0.0", capabilities: [] });
-		disposers.push(registerExecutionBackend(available));
-
-		const repoDir = createTempRepo();
-		writeProjectSettings(repoDir, ".", { executionBackend: "test-backend" });
-		const userConfig: ExtensionConfig = { executionBackend: "native" };
-
-		const { selection } = await selectConfiguredExecutionBackend({ cwd: repoDir, userConfig });
-		assert.equal(selection.kind, "external");
-		if (selection.kind === "external") {
-			assert.equal(selection.backend.name, "test-backend");
-		}
-	});
-
-	it("nearest project level wins over farther project level", async () => {
-		const alpha = createFakeBackend("alpha", { available: true, version: "1.0.0", capabilities: [] });
-		const beta = createFakeBackend("beta", { available: true, version: "1.0.0", capabilities: [] });
-		disposers.push(registerExecutionBackend(alpha));
-		disposers.push(registerExecutionBackend(beta));
-
-		const repoDir = createTempRepo();
-		const subdir = path.join(repoDir, "nested");
-		fs.mkdirSync(subdir, { recursive: true });
-
-		writeProjectSettings(repoDir, ".", { executionBackend: "alpha" });
-		writeProjectSettings(repoDir, "nested", { executionBackend: "beta" });
-		const userConfig: ExtensionConfig = { executionBackend: "native" };
-
-		const { selection } = await selectConfiguredExecutionBackend({ cwd: subdir, userConfig });
-		assert.equal(selection.kind, "external");
-		if (selection.kind === "external") {
-			assert.equal(selection.backend.name, "beta");
-		}
-	});
+	for (const projectValue of ["test-backend", "", 123]) {
+		it(`uses supplied preference without parsing project backend ${JSON.stringify(projectValue)}`, async () => {
+			const repoDir = createTempRepo();
+			writeProjectSettings(repoDir, ".", { executionBackend: projectValue });
+			const { selection } = await selectConfiguredExecutionBackend({ cwd: repoDir, userConfig: { executionBackend: "native" } });
+			assert.equal(selection.kind, "native");
+		});
+	}
 
 	it("user config wins when no project setting exists", async () => {
 		const available = createFakeBackend("test-backend", { available: true, version: "1.0.0", capabilities: [] });
@@ -127,16 +100,4 @@ describe("configured execution backend selection", () => {
 		}
 	});
 
-	it("invalid project setting throws before selection", async () => {
-		const repoDir = createTempRepo();
-		const settingsDir = path.join(repoDir, ".pi");
-		fs.mkdirSync(settingsDir, { recursive: true });
-		fs.writeFileSync(path.join(settingsDir, "settings.json"), JSON.stringify({ subagents: { executionBackend: "" } }));
-		const userConfig: ExtensionConfig = {};
-
-		await assert.rejects(
-			async () => selectConfiguredExecutionBackend({ cwd: repoDir, userConfig }),
-			/must not be blank/i,
-		);
-	});
 });
