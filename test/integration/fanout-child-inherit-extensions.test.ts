@@ -169,7 +169,7 @@ AgentSession.prototype.bindExtensions = async function(options) {
 	process.exit(0);
 };
 `);
-		const result = spawnSync(process.execPath, ["--import", preload, realPiEntry!, ...built.args], {
+		const result = spawnSync(process.execPath, ["--import", pathToFileURL(preload).href, realPiEntry!, ...built.args], {
 			cwd: tempDir,
 			env: { ...process.env, ...built.env, PI_SUBAGENT_DEPTH: "1" },
 			encoding: "utf-8", timeout: 20_000, maxBuffer: 1024 * 1024,
