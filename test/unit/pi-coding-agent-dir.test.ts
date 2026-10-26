@@ -4,10 +4,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { discoverAgents, discoverAgentsAll } from "../../src/agents/agents.ts";
+import { discoverAgents, discoverAgentsAll, resolveExtensionConfig } from "../../src/agents/agents.ts";
 import { handleCreate } from "../../src/agents/agent-management.ts";
 import { clearSkillCache, discoverAvailableSkills, resolveSkillPath } from "../../src/agents/skills.ts";
-import { loadConfig } from "../../src/extension/config.ts";
 import { loadRunsForAgent, recordRun } from "../../src/runs/shared/run-history.ts";
 import { cleanupAllArtifactDirs } from "../../src/shared/artifacts.ts";
 import { getAgentDir } from "../../src/shared/utils.ts";
@@ -117,12 +116,15 @@ describe("PI_CODING_AGENT_DIR runtime paths", () => {
 		assert.equal(getAgentDir(), path.join(os.homedir(), ".pi", "agent"));
 
 		process.env.PI_CODING_AGENT_DIR = agentDir;
-		const configPath = path.join(agentDir, "extensions", "pi-cohort", "config.json");
-		writeFile(configPath, JSON.stringify({ asyncByDefault: true, maxSubagentDepth: 3 }));
-
-		const config = loadConfig();
-		assert.equal(config.asyncByDefault, true);
-		assert.equal(config.maxSubagentDepth, 3);
+		writeFile(path.join(agentDir, "settings.json"), JSON.stringify({ subagents: {
+			asyncByDefault: true, parallel: { maxTasks: 2, concurrency: 1 }, worktreeSetupHook: "profile-hook",
+		} }));
+		writeFile(path.join(cwd, ".pi", "settings.json"), JSON.stringify({ subagents: {
+			asyncByDefault: false, parallel: { maxTasks: 3 }, worktreeSetupHook: "project-hook",
+		} }));
+		assert.deepEqual(resolveExtensionConfig(cwd), {
+			asyncByDefault: false, parallel: { maxTasks: 3 }, worktreeSetupHook: "project-hook",
+		});
 	});
 
 	it("discovers user agents, chains, and settings under the configured agent dir", () => {

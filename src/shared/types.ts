@@ -859,6 +859,7 @@ interface ExtensionChainConfig {
 	};
 }
 
+/** Sparse extension settings resolved from settings.json#subagents. */
 export interface ExtensionConfig {
 	asyncByDefault?: boolean;
 	forceTopLevelAsync?: boolean;
