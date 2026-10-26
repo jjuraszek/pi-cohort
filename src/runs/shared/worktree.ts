@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import * as fs from "node:fs";
+import fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -10,6 +10,8 @@ export interface WorktreeSetup {
 }
 
 interface WorktreeInfo {
+	hookInput: WorktreeSetupHookInput;
+	teardownHook?: ResolvedWorktreeTeardownHook;
 	path: string;
 	agentCwd: string;
 	branch: string;
@@ -41,7 +43,18 @@ interface WorktreeSetupHookConfig {
 	timeoutMs?: number;
 }
 
+interface WorktreeTeardownHookConfig {
+	hookPath: string;
+	timeoutMs?: number;
+}
+
+interface ResolvedWorktreeTeardownHook {
+	hookPath: string;
+	timeoutMs: number;
+}
+
 interface CreateWorktreesOptions {
+	teardownHook?: WorktreeTeardownHookConfig;
 	agents?: string[];
 	setupHook?: WorktreeSetupHookConfig;
 }
@@ -229,6 +242,43 @@ function resolveWorktreeSetupHook(
 	};
 }
 
+function resolveWorktreeTeardownHook(
+	repoRoot: string,
+	config: WorktreeTeardownHookConfig | undefined,
+): ResolvedWorktreeTeardownHook | undefined {
+	if (!config) return undefined;
+	const hookPath = config.hookPath.trim();
+	if (!hookPath) {
+		throw new Error("worktree teardown hook path cannot be empty");
+	}
+
+	const expandedHookPath = hookPath.startsWith("~/") ? path.join(os.homedir(), hookPath.slice(2)) : hookPath;
+	let resolvedPath: string;
+	if (path.isAbsolute(expandedHookPath)) {
+		resolvedPath = expandedHookPath;
+	} else if (expandedHookPath.includes("/") || expandedHookPath.includes("\\")) {
+		resolvedPath = path.resolve(repoRoot, expandedHookPath);
+	} else {
+		throw new Error("worktree teardown hook must be an absolute path or a repo-relative path");
+	}
+
+	if (!fs.existsSync(resolvedPath)) {
+		throw new Error(`worktree teardown hook not found: ${resolvedPath}`);
+	}
+	if (fs.statSync(resolvedPath).isDirectory()) {
+		throw new Error(`worktree teardown hook must be a file, got directory: ${resolvedPath}`);
+	}
+
+	const timeoutMs = config.timeoutMs ?? 30000;
+	if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
+		throw new Error("worktree teardown hook timeout must be an integer greater than 0");
+	}
+	return {
+		hookPath: resolvedPath,
+		timeoutMs: timeoutMs,
+	};
+}
+
 function normalizeSyntheticPath(worktreePath: string, rawPath: string): string {
 	const trimmed = rawPath.trim();
 	if (!trimmed) throw new Error("synthetic path cannot be empty");
@@ -313,6 +363,40 @@ function runWorktreeSetupHook(
 	return [...uniquePaths];
 }
 
+function warnWorktreeCleanup(message: string): void {
+	try { fs.write(2, message + "\n", () => {}); } catch {}
+}
+
+function runWorktreeTeardownHook(
+	hook: ResolvedWorktreeTeardownHook | undefined,
+	input: WorktreeSetupHookInput,
+): void {
+	if (!hook) return;
+	try {
+		const result = spawnSync(hook.hookPath, [], {
+			cwd: input.worktreePath,
+			encoding: "utf-8",
+			input: JSON.stringify(input),
+			timeout: hook.timeoutMs,
+			killSignal: "SIGKILL",
+			shell: false,
+			stdio: ["pipe", "ignore", "pipe"],
+		});
+		let cause: string;
+		if (result.error) {
+			cause = "code" in result.error && result.error.code === "ETIMEDOUT"
+				? `timed out after ${hook.timeoutMs}ms`
+				: result.error.message;
+		} else if (result.status !== 0) {
+			cause = result.signal ? `signal ${result.signal}` : `exit code ${result.status}`;
+		} else return;
+		const stderr = result.stderr?.trim();
+		warnWorktreeCleanup(`worktree teardown hook failed for '${input.worktreePath}': ${cause}${stderr ? `: ${stderr}` : ""}`);
+	} catch (error) {
+		warnWorktreeCleanup(`worktree teardown hook failed for '${input.worktreePath}': ${error instanceof Error ? error.message : String(error)}`);
+	}
+}
+
 function createSingleWorktree(
 	toplevel: string,
 	cwdRelative: string,
@@ -320,6 +404,7 @@ function createSingleWorktree(
 	index: number,
 	baseCommit: string,
 	setupHook: ResolvedWorktreeSetupHook | undefined,
+	teardownHook: ResolvedWorktreeTeardownHook | undefined,
 	agent: string | undefined,
 ): WorktreeInfo {
 	const branch = buildWorktreeBranch(runId, index);
@@ -331,27 +416,22 @@ function createSingleWorktree(
 	}
 
 	const agentCwd = cwdRelative ? path.join(worktreePath, cwdRelative) : worktreePath;
+	const hookInput: WorktreeSetupHookInput = {
+		version: 1, repoRoot: toplevel, worktreePath, agentCwd, branch, index, runId, baseCommit, agent,
+	};
 	try {
 		const nodeModulesLinked = linkNodeModulesIfPresent(toplevel, worktreePath);
 		const syntheticPaths = nodeModulesLinked ? ["node_modules"] : [];
 
 		if (setupHook) {
-			const hookSyntheticPaths = runWorktreeSetupHook(setupHook, {
-				version: 1,
-				repoRoot: toplevel,
-				worktreePath,
-				agentCwd,
-				branch,
-				index,
-				runId,
-				baseCommit,
-				agent,
-			});
+			const hookSyntheticPaths = runWorktreeSetupHook(setupHook, hookInput);
 			syntheticPaths.push(...hookSyntheticPaths);
 		}
 
 		return {
 			path: worktreePath,
+			hookInput,
+			teardownHook,
 			agentCwd,
 			branch,
 			index,
@@ -359,11 +439,12 @@ function createSingleWorktree(
 			syntheticPaths,
 		};
 	} catch (error) {
-		try { runGitChecked(toplevel, ["worktree", "remove", "--force", worktreePath]); } catch {
-			// Best-effort rollback; preserve the original setup failure.
+		runWorktreeTeardownHook(teardownHook, hookInput);
+		try { runGitChecked(toplevel, ["worktree", "remove", "--force", worktreePath]); } catch (cleanupError) {
+			warnWorktreeCleanup(`worktree remove failed for '${worktreePath}': ${cleanupError}`);
 		}
-		try { runGitChecked(toplevel, ["branch", "-D", branch]); } catch {
-			// Best-effort rollback; preserve the original setup failure.
+		try { runGitChecked(toplevel, ["branch", "-D", branch]); } catch (cleanupError) {
+			warnWorktreeCleanup(`branch -D '${branch}' failed for '${worktreePath}': ${cleanupError}`);
 		}
 		throw error;
 	}
@@ -477,11 +558,12 @@ function writeEmptyPatch(patchPath: string): void {
 }
 
 function cleanupSingleWorktree(repoCwd: string, worktree: WorktreeInfo): void {
-	try { runGitChecked(repoCwd, ["worktree", "remove", "--force", worktree.path]); } catch {
-		// Cleanup is best-effort to avoid masking caller errors.
+	runWorktreeTeardownHook(worktree.teardownHook, worktree.hookInput);
+	try { runGitChecked(repoCwd, ["worktree", "remove", "--force", worktree.path]); } catch (error) {
+		warnWorktreeCleanup(`worktree remove failed for '${worktree.path}': ${error}`);
 	}
-	try { runGitChecked(repoCwd, ["branch", "-D", worktree.branch]); } catch {
-		// Cleanup is best-effort to avoid masking caller errors.
+	try { runGitChecked(repoCwd, ["branch", "-D", worktree.branch]); } catch (error) {
+		warnWorktreeCleanup(`branch -D '${worktree.branch}' failed for '${worktree.path}': ${error}`);
 	}
 }
 
@@ -498,6 +580,7 @@ export function patchPathForDiff(diff: WorktreeDiff): string | undefined {
 export function createWorktrees(cwd: string, runId: string, count: number, options?: CreateWorktreesOptions): WorktreeSetup {
 	const repo = resolveRepoState(cwd);
 	const setupHook = resolveWorktreeSetupHook(repo.toplevel, options?.setupHook);
+	const teardownHook = resolveWorktreeTeardownHook(repo.toplevel, options?.teardownHook);
 	const worktrees: WorktreeInfo[] = [];
 
 	try {
@@ -509,6 +592,7 @@ export function createWorktrees(cwd: string, runId: string, count: number, optio
 				index,
 				repo.baseCommit,
 				setupHook,
+				teardownHook,
 				options?.agents?.[index],
 			));
 		}
