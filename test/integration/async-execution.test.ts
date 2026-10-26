@@ -1360,7 +1360,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 				assert.ok(text.includes(source === "committed" ? committedMarker : profileMarker), text);
 				assert.ok(!text.includes(sourceMarker), text);
 				const checkoutSettings = path.join(checkout, ".pi/settings.json");
-				if (source === "committed") assert.ok(fs.readFileSync(checkoutSettings, "utf8").includes(committedMarker));
+				if (source === "committed") assert.equal(JSON.parse(fs.readFileSync(checkoutSettings, "utf8")).subagents.defaultSessionDir, committedMarker);
 				else assert.equal(fs.existsSync(checkoutSettings), false);
 			} finally {
 				for (const [index, key] of keys.entries()) { if (savedEnv[index] === undefined) delete process.env[key]; else process.env[key] = savedEnv[index]; }
@@ -1373,7 +1373,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 	}
 
 	for (const variant of ["warning", "invalid backend"] as const) {
-		it(`async tree cwd output-dependent group resolves settings before clean check (${variant})`, async () => {
+		it(`async tree cwd output-dependent group resolves settings before clean check (${variant})`, { skip: process.platform === "win32" || !isAsyncAvailable() ? "requires shell hooks and jiti" : undefined }, async () => {
 			const repo = createRepo("pi-output-settings-");
 			const record = path.join(tempDir, "output-settings-hooks.jsonl");
 			try {
@@ -1436,13 +1436,13 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 				const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf8"));
 				assert.deepEqual(payload.results.map((r: any) => r.success), [false, true], JSON.stringify(payload));
 				assert.match(payload.results[0].error, /Execution backend selection failed/);
-				assert.ok(payload.results[1].output.includes(fs.realpathSync(clean)));
+				assert.equal(JSON.parse(payload.results[1].output.split("\n").at(-1)).cwd, fs.realpathSync(clean));
 				assert.equal(mockPi.callCount(), 1);
 			} finally { removeTempDir(job); removeTempDir(bad); removeTempDir(clean); }
 		});
 	}
 
-	it("async tree cwd cross-project static groups and leaf backend policy", async () => {
+	it("async tree cwd cross-project static groups and leaf backend policy", { skip: process.platform === "win32" || !isAsyncAvailable() ? "requires shell hooks and jiti" : undefined }, async () => {
 		const a = createRepo("pi-matrix-a-");
 		const b = createRepo("pi-matrix-b-");
 		const record = path.join(tempDir, "matrix-hooks.jsonl");
