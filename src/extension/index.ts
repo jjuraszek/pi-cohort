@@ -18,7 +18,7 @@ import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Box, Container, Spacer, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
-import { discoverAgents, discoverAgentsAll } from "../agents/agents.ts";
+import { resolveExtensionConfig, discoverAgents, discoverAgentsAll } from "../agents/agents.ts";
 import { cleanupAllArtifactDirs, cleanupOldArtifacts, getArtifactsDir } from "../shared/artifacts.ts";
 import { resolveCurrentSessionId } from "../shared/session-identity.ts";
 import { cleanupOldChainDirs } from "../shared/settings.ts";
@@ -37,7 +37,6 @@ import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/back
 import { SUBAGENT_CHILD_ENV } from "../runs/shared/pi-args.ts";
 import { formatDuration, shortenPath } from "../shared/formatters.ts";
 import { loadConfig } from "./config.ts";
-import { deriveForwardedFlags } from "../runs/shared/forward-flags.ts";
 import {
 	type Details,
 	type SubagentState,
@@ -251,7 +250,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	cleanupOldChainDirs();
 
 	const config = loadConfig();
-	const asyncByDefault = config.asyncByDefault === true;
 	const tempArtifactsDir = getArtifactsDir(null);
 	cleanupAllArtifactDirs(DEFAULT_ARTIFACT_CONFIG.cleanupDays);
 
@@ -290,13 +288,11 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	const executor = createSubagentExecutor({
 		pi,
 		state,
-		config,
-		asyncByDefault,
+		resolveConfig: resolveExtensionConfig,
 		tempArtifactsDir,
 		getSubagentSessionRoot,
 		expandTilde,
 		discoverAgents,
-		forwardedFlags: deriveForwardedFlags(process.argv, config),
 	});
 
 	pi.registerMessageRenderer<SlashMessageDetails>(SLASH_RESULT_TYPE, (message, options, theme) => {

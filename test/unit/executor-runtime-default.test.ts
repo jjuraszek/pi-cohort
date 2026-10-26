@@ -27,8 +27,7 @@ function createExecutor() {
 	return createSubagentExecutor({
 		pi: { events: createEventBus(), getSessionName: () => undefined } as any,
 		state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null } as any,
-		config: {} as any,
-		asyncByDefault: false,
+		resolveConfig: () => ({} as any),
 		tempArtifactsDir: tempDir,
 		getSubagentSessionRoot: () => tempDir,
 		expandTilde: (value: string) => value,

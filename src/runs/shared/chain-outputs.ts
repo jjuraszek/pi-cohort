@@ -81,9 +81,6 @@ export function validateChainOutputBindings(steps: ChainStep[], dynamicFanoutCon
 		}
 		for (const { template, cwd } of taskTemplatesForStep(step)) {
 			for (const match of template.matchAll(OUTPUT_REF_PATTERN)) {
-				if (cwd && isParallelStep(step) && step.worktree) {
-					throw new ChainOutputValidationError(`Chain step ${stepIndex + 1}: cwd output references cannot be combined with worktree: true.`);
-				}
 				const rawReference = match[0];
 				const parsed = parseOutputReference(match[1]!);
 				if (!parsed) {

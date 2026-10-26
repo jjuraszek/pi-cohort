@@ -123,9 +123,9 @@ describe("tree output references", () => {
 			assert.throws(() => validateChainOutputBindings([producer, { agent: "review", cwd }]), { message: "Chain step 2: only {outputs.<name>.treePath} may appear in cwd." });
 		}
 		for (const step of [
-			{ parallel: [{ agent: "review" }], cwd: "{outputs.missing}", worktree: true },
+			{ parallel: [{ agent: "review" }], cwd: "{outputs.x.treePath}", worktree: true },
 			{ parallel: [{ agent: "review", cwd: "{outputs.x.treePath}" }], worktree: true },
-		]) assert.throws(() => validateChainOutputBindings([producer, step]), { message: "Chain step 2: cwd output references cannot be combined with worktree: true." });
+		]) assert.doesNotThrow(() => validateChainOutputBindings([producer, step]));
 	});
 	for (const ref of ["x.other", "x.treePath.more", "bad-name", "1bad"]) {
 		it(`rejects invalid grammar ${ref}`, () => {

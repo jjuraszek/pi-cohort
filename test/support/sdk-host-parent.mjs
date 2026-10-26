@@ -10,7 +10,7 @@ const types = await import(pathToFileURL(path.join(repo, "src/shared/types.ts"))
 
 const state = { baseCwd: request.cwd, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null };
 const executor = createSubagentExecutor({
-	pi: { events: createEventBus(), getSessionName: () => undefined }, state, config: {}, forwardedFlags: [], asyncByDefault: false,
+	pi: { events: createEventBus(), getSessionName: () => undefined }, state, resolveConfig: () => ({}),
 	tempArtifactsDir: types.TEMP_ARTIFACTS_DIR,
 	getSubagentSessionRoot: () => path.join(types.RUN_STATE_ROOT_DIR, "sessions"),
 	expandTilde: value => value, discoverAgents: () => ({ agents: [makeAgent("worker", request.agent)] }),

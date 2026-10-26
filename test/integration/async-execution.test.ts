@@ -443,8 +443,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		const executor = createSubagentExecutor!({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
 			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
-			config: {},
-			asyncByDefault: false,
+			resolveConfig: () => ({}),
 			tempArtifactsDir: tempDir,
 			getSubagentSessionRoot: () => tempDir,
 			expandTilde: (p: string) => p,
@@ -505,8 +504,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		const executor = createSubagentExecutor!({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
 			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
-			config: {},
-			asyncByDefault: false,
+			resolveConfig: () => ({}),
 			tempArtifactsDir: tempDir,
 			getSubagentSessionRoot: () => tempDir,
 			expandTilde: (p: string) => p,
@@ -546,7 +544,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		const executor = createSubagentExecutor!({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
 			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
-			config: {}, asyncByDefault: false, tempArtifactsDir: tempDir,
+			resolveConfig: () => ({}), tempArtifactsDir: tempDir,
 			getSubagentSessionRoot: () => tempDir, expandTilde: (p: string) => p,
 			discoverAgents: () => ({ agents: [makeAgent("worker", { output: "default-report.md", defaultProgress: true, defaultReads: ["input.md"] })] }),
 		});
@@ -574,7 +572,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		const executor = createSubagentExecutor!({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
 			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
-			config: {}, asyncByDefault: false, tempArtifactsDir: tempDir,
+			resolveConfig: () => ({}), tempArtifactsDir: tempDir,
 			getSubagentSessionRoot: () => tempDir, expandTilde: (p: string) => p,
 			discoverAgents: () => ({ agents: [makeAgent("worker", { output: "default-report.md" })] }),
 		});
@@ -643,8 +641,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		const executor = createSubagentExecutor!({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
 			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
-			config: {},
-			asyncByDefault: false,
+			resolveConfig: () => ({}),
 			tempArtifactsDir: tempDir,
 			getSubagentSessionRoot: () => tempDir,
 			expandTilde: (p: string) => p,
@@ -1196,7 +1193,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 				const executor = createSubagentExecutor({
 					pi: { events: createEventBus(), getSessionName: () => undefined },
 					state: { baseCwd: repoDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
-					config: { worktreeSetupHook: hookPath }, asyncByDefault: false, tempArtifactsDir: tempDir,
+					resolveConfig: () => ({ worktreeSetupHook: hookPath }), tempArtifactsDir: tempDir,
 					getSubagentSessionRoot: () => tempDir, expandTilde: (p: string) => p,
 					discoverAgents: () => ({ agents: [makeAgent("worker", { completionGuard: false }), makeAgent("reviewer")] }),
 				});
@@ -1420,8 +1417,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			const executor = createSubagentExecutor!({
 				pi: { events: createEventBus(), getSessionName: () => undefined },
 				state: { baseCwd: repoDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
-				config: {},
-				asyncByDefault: false,
+				resolveConfig: () => ({}),
 				tempArtifactsDir: repoDir,
 				getSubagentSessionRoot: () => repoDir,
 				expandTilde: (p: string) => p,
@@ -1479,8 +1475,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			const executor = createSubagentExecutor!({
 				pi: { events: createEventBus(), getSessionName: () => undefined },
 				state: { baseCwd: repoDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
-				config: {},
-				asyncByDefault: false,
+				resolveConfig: () => ({}),
 				tempArtifactsDir: repoDir,
 				getSubagentSessionRoot: () => repoDir,
 				expandTilde: (p: string) => p,

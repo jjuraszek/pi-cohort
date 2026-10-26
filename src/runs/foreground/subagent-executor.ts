@@ -8,6 +8,7 @@ import type { AgentConfig, AgentScope } from "../../agents/agents.ts";
 import { getArtifactsDir } from "../../shared/artifacts.ts";
 import { ChainClarifyComponent, type ChainClarifyResult } from "./chain-clarify.ts";
 import { parentModelFullId, toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
+import { deriveForwardedFlags } from "../shared/forward-flags.ts";
 import { executeChain } from "./chain-execution.ts";
 import { resolveExecutionAgentScope } from "../../agents/agent-scope.ts";
 import { handleManagementAction } from "../../agents/agent-management.ts";
@@ -137,15 +138,15 @@ interface ExecutorDeps {
 	captureRuntime?: () => PiRuntimeIdentity;
 	pi: ExtensionAPI;
 	state: SubagentState;
-	config: ExtensionConfig;
-	forwardedFlags: string[];
-	asyncByDefault: boolean;
+	resolveConfig: (cwd: string) => ExtensionConfig;
 	tempArtifactsDir: string;
 	getSubagentSessionRoot: (parentSessionFile: string | null) => string;
 	expandTilde: (p: string) => string;
 	discoverAgents: (cwd: string, scope: AgentScope) => { agents: AgentConfig[] };
 	allowMutatingManagementActions?: boolean;
 }
+
+type CallExecutorDeps = ExecutorDeps & { config: ExtensionConfig; forwardedFlags: string[]; asyncByDefault: boolean };
 
 interface ExecutionContextData {
 	runtime: PiRuntimeIdentity;
@@ -205,7 +206,7 @@ function formatForegroundActivity(control: SubagentState["foregroundControls"] e
 	return [`active ${seconds}s ago`, ...facts].join(" | ");
 }
 
-function nestedResolutionScopeForExecutor(deps: ExecutorDeps): NestedRunResolutionScope | undefined {
+function nestedResolutionScopeForExecutor(deps: CallExecutorDeps): NestedRunResolutionScope | undefined {
 	if (deps.allowMutatingManagementActions !== false) return undefined;
 	const route = resolveInheritedNestedRouteFromEnv();
 	const address = route ? resolveNestedParentAddressFromEnv() : undefined;
@@ -215,7 +216,7 @@ function nestedResolutionScopeForExecutor(deps: ExecutorDeps): NestedRunResoluti
 	};
 }
 
-function buildAsyncContext(ctx: ExtensionContext, deps: ExecutorDeps, cwd: string, runtime: PiRuntimeIdentity) {
+function buildAsyncContext(ctx: ExtensionContext, deps: CallExecutorDeps, cwd: string, runtime: PiRuntimeIdentity) {
 	return {
 		runtime,
 		pi: deps.pi,
@@ -581,7 +582,7 @@ async function resumeAsyncRun(input: {
 	params: SubagentParamsLike;
 	requestCwd: string;
 	ctx: ExtensionContext;
-	deps: ExecutorDeps;
+	deps: CallExecutorDeps;
 }): Promise<AgentToolResult<Details>> {
 	const followUp = (input.params.message ?? input.params.task ?? "").trim();
 	if (!followUp) {
@@ -627,6 +628,7 @@ async function resumeAsyncRun(input: {
 
 	input.deps.state.currentSessionId = resolveCurrentSessionId(input.ctx.sessionManager);
 	const effectiveCwd = target.cwd ?? input.requestCwd;
+	const unitConfig = effectiveCwd === input.requestCwd ? input.deps.config : input.deps.resolveConfig(effectiveCwd);
 	const scope: AgentScope = resolveExecutionAgentScope(input.params.agentScope);
 	const discoveredAgents = input.deps.discoverAgents(effectiveCwd, scope).agents;
 	const agentConfig = discoveredAgents.find((agent) => agent.name === target.agent);
@@ -649,7 +651,7 @@ async function resumeAsyncRun(input: {
 		agent: target.agent,
 		task: buildRevivedAsyncTask(target, followUp),
 		agentConfig,
-		ctx: buildAsyncContext(input.ctx, input.deps, input.requestCwd, target.runtime),
+		ctx: { ...buildAsyncContext(input.ctx, input.deps, input.requestCwd, target.runtime), executionBackend: unitConfig.executionBackend },
 		cwd: effectiveCwd,
 		maxOutput: input.params.maxOutput,
 		artifactsDir: input.deps.tempArtifactsDir,
@@ -663,10 +665,10 @@ async function resumeAsyncRun(input: {
 		originSessionRoot: originalRoot,
 		sessionFile: target.sessionFile,
 		maxSubagentDepth: resolveCurrentMaxSubagentDepth(input.deps.config.maxSubagentDepth),
-		worktreeSetupHook: input.deps.config.worktreeSetupHook,
-		worktreeSetupHookTimeoutMs: input.deps.config.worktreeSetupHookTimeoutMs,
-		worktreeTeardownHook: input.deps.config.worktreeTeardownHook,
-		worktreeTeardownHookTimeoutMs: input.deps.config.worktreeTeardownHookTimeoutMs,
+		worktreeSetupHook: unitConfig.worktreeSetupHook,
+		worktreeSetupHookTimeoutMs: unitConfig.worktreeSetupHookTimeoutMs,
+		worktreeTeardownHook: unitConfig.worktreeTeardownHook,
+		worktreeTeardownHookTimeoutMs: unitConfig.worktreeTeardownHookTimeoutMs,
 		controlConfig: resolveControlConfig(input.deps.config.control, input.params.control),
 		availableModels,
 		forwardedFlags: input.deps.forwardedFlags,
@@ -980,7 +982,7 @@ function wrapChainTasksForFork(chain: ChainStep[], context: SubagentParamsLike["
 	});
 }
 
-function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): AgentToolResult<Details> | null {
+function runAsyncPath(data: ExecutionContextData, deps: CallExecutorDeps): AgentToolResult<Details> | null {
 	const {
 		params,
 		effectiveCwd,
@@ -1162,7 +1164,7 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): AgentTool
 	return null;
 }
 
-async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Promise<AgentToolResult<Details>> {
+async function runChainPath(data: ExecutionContextData, deps: CallExecutorDeps): Promise<AgentToolResult<Details>> {
 	const {
 		params,
 		effectiveCwd,
@@ -1208,6 +1210,7 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 		nestedRoute: foregroundControl?.nestedRoute,
 		chainSkills,
 		chainDir: params.chainDir,
+		resolveConfig: deps.resolveConfig,
 		dynamicFanoutMaxItems: deps.config.chain?.dynamicFanout?.maxItems,
 		maxSubagentDepth: currentMaxSubagentDepth,
 		worktreeSetupHook: deps.config.worktreeSetupHook,
@@ -1288,7 +1291,7 @@ interface ForegroundParallelRunInput {
 	onControlEvent?: (event: ControlEvent) => void;
 	foregroundControl?: SubagentState["foregroundControls"] extends Map<string, infer T> ? T : never;
 	concurrencyLimit: number;
-	executionBackend?: string;
+	resolveConfig: (cwd: string) => ExtensionConfig;
 	liveResults: (SingleResult | undefined)[];
 	liveProgress: (AgentProgress | undefined)[];
 	onUpdate?: (r: AgentToolResult<Details>) => void;
@@ -1481,7 +1484,7 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 			signal: input.signal,
 			interruptSignal: interruptController.signal,
 			runId: input.runId,
-			executionBackend: input.executionBackend,
+			executionBackend: input.resolveConfig(taskCwd).executionBackend,
 			index,
 			sessionDir: input.sessionDirForIndex(index),
 			sessionFile: input.sessionFileForIndex(index),
@@ -1547,7 +1550,7 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 	});
 }
 
-async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): Promise<AgentToolResult<Details>> {
+async function runParallelPath(data: ExecutionContextData, deps: CallExecutorDeps): Promise<AgentToolResult<Details>> {
 	const {
 		params,
 		effectiveCwd,
@@ -1807,7 +1810,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 			onUpdate: onUpdateWithCost,
 			worktreeSetup,
 			forwardedFlags: deps.forwardedFlags,
-			executionBackend: deps.config.executionBackend,
+			resolveConfig: deps.resolveConfig,
 		});
 		if (foregroundControl) updateForegroundNestedProjection(foregroundControl);
 		recordSyncCost(deps.state.grandTotal, runId, results.reduce((sum, r) => sum + r.usage.cost, 0) + sumNestedCost(foregroundControl?.nestedChildren));
@@ -1867,7 +1870,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 	}
 }
 
-async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Promise<AgentToolResult<Details>> {
+async function runSinglePath(data: ExecutionContextData, deps: CallExecutorDeps): Promise<AgentToolResult<Details>> {
 	const {
 		params,
 		effectiveCwd,
@@ -2132,7 +2135,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 	};
 }
 
-export function createSubagentExecutor(deps: ExecutorDeps): {
+export function createSubagentExecutor(services: ExecutorDeps): {
 	execute: (
 		id: string,
 		params: SubagentParamsLike,
@@ -2145,7 +2148,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 	let runtimeError: unknown;
 	try {
 		// SDK hosts are not launched through Pi's CLI; the installation this extension was loaded from is the fallback.
-		runtime = (deps.captureRuntime ?? (() => capturePiRuntime({ installRoot: getPackageDir() })))();
+		runtime = (services.captureRuntime ?? (() => capturePiRuntime({ installRoot: getPackageDir() })))();
 	} catch (error) {
 		runtimeError = error;
 	}
@@ -2156,11 +2159,13 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		onUpdate: ((r: AgentToolResult<Details>) => void) | undefined,
 		ctx: ExtensionContext,
 	): Promise<AgentToolResult<Details>> => {
+		const requestCwd = resolveRequestedCwd(ctx.cwd, params.cwd);
+		const config = services.resolveConfig(requestCwd);
+		const deps: CallExecutorDeps = { ...services, config, forwardedFlags: deriveForwardedFlags(process.argv, config), asyncByDefault: config.asyncByDefault === true };
 		deps.state.baseCwd = ctx.cwd;
 		deps.state.foregroundRuns ??= new Map();
 		deps.state.foregroundControls ??= new Map();
 		deps.state.lastForegroundControlId ??= null;
-		const requestCwd = resolveRequestedCwd(ctx.cwd, params.cwd);
 		const paramsWithResolvedCwd = params.cwd === undefined ? params : { ...params, cwd: requestCwd };
 		if (params.action) {
 			if (params.action === "doctor") {

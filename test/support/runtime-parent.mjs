@@ -153,7 +153,7 @@ if (repo && process.argv[2] === "--runtime-parent") {
 	const started = [];
 	events.on(types.SUBAGENT_ASYNC_STARTED_EVENT, event => started.push(event));
 	const executor = createSubagentExecutor({
-		pi: { events, getSessionName: () => undefined }, state, config: request.config ?? {}, forwardedFlags: [], asyncByDefault: false,
+		pi: { events, getSessionName: () => undefined }, state, resolveConfig: () => request.config ?? {},
 		tempArtifactsDir: types.TEMP_ARTIFACTS_DIR,
 		getSubagentSessionRoot: () => path.join(types.RUN_STATE_ROOT_DIR, "sessions"), allowMutatingManagementActions: route ? false : undefined,
 		expandTilde: value => value, discoverAgents: () => ({ agents: [makeAgent("worker", { fallbackModels: ["mock/fallback"] })] }),

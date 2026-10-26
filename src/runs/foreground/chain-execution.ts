@@ -31,6 +31,7 @@ import {
 	type ResolvedTemplates,
 } from "../../shared/settings.ts";
 import { discoverAvailableSkills, normalizeSkillInput } from "../../agents/skills.ts";
+import type { ExtensionConfig } from "../../shared/types.ts";
 import { runSync } from "./execution.ts";
 import type { PiRuntimeIdentity } from "../shared/pi-spawn.ts";
 import { buildChainSummary, buildChainOutputsSection, buildChainStopSection, type ChainSummaryOptions } from "../../shared/formatters.ts";
@@ -142,6 +143,7 @@ interface ParallelChainRunInput {
 	maxSubagentDepth: number;
 	nestedRoute?: NestedRouteInfo;
 	forwardedFlags?: string[];
+	resolveConfig?: (cwd: string) => ExtensionConfig;
 }
 
 function buildChainExecutionDetails(input: ChainExecutionDetailsInput): Details {
@@ -295,6 +297,7 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 			const result = await runSync(input.ctx.cwd, input.agents, task.agent, taskStr, {
 				runtime: input.runtime,
 				cwd: taskCwd,
+				executionBackend: input.resolveConfig?.(taskCwd).executionBackend,
 				signal: input.signal,
 				interruptSignal: interruptController.signal,
 				runId: input.runId,
@@ -423,6 +426,7 @@ interface ChainExecutionParams {
 	worktreeTeardownHook?: string;
 	worktreeTeardownHookTimeoutMs?: number;
 	forwardedFlags?: string[];
+	resolveConfig?: (cwd: string) => ExtensionConfig;
 }
 
 interface ChainExecutionResult {
@@ -645,10 +649,12 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 
 			if (isParallelStep(step)) {
 				const parallelTemplates = stepTemplates as string[];
-				const parallelCwd = resolveChildCwd(cwd ?? ctx.cwd, step.cwd);
+				const parallelCwd = resolveChildCwd(cwd ?? ctx.cwd, step.cwd === undefined ? undefined : resolveOutputReferences(step.cwd, outputs, trees));
+				const groupConfig = params.resolveConfig?.(parallelCwd) ?? params;
 				let worktreeSetup: WorktreeSetup | undefined;
 				if (step.worktree) {
-					const worktreeTaskCwdConflict = findWorktreeTaskCwdConflict(step.parallel, parallelCwd);
+					const resolvedTasks = step.parallel.map((task) => ({ ...task, cwd: task.cwd === undefined ? undefined : resolveOutputReferences(task.cwd, outputs, trees) }));
+					const worktreeTaskCwdConflict = findWorktreeTaskCwdConflict(resolvedTasks, parallelCwd);
 					if (worktreeTaskCwdConflict) {
 						return buildChainExecutionErrorResult(
 							`parallel chain step ${stepIndex + 1}: ${formatWorktreeTaskCwdConflict(worktreeTaskCwdConflict, parallelCwd)}`,
@@ -659,11 +665,11 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					try {
 						worktreeSetup = createWorktrees(parallelCwd, `${runId}-s${stepIndex}`, step.parallel.length, {
 							agents: step.parallel.map((task) => task.agent),
-							setupHook: params.worktreeSetupHook
-								? { hookPath: params.worktreeSetupHook, timeoutMs: params.worktreeSetupHookTimeoutMs }
+							setupHook: groupConfig.worktreeSetupHook
+								? { hookPath: groupConfig.worktreeSetupHook, timeoutMs: groupConfig.worktreeSetupHookTimeoutMs }
 								: undefined,
-							teardownHook: params.worktreeTeardownHook
-								? { hookPath: params.worktreeTeardownHook, timeoutMs: params.worktreeTeardownHookTimeoutMs }
+							teardownHook: groupConfig.worktreeTeardownHook
+								? { hookPath: groupConfig.worktreeTeardownHook, timeoutMs: groupConfig.worktreeTeardownHookTimeoutMs }
 								: undefined,
 						});
 					} catch (error) {
@@ -703,6 +709,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 						runId,
 						globalTaskIndex,
 						forwardedFlags: params.forwardedFlags,
+						resolveConfig: params.resolveConfig,
 						sessionDirForIndex,
 						sessionFileForIndex,
 						shareEnabled,
@@ -714,7 +721,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 						allProgress,
 						outputs,
 						trees,
-						stepCwd: step.cwd,
+						stepCwd: parallelCwd,
 						chainAgents,
 						chainSteps,
 						totalSteps,
@@ -912,6 +919,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					runId,
 					globalTaskIndex,
 					forwardedFlags: params.forwardedFlags,
+					resolveConfig: params.resolveConfig,
 					sessionDirForIndex,
 					sessionFileForIndex,
 					shareEnabled,
@@ -1131,6 +1139,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				const r = await runSync(ctx.cwd, agents, seqStep.agent, stepTask, {
 					runtime: params.runtime,
 					cwd: stepCwd,
+					executionBackend: params.resolveConfig?.(stepCwd).executionBackend,
 					signal,
 					interruptSignal: interruptController.signal,
 					runId,

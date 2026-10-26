@@ -68,8 +68,7 @@ describe("doctor action executor routing", { skip: !createSubagentExecutor ? "ex
 		const executor = createSubagentExecutor({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
 			state: makeState(tempDir),
-			config: { defaultSessionDir: path.join(tempDir, "configured-sessions") },
-			asyncByDefault: false,
+			resolveConfig: () => ({ defaultSessionDir: path.join(tempDir, "configured-sessions") }),
 			tempArtifactsDir: tempDir,
 			getSubagentSessionRoot: () => tempDir,
 			expandTilde: (value: string) => value,
@@ -97,8 +96,7 @@ describe("doctor action executor routing", { skip: !createSubagentExecutor ? "ex
 		const executor = createSubagentExecutor({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
 			state: makeState(tempDir),
-			config: {},
-			asyncByDefault: false,
+			resolveConfig: () => ({}),
 			tempArtifactsDir: tempDir,
 			getSubagentSessionRoot: () => tempDir,
 			expandTilde: (value: string) => value,
