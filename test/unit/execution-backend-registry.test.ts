@@ -76,6 +76,15 @@ test("disposal is idempotent and enumeration preserves registration order", asyn
 	});
 });
 
+test("rejects blank or malformed surface environment prefixes", async () => {
+	await withFreshHub(() => {
+		assert.throws(() => registerExecutionBackend({ ...backend("blank"), surfaceEnvironmentPrefixes: [""] }), /surfaceEnvironmentPrefixes/);
+		assert.throws(() => registerExecutionBackend({ ...backend("whitespace"), surfaceEnvironmentPrefixes: [" "] }), /surfaceEnvironmentPrefixes/);
+		assert.throws(() => registerExecutionBackend({ ...backend("scalar"), surfaceEnvironmentPrefixes: "MUX_" } as unknown as ExecutionBackend), /surfaceEnvironmentPrefixes/);
+		registerExecutionBackend({ ...backend("mux"), surfaceEnvironmentPrefixes: ["MUX_"] });
+	});
+});
+
 test("rejects malformed, blank-name, and incompatible-protocol backends", async () => {
 	await withFreshHub(() => {
 		assert.throws(() => registerExecutionBackend({} as ExecutionBackend), /name/);

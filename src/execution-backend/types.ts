@@ -77,6 +77,12 @@ export type ExecutionBackendCloseReason = "delivered" | "explicit_cleanup";
 export interface ExecutionBackend {
 	readonly name: string;
 	readonly protocolVersion: typeof EXECUTION_BACKEND_PROTOCOL_VERSION;
+	/**
+	 * Environment-variable prefixes the surface owns, such as a terminal's own
+	 * surface identity. Each attempt gets the launched surface's values for
+	 * matching keys instead of the parent's.
+	 */
+	readonly surfaceEnvironmentPrefixes?: readonly string[];
 	detect(): Promise<ExecutionBackendDetection>;
 	launch(request: ExecutionSurfaceRequest): Promise<ExecutionBackendLease>;
 	reattach(handle: ExecutionSurfaceHandle): Promise<ReattachResult>;

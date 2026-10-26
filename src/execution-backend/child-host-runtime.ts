@@ -17,6 +17,13 @@ export function loadChildHostConfig(configPath = process.env[PI_COHORT_CHILD_HOS
 	} finally { if (descriptor !== undefined) fs.closeSync(descriptor); }
 }
 
+function attemptEnvironment(parent: Readonly<Record<string, string>>, surfacePrefixes: readonly string[]): Record<string, string> {
+	const surfaceOwned = (key: string) => surfacePrefixes.some(prefix => key.startsWith(prefix));
+	const environment = Object.fromEntries(Object.entries(parent).filter(([key]) => !surfaceOwned(key)));
+	for (const [key, value] of Object.entries(process.env)) if (value !== undefined && surfaceOwned(key)) environment[key] = value;
+	return environment;
+}
+
 export function runChildHost(config = loadChildHostConfig()): void {
 	const correlation = { protocolVersion: 1 as const, runId: config.runId, childId: config.childId };
 	const socket = net.createConnection(config.socketPath);
@@ -36,7 +43,7 @@ export function runChildHost(config = loadChildHostConfig()): void {
 			}
 			if (message.kind !== "start_attempt" || active || stopping) { socket.destroy(); return; }
 			let child: ChildProcess;
-			try { child = spawn(message.command, [...message.args], { cwd: message.cwd, env: message.environment, shell: false, stdio: "inherit", windowsHide: true }); }
+			try { child = spawn(message.command, [...message.args], { cwd: message.cwd, env: attemptEnvironment(message.environment, config.surfaceEnvironmentPrefixes), shell: false, stdio: "inherit", windowsHide: true }); }
 			catch { send({ ...correlation, kind: "attempt_spawn_error", attemptId: message.attemptId }); continue; }
 			active = { attemptId: message.attemptId, process: child };
 			send({ ...correlation, kind: "attempt_started", attemptId: message.attemptId });

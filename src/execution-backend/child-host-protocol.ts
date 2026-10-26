@@ -6,6 +6,7 @@ export interface ChildHostConfig {
 	readonly socketPath: string;
 	readonly runId: string;
 	readonly childId: string;
+	readonly surfaceEnvironmentPrefixes: readonly string[];
 }
 
 type Correlation = { readonly protocolVersion: 1; readonly runId: string; readonly childId: string };
@@ -35,9 +36,11 @@ function correlation(input: Record<string, unknown>): Correlation {
 
 export function validateChildHostConfig(value: unknown): ChildHostConfig {
 	const input = record(value, "child host config");
-	exact(input, ["protocolVersion", "socketPath", "runId", "childId"]);
+	exact(input, ["protocolVersion", "socketPath", "runId", "childId", "surfaceEnvironmentPrefixes"]);
 	if (input.protocolVersion !== CHILD_HOST_PROTOCOL_VERSION) throw new Error("incompatible child host protocol");
-	return { ...correlation(input), socketPath: text(input.socketPath, "socketPath") };
+	const prefixes = input.surfaceEnvironmentPrefixes;
+	if (!Array.isArray(prefixes)) throw new Error("surfaceEnvironmentPrefixes must be an array");
+	return { ...correlation(input), socketPath: text(input.socketPath, "socketPath"), surfaceEnvironmentPrefixes: prefixes.map(prefix => text(prefix, "surfaceEnvironmentPrefixes entry")) };
 }
 
 export function validateChildHostMessage(value: unknown): ChildHostMessage {

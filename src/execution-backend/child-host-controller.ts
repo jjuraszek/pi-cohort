@@ -55,7 +55,7 @@ export async function createChildHostController(options: ChildHostControllerOpti
 		let descriptor: number | undefined;
 		try {
 			descriptor = fileSystem.openSync(configPath, "wx", 0o600);
-			fileSystem.writeFileSync(descriptor, JSON.stringify({ protocolVersion: 1, socketPath, runId: options.runId, childId: options.childId }));
+			fileSystem.writeFileSync(descriptor, JSON.stringify({ protocolVersion: 1, socketPath, runId: options.runId, childId: options.childId, surfaceEnvironmentPrefixes: options.backend.surfaceEnvironmentPrefixes ?? [] }));
 		} finally { if (descriptor !== undefined) fileSystem.closeSync(descriptor); }
 
 		let lease: ExecutionBackendLease | undefined;
