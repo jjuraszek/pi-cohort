@@ -71,6 +71,7 @@ function makeExecutor(cwd: string, mockPi: MockPi) {
 		},
 		state: makeState(cwd),
 		config: {},
+		resolveConfig: () => ({}),
 		asyncByDefault: false,
 		tempArtifactsDir: cwd,
 		getSubagentSessionRoot: () => cwd,

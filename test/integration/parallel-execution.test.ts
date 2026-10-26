@@ -1017,7 +1017,7 @@ describe("effective cwd settings", { skip: !piAvailable ? "pi packages not avail
 		assert.deepEqual(reads, [a, b]);
 	});
 
-	it("resolves worktree group hooks after a named output supplies another project's cwd", async () => {
+	it("resolves settings at the interpolated group cwd before the clean-tree check rejects a staged materialized tree", async () => {
 		const a = project("source");
 		const b = project("target");
 		const reads: string[] = [];
@@ -1028,14 +1028,16 @@ describe("effective cwd settings", { skip: !piAvailable ? "pi packages not avail
 			async: false,
 			chain: [{ parallel: [{ agent: "worker", task: "Select project", as: "target", output: false }], cwd: b, worktree: true }, { parallel: [{ agent: "worker", task: "Work" }, { agent: "worker", task: "Work" }], cwd: "{outputs.target.treePath}", worktree: true }],
 		}, new AbortController().signal, undefined, makeMinimalCtx(a));
-		assert.equal(result.isError, undefined, JSON.stringify(result));
-		assert.equal(result.details.results.length, 3);
+		assert.equal(result.isError, true, JSON.stringify(result));
+		assert.match(result.content[0].text, /worktree isolation requires a clean git working tree/);
+		assert.equal(result.details.results.length, 1);
 		assert.equal(fs.existsSync(path.join(a, "hooks.jsonl")), false);
 		const records = fs.readFileSync(path.join(b, "hooks.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
-		assert.deepEqual(records.map((r) => r.kind).sort(), ["setup", "setup", "setup", "teardown", "teardown", "teardown"]);
-		assert.equal(records[0].repoRoot, fs.realpathSync(b));
+		assert.deepEqual(records.map((r) => r.kind), ["setup", "teardown"]);
+		assert.ok(records.every((r) => r.repoRoot === fs.realpathSync(b) && r.index === 0));
 		assert.deepEqual(reads.slice(0, 2), [a, b]);
 		assert.match(reads[3], /worktree-trees/);
-		assert.equal(reads.length, 6);
+		assert.equal(reads[3], result.details.outputs.target.treePath);
+		assert.equal(reads.length, 4);
 	});
 });
