@@ -869,6 +869,8 @@ export interface ExtensionConfig {
 	chain?: ExtensionChainConfig;
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;
+	worktreeTeardownHook?: string;
+	worktreeTeardownHookTimeoutMs?: number;
 	/** Print a roster of discovered subagents/chains into chat at session start. Default: true. */
 	showRosterOnStart?: boolean;
 	/** Forward the parent pi's extension CLI flags (e.g. --no-autofix) into spawned children. Default: true. */

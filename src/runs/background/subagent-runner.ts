@@ -120,6 +120,8 @@ interface SubagentRunConfig {
 	forwardedFlags?: string[];
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;
+	worktreeTeardownHook?: string;
+	worktreeTeardownHookTimeoutMs?: number;
 	controlConfig?: ResolvedControlConfig;
 	resultMode?: SubagentRunMode;
 	dynamicFanoutMaxItems?: number;
@@ -2132,6 +2134,9 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 						agents: group.parallel.map((task) => task.agent),
 						setupHook: config.worktreeSetupHook
 							? { hookPath: config.worktreeSetupHook, timeoutMs: config.worktreeSetupHookTimeoutMs }
+							: undefined,
+						teardownHook: config.worktreeTeardownHook
+							? { hookPath: config.worktreeTeardownHook, timeoutMs: config.worktreeTeardownHookTimeoutMs }
 							: undefined,
 					});
 				} catch (error) {

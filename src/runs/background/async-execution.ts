@@ -80,6 +80,8 @@ interface AsyncChainParams {
 	maxSubagentDepth: number;
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;
+	worktreeTeardownHook?: string;
+	worktreeTeardownHookTimeoutMs?: number;
 	controlConfig?: ResolvedControlConfig;
 	nestedRoute?: NestedRouteInfo;
 	forwardedFlags?: string[];
@@ -115,6 +117,8 @@ interface AsyncSingleParams {
 	maxSubagentDepth: number;
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;
+	worktreeTeardownHook?: string;
+	worktreeTeardownHookTimeoutMs?: number;
 	controlConfig?: ResolvedControlConfig;
 	nestedRoute?: NestedRouteInfo;
 	forwardedFlags?: string[];
@@ -376,6 +380,8 @@ export function executeAsyncChain(
 		maxSubagentDepth,
 		worktreeSetupHook,
 		worktreeSetupHookTimeoutMs,
+		worktreeTeardownHook,
+		worktreeTeardownHookTimeoutMs,
 		controlConfig,
 		nestedRoute,
 		forwardedFlags,
@@ -630,6 +636,8 @@ export function executeAsyncChain(
 				forwardedFlags,
 				worktreeSetupHook,
 				worktreeSetupHookTimeoutMs,
+				worktreeTeardownHook,
+				worktreeTeardownHookTimeoutMs,
 				controlConfig,
 				resultMode,
 				executionBackends: detachedExecutionBackends(ctx.executionBackend),
@@ -748,6 +756,8 @@ export function executeAsyncSingle(
 		maxSubagentDepth,
 		worktreeSetupHook,
 		worktreeSetupHookTimeoutMs,
+		worktreeTeardownHook,
+		worktreeTeardownHookTimeoutMs,
 		controlConfig,
 		nestedRoute,
 		forwardedFlags,
@@ -840,6 +850,8 @@ export function executeAsyncSingle(
 				forwardedFlags,
 				worktreeSetupHook,
 				worktreeSetupHookTimeoutMs,
+				worktreeTeardownHook,
+				worktreeTeardownHookTimeoutMs,
 				controlConfig,
 				resultMode: "single",
 				executionBackends: detachedExecutionBackends(ctx.executionBackend),

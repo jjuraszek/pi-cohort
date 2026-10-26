@@ -1358,6 +1358,61 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		});
 	}
 
+	for (const mode of ["normal", "nonzero", "empty", "single"]) {
+		it(`async teardown settings survive serialization (${mode})`, { skip: (!["empty", "single"].includes(mode) && process.platform === "win32") || !isAsyncAvailable() }, async () => {
+			const repo = createRepo("pi-teardown-async-");
+			const record = path.join(tempDir, "teardown.jsonl");
+			const hook = path.join(tempDir, "teardown.cjs");
+			fs.writeFileSync(hook, `#!${process.execPath}\nconst fs = require('node:fs'); const p = JSON.parse(fs.readFileSync(0, 'utf8')); if (!fs.existsSync(p.worktreePath) || process.cwd() !== fs.realpathSync(p.worktreePath)) process.exit(9); fs.appendFileSync(${JSON.stringify(record)}, JSON.stringify(p)+'\\n'); ${mode === "nonzero" ? "process.exit(7)" : ""}\n`);
+			fs.chmodSync(hook, 0o755);
+			const id = `teardown-${mode}-${Date.now().toString(36)}`;
+			try {
+				mockPi.onCall({ output: "async teardown success" });
+				const params = {
+					ctx: { pi: { events: { emit() {} } }, cwd: repo, currentSessionId: "teardown" },
+					worktreeTeardownHook: mode === "empty" ? "" : hook,
+					worktreeTeardownHookTimeoutMs: mode === "empty" ? -1 : 5000,
+					artifactConfig: { enabled: false }, shareEnabled: false, maxSubagentDepth: 2,
+				};
+				const started = mode === "single"
+					? executeAsyncSingle(id, { ...params, agent: "worker", task: "Work", agentConfig: makeAgent("worker") })
+					: executeAsyncChain(id, { ...params, chain: [{ parallel: [{ agent: "worker", task: "Work" }], worktree: true }], agents: [makeAgent("worker")] });
+				assert.ok(!started.isError);
+				const config = JSON.parse(fs.readFileSync(typesMod!.getAsyncConfigPath(id), "utf8"));
+				assert.equal(config.worktreeTeardownHook, params.worktreeTeardownHook);
+				assert.equal(config.worktreeTeardownHookTimeoutMs, params.worktreeTeardownHookTimeoutMs);
+				const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf8"));
+				assert.equal(payload.success, true);
+				assert.equal(payload.results[0].output, "async teardown success");
+				const deadline = Date.now() + 5000;
+				while (git(repo, ["worktree", "list", "--porcelain"]).includes("pi-worktree-")) {
+					assert.ok(Date.now() < deadline, "checkout removal must finish");
+					await new Promise((resolve) => setTimeout(resolve, 20));
+				}
+				if (["empty", "single"].includes(mode)) assert.equal(fs.existsSync(record), false);
+				else {
+					const records = fs.readFileSync(record, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+					assert.equal(records.length, 1);
+					const p = records[0];
+					assert.equal(p.version, 1); assert.equal(p.index, 0); assert.equal(p.agent, "worker");
+					assert.equal(p.repoRoot, fs.realpathSync(repo)); assert.equal(p.agentCwd, p.worktreePath);
+					assert.equal(p.runId, `${id}-s0`); assert.equal(p.baseCommit, git(repo, ["rev-parse", "HEAD"]));
+					assert.equal(fs.existsSync(p.worktreePath), false); assert.equal(git(repo, ["branch", "--list", p.branch]), "");
+					if (mode === "nonzero") {
+						const logPath = path.join(ASYNC_DIR!, id, "runner.log");
+						let log = "";
+						while (!log.split("\n").some((line) =>
+							line.includes("worktree teardown hook") && line.includes(p.worktreePath) && /exit\s+code\s+7\b/i.test(line))) {
+							assert.ok(Date.now() < deadline, `missing teardown warning: ${log}`);
+							await new Promise((resolve) => setTimeout(resolve, 20));
+							log = fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf8") : "";
+						}
+					}
+				}
+			} finally { removeTempDir(repo); }
+		});
+	}
+
 	it("top-level async worktree parallel keeps reads in the worktree and output in the run dir", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
 		const repoDir = createRepo("pi-subagent-async-worktree-");
 		try {

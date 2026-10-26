@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import childProcess, { spawnSync } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { randomBytes } from "node:crypto";
-import * as fs from "node:fs";
+import fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { describe, it } from "node:test";
+import { after, before, describe, it } from "node:test";
 import {
 	cleanupWorktrees,
 	createWorktrees,
@@ -647,5 +648,264 @@ describe("detached trees", () => {
 			cleanupRepo(repoCwd);
 			cleanupRepo(temp);
 		}
+	});
+});
+
+describe("worktree teardown", () => {
+	let repo: string;
+	before(() => { repo = createRepo("pi-teardown-validation-"); });
+	after(() => { cleanupRepo(repo); });
+
+	for (const [name, hookPath, timeoutMs, message] of [
+		["bare", "node", undefined, /absolute path or a repo-relative path/],
+		["missing", "./missing", undefined, /not found/],
+		["directory", "./", undefined, /got directory/],
+		["empty", "", undefined, /cannot be empty/],
+		["whitespace", "  ", undefined, /cannot be empty/],
+		...[0, -1, 1.5, NaN, Infinity, null as unknown as number].map((value) => [`timeout-${value}`, "./tracked.txt", value, /timeout must be an integer greater than 0/]),
+	] as const) {
+		it(`rejects ${name} before creating a checkout`, () => {
+			const runId = randomBytes(8).toString("hex");
+			assert.throws(() => createWorktrees(repo, runId, 1, { teardownHook: { hookPath, timeoutMs } }), (error: Error) => {
+				assert.match(error.message, /worktree teardown hook/);
+				assert.match(error.message, message);
+				return true;
+			});
+			assert.equal(fs.existsSync(path.join(os.tmpdir(), `pi-worktree-${runId}-0`)), false);
+			assert.equal(git(repo, ["branch", "--list", `pi-parallel-${runId}-*`]), "");
+		});
+	}
+});
+
+describe("teardown lifecycle", () => {
+	for (const mode of ["normal", "only", "rollback", "add-failure"] as const) {
+		it(`retains payload and tears down successful adds: ${mode}`, { skip: hookScriptSkip }, () => {
+			const repo = createRepo("pi-teardown-lifecycle-");
+			const runId = randomBytes(8).toString("hex");
+			const logs = fs.mkdtempSync(path.join(os.tmpdir(), "pi-teardown-records-"));
+			fs.mkdirSync(path.join(repo, "nested"));
+			fs.writeFileSync(path.join(repo, "nested", "file"), "x");
+			git(repo, ["add", "."]); git(repo, ["commit", "-m", "nested"]);
+			const record = `import fs from 'node:fs';\nconst p = JSON.parse(fs.readFileSync(0, 'utf8'));\nif (!fs.existsSync(p.worktreePath) || process.cwd() !== fs.realpathSync(p.worktreePath)) throw Error('missing checkout');\n`;
+			const setupHook = createHookScript(repo, "setup.mjs", record + `fs.appendFileSync(${JSON.stringify(path.join(logs, "setup"))}, JSON.stringify(p)+'\\n');\nif (${mode === "rollback"} && p.index === 1) { console.error('original failure'); process.exit(7); }\nconsole.log('{}');`);
+			const teardown = createHookScript(repo, "teardown.mjs", record + `fs.appendFileSync(${JSON.stringify(path.join(logs, "teardown"))}, JSON.stringify(p)+'\\n');`);
+			let setup: WorktreeSetup | undefined;
+			try {
+				if (mode === "add-failure") git(repo, ["branch", `pi-parallel-${runId}-1`]);
+				const create = () => createWorktrees(path.join(repo, "nested"), runId, 2, {
+					setupHook: mode === "only" ? undefined : { hookPath: setupHook },
+					teardownHook: { hookPath: path.relative(repo, teardown) }, agents: mode === "only" ? undefined : ["a", "b"],
+				});
+				if (mode === "rollback" || mode === "add-failure") assert.throws(create, mode === "rollback" ? /original failure/ : /already exists/);
+				else { setup = create(); assert.equal(cleanupWorktrees(setup), undefined); setup = undefined; }
+				const records = fs.readFileSync(path.join(logs, "teardown"), "utf8").trim().split("\n").map(JSON.parse);
+				assert.deepEqual(records.map(p => p.index), mode === "add-failure" ? [0] : [1, 0]);
+				if (mode !== "only") {
+					const originals = fs.readFileSync(path.join(logs, "setup"), "utf8").trim().split("\n").map(JSON.parse);
+					for (const p of records) assert.deepEqual(p, originals[p.index]);
+				}
+				for (const p of records) {
+					assert.equal(p.version, 1); assert.equal(p.runId, runId);
+					assert.equal(p.repoRoot, fs.realpathSync(repo));
+					assert.equal(p.baseCommit, git(repo, ["rev-parse", "HEAD"]));
+					assert.equal(p.agentCwd, path.join(p.worktreePath, "nested"));
+					assert.equal(p.agent, mode === "only" ? undefined : ["a", "b"][p.index]);
+					assert.equal(fs.existsSync(p.worktreePath), false);
+					assert.equal(git(repo, ["branch", "--list", p.branch]), "");
+				}
+			} finally { if (setup) cleanupWorktrees(setup); cleanupRepo(repo); cleanupRepo(logs); }
+		});
+	}
+});
+
+describe("teardown failures", () => {
+	for (const failure of ["exit", "missing", "permissions", "stdout", "remove", "branch", "throw", "callback", "backpressure"] as const) {
+		it(`continues cleanup on ${failure}`, { skip: hookScriptSkip }, () => {
+			const repo = createRepo("pi-teardown-failure-");
+			const warnings: string[] = [];
+			const write = fs.write;
+			const hookPath = createHookScript(repo, "teardown.mjs", failure === "stdout"
+				? `process.stdout.write('x'.repeat(4 * 1024 * 1024));`
+				: `console.error('  detail  '); process.exit(7);`);
+			const setup = createWorktrees(repo, randomBytes(8).toString("hex"), 2, {
+				teardownHook: ["remove", "branch"].includes(failure) ? undefined : { hookPath },
+			});
+			try {
+				fs.write = ((fd, message, callback) => {
+					assert.equal(fd, 2); warnings.push(String(message));
+					if (failure === "throw") throw Error("sink");
+					if (failure !== "backpressure") callback(failure === "callback" ? Error("sink") : null);
+				}) as typeof fs.write;
+				if (failure === "missing") fs.unlinkSync(hookPath);
+				if (failure === "permissions") fs.chmodSync(hookPath, 0o644);
+				if (failure === "remove") {
+					fs.rmSync(setup.worktrees[1]!.path, { recursive: true, force: true });
+					git(repo, ["worktree", "prune"]);
+				}
+				if (failure === "branch") git(repo, ["update-ref", "-d", `refs/heads/${setup.worktrees[1]!.branch}`]);
+				assert.equal(cleanupWorktrees(setup), undefined);
+				for (const w of setup.worktrees) {
+					assert.equal(fs.existsSync(w.path), false);
+					assert.equal(git(repo, ["branch", "--list", w.branch]), "");
+				}
+				assert.equal(warnings.length, failure === "stdout" ? 0 : ["remove", "branch"].includes(failure) ? 1 : 2);
+				for (const warning of warnings) {
+					assert.ok(setup.worktrees.some(w => warning.includes(w.path)));
+					assert.match(warning, failure === "missing" ? /ENOENT/ : failure === "permissions" ? /EACCES/ : failure === "remove" ? /worktree remove/ : failure === "branch" ? /branch -D/ : /exit code 7: detail\n$/);
+				}
+			} finally { fs.write = write; cleanupRepo(repo); }
+		});
+	}
+
+	it("hard-kills a SIGTERM-ignoring hook within the timeout", { skip: hookScriptSkip }, () => {
+		const repo = createRepo("pi-teardown-timeout-");
+		const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-teardown-timeout-marker-"));
+		const marker = path.join(temp, "started");
+		const hookPath = createHookScript(repo, "hang.mjs", `import fs from 'node:fs'; process.on('SIGTERM', () => {}); fs.writeFileSync(${JSON.stringify(marker)}, 'yes'); setInterval(() => {}, 100);`);
+		const modulePath = new URL("../../src/runs/shared/worktree.ts", import.meta.url).href;
+		try {
+			const result = spawnSync(process.execPath, ["--input-type=module", "-e", `import { createWorktrees, cleanupWorktrees } from ${JSON.stringify(modulePath)}; const s = createWorktrees(${JSON.stringify(repo)}, ${JSON.stringify(randomBytes(8).toString("hex"))}, 1, {teardownHook: {hookPath: ${JSON.stringify(hookPath)}, timeoutMs: 1000}}); const started = Date.now(); cleanupWorktrees(s); if (Date.now() - started >= 5000) throw Error('cleanup exceeded 5000ms'); console.log(s.worktrees[0].path);`], { encoding: "utf8", timeout: 8000, killSignal: "SIGKILL" });
+			assert.equal(result.status, 0, result.stderr);
+			assert.ok(fs.existsSync(marker)); assert.match(result.stderr, /timed out after 1000ms/);
+			assert.equal(fs.existsSync(result.stdout.trim()), false);
+		} finally { cleanupRepo(repo); cleanupRepo(temp); }
+	});
+});
+
+describe("teardown resolution", () => {
+	it("accepts absolute, repo-relative from nested cwd, and home paths", () => {
+		const repo = createRepo("pi-teardown-paths-");
+		const home = fs.mkdtempSync(path.join(os.tmpdir(), "pi-teardown-home-"));
+		const previousHome = process.env.HOME;
+		const previousUserProfile = process.env.USERPROFILE;
+		try {
+			process.env.HOME = home;
+			process.env.USERPROFILE = home;
+			fs.writeFileSync(path.join(home, "hook"), "");
+			fs.mkdirSync(path.join(repo, "nested"));
+			fs.writeFileSync(path.join(repo, "nested", "hook"), "");
+			git(repo, ["add", "."]); git(repo, ["commit", "-m", "nested"]);
+			for (const hookPath of [path.join(home, "hook"), "./nested/hook", "~/hook"]) {
+				const setup = createWorktrees(path.join(repo, "nested"), randomBytes(8).toString("hex"), 0, { teardownHook: { hookPath } });
+				assert.equal(setup.worktrees.length, 0);
+				cleanupWorktrees(setup);
+			}
+			const setup = createWorktrees(repo, randomBytes(8).toString("hex"), 1);
+			cleanupWorktrees(setup);
+		} finally {
+			if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+			if (previousUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = previousUserProfile;
+			cleanupRepo(repo); cleanupRepo(home);
+		}
+	});
+});
+
+describe("teardown review regressions", () => {
+	it("uses the default timeout and ignores absent raw hook configuration while prune stays silent", () => {
+		const repo = createRepo("pi-teardown-default-");
+		const hookPath = createHookScript(repo, "unused.mjs", "throw Error('must be mocked');");
+		const originalSpawn = childProcess.spawnSync;
+		const originalWrite = fs.write;
+		const timeouts: number[] = [];
+		const warnings: string[] = [];
+		let prunes = 0;
+		try {
+			childProcess.spawnSync = ((command, args, options) => {
+				if (command === hookPath) {
+					timeouts.push(options.timeout);
+					return { status: 0, stderr: "", stdout: null };
+				}
+				if (command === "git" && args.includes("prune")) {
+					prunes++;
+					return { status: 1, stderr: "prune deliberately failed", stdout: "" };
+				}
+				return originalSpawn(command, args, options);
+			}) as typeof childProcess.spawnSync;
+			syncBuiltinESMExports();
+			fs.write = ((_fd, message, callback) => { warnings.push(String(message)); callback(null); }) as typeof fs.write;
+			for (const teardownHook of [{ hookPath }, undefined]) {
+				const setup = createWorktrees(repo, randomBytes(8).toString("hex"), 1, { teardownHook });
+				assert.equal(cleanupWorktrees(setup), undefined);
+				assert.equal(fs.existsSync(setup.worktrees[0]!.path), false);
+				assert.equal(git(repo, ["branch", "--list", setup.worktrees[0]!.branch]), "");
+			}
+			assert.deepEqual(timeouts, [30000]);
+			assert.equal(prunes, 2);
+			assert.deepEqual(warnings, []);
+		} finally {
+			childProcess.spawnSync = originalSpawn;
+			syncBuiltinESMExports();
+			fs.write = originalWrite;
+			cleanupRepo(repo);
+		}
+	});
+
+	for (const sink of ["record", "throw", "callback", "never-callback"] as const) {
+		it(`preserves setup failure through rollback git failures and ${sink} sink`, { skip: hookScriptSkip }, () => {
+			const repo = createRepo("pi-teardown-rollback-sink-");
+			const runId = randomBytes(8).toString("hex");
+			const checkout = path.join(os.tmpdir(), `pi-worktree-${runId}-0`);
+			const branch = `pi-parallel-${runId}-0`;
+			const hookPath = createHookScript(repo, "fail.mjs", `
+import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
+const p = JSON.parse(fs.readFileSync(0, 'utf8'));
+fs.rmSync(p.worktreePath, { recursive: true, force: true });
+execFileSync('git', ['-C', p.repoRoot, 'worktree', 'prune']);
+execFileSync('git', ['-C', p.repoRoot, 'branch', '-D', p.branch]);
+console.error('original setup failure'); process.exit(7);
+`);
+			const write = fs.write;
+			const warnings: string[] = [];
+			try {
+				fs.write = ((_fd, message, callback) => {
+					warnings.push(String(message));
+					if (sink === "throw") throw Error("sink submission failed");
+					if (sink !== "never-callback") callback(sink === "callback" ? Error("sink callback failed") : null);
+				}) as typeof fs.write;
+				assert.throws(() => createWorktrees(repo, runId, 1, { setupHook: { hookPath } }), {
+					message: "worktree setup hook failed with exit code 7: original setup failure",
+				});
+				assert.equal(warnings.length, 2);
+				assert.ok(warnings.every(w => w.includes(checkout)));
+				assert.match(warnings[0]!, /worktree remove.*fatal:/);
+				assert.ok(warnings[1]!.includes(branch));
+				assert.match(warnings[1]!, /branch -D.*error:/);
+				assert.equal(fs.existsSync(checkout), false);
+				assert.equal(git(repo, ["branch", "--list", branch]), "");
+			} finally { fs.write = write; cleanupRepo(repo); }
+		});
+	}
+
+	it("continues to earlier records when teardown removes its own checkout", { skip: hookScriptSkip }, () => {
+		const repo = createRepo("pi-teardown-self-remove-");
+		const records = fs.mkdtempSync(path.join(os.tmpdir(), "pi-teardown-self-records-"));
+		const recordPath = path.join(records, "records");
+		const hookPath = createHookScript(repo, "remove.mjs", `
+import fs from 'node:fs';
+const p = JSON.parse(fs.readFileSync(0, 'utf8'));
+fs.appendFileSync(${JSON.stringify(recordPath)}, p.index + '\\n');
+if (p.index === 1) {
+	fs.rmSync(p.worktreePath, { recursive: true, force: true });
+	const { execFileSync } = await import('node:child_process');
+	execFileSync('git', ['-C', p.repoRoot, 'worktree', 'prune']);
+}
+`);
+		const setup = createWorktrees(repo, randomBytes(8).toString("hex"), 2, { teardownHook: { hookPath } });
+		const write = fs.write;
+		const warnings: string[] = [];
+		try {
+			fs.write = ((_fd, message, callback) => { warnings.push(String(message)); callback(null); }) as typeof fs.write;
+			assert.equal(cleanupWorktrees(setup), undefined);
+			assert.equal(fs.readFileSync(recordPath, "utf8"), "1\n0\n");
+			for (const w of setup.worktrees) {
+				assert.equal(fs.existsSync(w.path), false);
+				assert.equal(git(repo, ["branch", "--list", w.branch]), "");
+			}
+			assert.equal(warnings.length, 1);
+			assert.ok(warnings[0]!.includes(setup.worktrees[1]!.path));
+			assert.match(warnings[0]!, /worktree remove.*fatal:/);
+			assert.equal(git(repo, ["worktree", "list", "--porcelain"]).split("worktree ").length - 1, 1);
+		} finally { fs.write = write; cleanupRepo(repo); cleanupRepo(records); }
 	});
 });

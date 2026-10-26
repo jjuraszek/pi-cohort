@@ -665,6 +665,8 @@ async function resumeAsyncRun(input: {
 		maxSubagentDepth: resolveCurrentMaxSubagentDepth(input.deps.config.maxSubagentDepth),
 		worktreeSetupHook: input.deps.config.worktreeSetupHook,
 		worktreeSetupHookTimeoutMs: input.deps.config.worktreeSetupHookTimeoutMs,
+		worktreeTeardownHook: input.deps.config.worktreeTeardownHook,
+		worktreeTeardownHookTimeoutMs: input.deps.config.worktreeTeardownHookTimeoutMs,
 		controlConfig: resolveControlConfig(input.deps.config.control, input.params.control),
 		availableModels,
 		forwardedFlags: input.deps.forwardedFlags,
@@ -1073,6 +1075,8 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): AgentTool
 			maxSubagentDepth: currentMaxSubagentDepth,
 			worktreeSetupHook: deps.config.worktreeSetupHook,
 			worktreeSetupHookTimeoutMs: deps.config.worktreeSetupHookTimeoutMs,
+			worktreeTeardownHook: deps.config.worktreeTeardownHook,
+			worktreeTeardownHookTimeoutMs: deps.config.worktreeTeardownHookTimeoutMs,
 			controlConfig,
 			nestedRoute,
 			forwardedFlags: deps.forwardedFlags,
@@ -1102,6 +1106,8 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): AgentTool
 			maxSubagentDepth: currentMaxSubagentDepth,
 			worktreeSetupHook: deps.config.worktreeSetupHook,
 			worktreeSetupHookTimeoutMs: deps.config.worktreeSetupHookTimeoutMs,
+			worktreeTeardownHook: deps.config.worktreeTeardownHook,
+			worktreeTeardownHookTimeoutMs: deps.config.worktreeTeardownHookTimeoutMs,
 			controlConfig,
 			nestedRoute,
 			forwardedFlags: deps.forwardedFlags,
@@ -1144,6 +1150,8 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): AgentTool
 			maxSubagentDepth,
 			worktreeSetupHook: deps.config.worktreeSetupHook,
 			worktreeSetupHookTimeoutMs: deps.config.worktreeSetupHookTimeoutMs,
+			worktreeTeardownHook: deps.config.worktreeTeardownHook,
+			worktreeTeardownHookTimeoutMs: deps.config.worktreeTeardownHookTimeoutMs,
 			controlConfig,
 			nestedRoute,
 			acceptance: params.acceptance,
@@ -1204,6 +1212,8 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 		maxSubagentDepth: currentMaxSubagentDepth,
 		worktreeSetupHook: deps.config.worktreeSetupHook,
 		worktreeSetupHookTimeoutMs: deps.config.worktreeSetupHookTimeoutMs,
+		worktreeTeardownHook: deps.config.worktreeTeardownHook,
+		worktreeTeardownHookTimeoutMs: deps.config.worktreeTeardownHookTimeoutMs,
 		forwardedFlags: deps.forwardedFlags,
 	});
 
@@ -1237,6 +1247,8 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 			maxSubagentDepth: currentMaxSubagentDepth,
 			worktreeSetupHook: deps.config.worktreeSetupHook,
 			worktreeSetupHookTimeoutMs: deps.config.worktreeSetupHookTimeoutMs,
+			worktreeTeardownHook: deps.config.worktreeTeardownHook,
+			worktreeTeardownHookTimeoutMs: deps.config.worktreeTeardownHookTimeoutMs,
 			controlConfig,
 			nestedRoute: data.nestedRoute,
 			forwardedFlags: deps.forwardedFlags,
@@ -1299,6 +1311,8 @@ function createParallelWorktreeSetup(
 	tasks: TaskParam[],
 	setupHook: ExtensionConfig["worktreeSetupHook"],
 	setupHookTimeoutMs: ExtensionConfig["worktreeSetupHookTimeoutMs"],
+	teardownHook: ExtensionConfig["worktreeTeardownHook"],
+	teardownHookTimeoutMs: ExtensionConfig["worktreeTeardownHookTimeoutMs"],
 ): { setup?: WorktreeSetup; errorResult?: AgentToolResult<Details> } {
 	if (!enabled) return {};
 	try {
@@ -1307,6 +1321,9 @@ function createParallelWorktreeSetup(
 				agents: tasks.map((task) => task.agent),
 				setupHook: setupHook
 					? { hookPath: setupHook, timeoutMs: setupHookTimeoutMs }
+					: undefined,
+				teardownHook: teardownHook
+					? { hookPath: teardownHook, timeoutMs: teardownHookTimeoutMs }
 					: undefined,
 			}),
 		};
@@ -1691,6 +1708,8 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 				maxSubagentDepth: currentMaxSubagentDepth,
 				worktreeSetupHook: deps.config.worktreeSetupHook,
 				worktreeSetupHookTimeoutMs: deps.config.worktreeSetupHookTimeoutMs,
+				worktreeTeardownHook: deps.config.worktreeTeardownHook,
+				worktreeTeardownHookTimeoutMs: deps.config.worktreeTeardownHookTimeoutMs,
 				controlConfig,
 				forwardedFlags: deps.forwardedFlags,
 			});
@@ -1709,6 +1728,8 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 		tasks,
 		deps.config.worktreeSetupHook,
 		deps.config.worktreeSetupHookTimeoutMs,
+		deps.config.worktreeTeardownHook,
+		deps.config.worktreeTeardownHookTimeoutMs,
 	);
 	if (errorResult) return errorResult;
 
@@ -1952,6 +1973,8 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 				maxSubagentDepth,
 				worktreeSetupHook: deps.config.worktreeSetupHook,
 				worktreeSetupHookTimeoutMs: deps.config.worktreeSetupHookTimeoutMs,
+				worktreeTeardownHook: deps.config.worktreeTeardownHook,
+				worktreeTeardownHookTimeoutMs: deps.config.worktreeTeardownHookTimeoutMs,
 				controlConfig,
 				forwardedFlags: deps.forwardedFlags,
 			});

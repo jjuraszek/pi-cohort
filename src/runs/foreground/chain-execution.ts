@@ -420,6 +420,8 @@ interface ChainExecutionParams {
 	nestedRoute?: NestedRouteInfo;
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;
+	worktreeTeardownHook?: string;
+	worktreeTeardownHookTimeoutMs?: number;
 	forwardedFlags?: string[];
 }
 
@@ -659,6 +661,9 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 							agents: step.parallel.map((task) => task.agent),
 							setupHook: params.worktreeSetupHook
 								? { hookPath: params.worktreeSetupHook, timeoutMs: params.worktreeSetupHookTimeoutMs }
+								: undefined,
+							teardownHook: params.worktreeTeardownHook
+								? { hookPath: params.worktreeTeardownHook, timeoutMs: params.worktreeTeardownHookTimeoutMs }
 								: undefined,
 						});
 					} catch (error) {

@@ -104,19 +104,27 @@ Project `.pi/settings.json#subagents.executionBackend` wins over user config, th
 ```json
 {
   "worktreeSetupHook": "./scripts/setup-worktree.mjs",
-  "worktreeSetupHookTimeoutMs": 45000
+  "worktreeSetupHookTimeoutMs": 45000,
+  "worktreeTeardownHook": "./scripts/teardown-worktree.mjs",
+  "worktreeTeardownHookTimeoutMs": 30000
 }
 ```
 
-The hook runs once per created worktree. Paths must be absolute, `~/...`, or repo-relative; bare command names are rejected.
+`worktreeSetupHook` runs once per created worktree; `worktreeTeardownHook` runs before its removal, including setup-failure rollback. The hooks are independent: setup-only and teardown-only configurations are supported. An empty string (`""`) is treated as unset at the executor boundary, with no validation or invocation.
 
-stdin is a JSON object with `repoRoot`, `worktreePath`, `agentCwd`, `branch`, `index`, `runId`, and `baseCommit`. stdout must be one JSON object, for example:
+Both hook paths accept absolute paths, `~/...`, or repo-relative paths containing `/` or `\`; relative paths resolve from the repository root. Bare command names, whitespace-only paths, missing files, and directories are rejected before any checkout is created. Both timeout settings default to `30000` ms and, when their hook is configured, must be positive integers; invalid values are rejected before checkout creation.
+
+Both hooks receive the identical stdin JSON object: `version: 1`, `repoRoot`, `worktreePath`, `agentCwd`, `branch`, `index`, `runId`, `baseCommit`, and optional `agent`. There is no `phase` field. Both run with the checkout root (`worktreePath`) as cwd, not `agentCwd`, and execute synchronously via `spawnSync`, blocking the event loop with a timeout per checkout.
+
+The setup hook's stdout must be one JSON object, for example:
 
 ```json
 { "syntheticPaths": [".venv", ".env.local"] }
 ```
 
-`syntheticPaths` must be relative to the worktree root. They are removed before diff capture so helper files do not pollute patches. Tracked files are never excluded; marking a tracked path as synthetic fails setup. Default timeout is `30000` ms. See [orchestration-patterns.md](orchestration-patterns.md#worktree-isolation).
+`syntheticPaths` must be relative to the worktree root. They are removed before diff capture so helper files do not pollute patches. Tracked files are never excluded; marking a tracked path as synthetic fails setup.
+
+The teardown hook's stdout is discarded; no JSON response is required. Failures (including spawn errors, nonzero exits, signals, and timeouts) produce best-effort warnings with the checkout path and trimmed stderr when available. Cleanup continues without changing task results. Warning writes do not wait for delivery, so logs are not guaranteed before process exit. See [orchestration-patterns.md](orchestration-patterns.md#worktree-isolation) for cleanup guarantees.
 
 ## Manually verifying flag forwarding
 
