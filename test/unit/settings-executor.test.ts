@@ -54,7 +54,11 @@ function fixture(root: string, resolveConfig: (cwd: string) => any, runtime: any
 	}) };
 }
 
-it("passes each call's hooks and timeouts through createWorktrees", async () => {
+it("passes each call's hooks and timeouts through createWorktrees", {
+	skip: process.platform === "win32"
+		? "Hook script execution differs on Windows CI environments."
+		: undefined,
+}, async () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "settings-hooks-"));
 	try {
 		const roots = ["a", "b"].map((name) => path.join(root, name));
