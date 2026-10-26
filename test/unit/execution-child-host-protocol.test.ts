@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { CHILD_HOST_PROTOCOL_VERSION, ChildHostFrameDecoder, decodeChildHostFrames, validateChildHostMessage } from "../../src/execution-backend/child-host-protocol.ts";
+import { CHILD_HOST_PROTOCOL_VERSION, ChildHostFrameDecoder, decodeChildHostFrames, validateChildHostConfig, validateChildHostMessage } from "../../src/execution-backend/child-host-protocol.ts";
 
 describe("execution child host protocol", () => {
 	it("validates exact versioned messages", () => {
@@ -12,6 +12,16 @@ describe("execution child host protocol", () => {
 			{ protocolVersion: 1, kind: "attempt_exited", runId: "run", childId: "child", attemptId: "a", status: "0", signal: null },
 		]) assert.throws(() => validateChildHostMessage(value));
 		assert.equal(CHILD_HOST_PROTOCOL_VERSION, 1);
+	});
+
+	it("validates exact child host configs", () => {
+		const config = { protocolVersion: 1, socketPath: "/tmp/host.sock", runId: "run", childId: "child", surfaceEnvironmentPrefixes: ["MUX_"] };
+		assert.deepEqual(validateChildHostConfig(config), config);
+		const { surfaceEnvironmentPrefixes: _omitted, ...missingPrefixes } = config;
+		assert.throws(() => validateChildHostConfig(missingPrefixes), /fields/);
+		assert.throws(() => validateChildHostConfig({ ...config, surfaceEnvironmentPrefixes: "MUX_" }), /surfaceEnvironmentPrefixes must be an array/);
+		assert.throws(() => validateChildHostConfig({ ...config, surfaceEnvironmentPrefixes: [""] }), /surfaceEnvironmentPrefixes entry/);
+		assert.throws(() => validateChildHostConfig({ ...config, surfaceEnvironmentPrefixes: [7] }), /surfaceEnvironmentPrefixes entry/);
 	});
 
 	it("frames split and coalesced input without retaining secrets", () => {
