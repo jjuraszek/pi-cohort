@@ -141,7 +141,7 @@ describe("runSync execution backend routing", () => {
 				assert.equal(launches.length, scenario === "entry disappeared" ? 0 : 1);
 				if (launches.length) assert.deepEqual(launches[0], {
 					command: selected.nodeExecPath,
-					args: [selected.piEntryPath, "--mode", "json", "-p", "--no-session", "--model", "one/model", "--extension",
+					args: [selected.piEntryPath, "--mode", "json", "-p", "--no-session", "--name", "worker native-r", "--model", "one/model", "--extension",
 						fileURLToPath(new URL("../../src/runs/shared/subagent-prompt-runtime.ts", import.meta.url)),
 						"--no-skills", "--system-prompt", path.join(promptDirs[0], "worker.md"), "Task: Task"],
 				});

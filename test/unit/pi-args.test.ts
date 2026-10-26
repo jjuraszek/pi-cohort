@@ -511,6 +511,33 @@ describe("buildPiArgs forwarded flags", () => {
 	});
 });
 
+describe("buildPiArgs child session name", () => {
+	const base = { baseArgs: [], task: "hi", sessionEnabled: true, inheritProjectContext: false, inheritSkills: false };
+	const runId = "a1b2c3d4-0000-4000-8000-000000000000";
+	const nameArg = (args: string[]) => args.includes("--name") ? args[args.indexOf("--name") + 1] : undefined;
+
+	it("names the child after its agent, run, and parent session", () => {
+		const { args } = buildPiArgs({ ...base, runId, childAgentName: "scout", childIndex: 0, parentSessionLabel: "P" });
+		assert.equal(nameArg(args), "scout a1b2c3d4 from P");
+		assert.equal(args.at(-1), "Task: hi");
+	});
+
+	it("adds the child index for later children of the same run", () => {
+		const { args } = buildPiArgs({ ...base, runId, childAgentName: "scout", childIndex: 2, parentSessionLabel: "P" });
+		assert.equal(nameArg(args), "scout a1b2c3d4/2 from P");
+	});
+
+	it("omits the parent when none is known", () => {
+		const { args } = buildPiArgs({ ...base, runId, childAgentName: "scout" });
+		assert.equal(nameArg(args), "scout a1b2c3d4");
+	});
+
+	it("does not name a child without an agent and run", () => {
+		assert.equal(nameArg(buildPiArgs({ ...base, childAgentName: "scout", parentSessionLabel: "P" }).args), undefined);
+		assert.equal(nameArg(buildPiArgs({ ...base, runId, parentSessionLabel: "P" }).args), undefined);
+	});
+});
+
 describe("SUBAGENT_RUN_DIR_ENV", () => {
 	it("is the PI_SUBAGENT_RUN_DIR env var name", () => {
 		assert.equal(SUBAGENT_RUN_DIR_ENV, "PI_SUBAGENT_RUN_DIR");

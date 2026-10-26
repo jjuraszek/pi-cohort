@@ -9,6 +9,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../../agents/agents.ts";
 import { ChainClarifyComponent, type ChainClarifyResult, type BehaviorOverride } from "./chain-clarify.ts";
 import { parentModelFullId, toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
+import { resolveSessionLabel } from "../../shared/session-identity.ts";
 import {
 	resolveChainTemplates,
 	createChainDir,
@@ -318,6 +319,7 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 				preferredModelProvider: input.ctx.model?.provider,
 				parentModel: parentModelFullId(input.ctx.model),
 				parentThinking: input.ctx.thinkingLevel,
+				parentSessionLabel: resolveSessionLabel(input.ctx.sessionManager),
 				skills: behavior.skills === false ? [] : behavior.skills,
 				structuredOutput: structuredRuntime,
 				acceptance: task.acceptance,
@@ -1161,6 +1163,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					preferredModelProvider: ctx.model?.provider,
 					parentModel: parentModelFullId(ctx.model),
 					parentThinking: ctx.thinkingLevel,
+					parentSessionLabel: resolveSessionLabel(ctx.sessionManager),
 					skills: behavior.skills === false ? [] : behavior.skills,
 					structuredOutput: structuredRuntime,
 					acceptance: seqStep.acceptance,

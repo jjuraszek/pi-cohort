@@ -45,6 +45,8 @@ interface BuildPiArgsInput {
 	runId?: string;
 	childAgentName?: string;
 	childIndex?: number;
+	/** Parent session display name, or its id when unnamed; names the child session. */
+	parentSessionLabel?: string;
 	parentEventSink?: string;
 	parentControlInbox?: string;
 	parentRootRunId?: string;
@@ -79,6 +81,13 @@ export function applyThinkingSuffix(model: string | undefined, thinking: string 
 	return `${model}:${thinking}`;
 }
 
+function childSessionName(input: BuildPiArgsInput): string | undefined {
+	if (!input.childAgentName || !input.runId) return undefined;
+	const index = input.childIndex ? `/${input.childIndex}` : "";
+	const parent = input.parentSessionLabel ? ` from ${input.parentSessionLabel}` : "";
+	return `${input.childAgentName} ${input.runId.slice(0, 8)}${index}${parent}`;
+}
+
 export function buildPiArgs(input: BuildPiArgsInput, fileSystem: BuildPiArgsFileSystem = fs): BuildPiArgsResult {
 	const args = [...input.baseArgs];
 	// Forwarded flags are already name-deduped by deriveForwardedFlags; append only
@@ -98,6 +107,11 @@ export function buildPiArgs(input: BuildPiArgsInput, fileSystem: BuildPiArgsFile
 			fs.mkdirSync(input.sessionDir, { recursive: true });
 			args.push("--session-dir", input.sessionDir);
 		}
+	}
+
+	const sessionName = childSessionName(input);
+	if (sessionName) {
+		args.push("--name", sessionName);
 	}
 
 	const modelArg = applyThinkingSuffix(input.model, input.thinking);

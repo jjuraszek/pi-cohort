@@ -57,6 +57,8 @@ interface AsyncExecutionContext {
 	parentModel?: string;
 	/** Parent session thinking level, captured at dispatch */
 	parentThinking?: string;
+	/** Parent session display name, or its id when unnamed, captured at dispatch */
+	parentSessionLabel?: string;
 	executionBackend?: string;
 }
 
@@ -632,6 +634,7 @@ export function executeAsyncChain(
 				sessionDir: path.join(sessionRoot ?? path.join(RUN_STATE_ROOT_DIR, "sessions"), `async-${id}`),
 				asyncDir,
 				sessionId: ctx.currentSessionId,
+				parentSessionLabel: ctx.parentSessionLabel,
 				runtime: ctx.runtime,
 				forwardedFlags,
 				worktreeSetupHook,
@@ -846,6 +849,7 @@ export function executeAsyncSingle(
 				sessionDir: path.join(sessionRoot ?? path.join(RUN_STATE_ROOT_DIR, "sessions"), `async-${id}`),
 				asyncDir,
 				sessionId: ctx.currentSessionId,
+				parentSessionLabel: ctx.parentSessionLabel,
 				runtime: ctx.runtime,
 				forwardedFlags,
 				worktreeSetupHook,

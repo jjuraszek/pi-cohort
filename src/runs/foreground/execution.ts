@@ -158,6 +158,7 @@ async function runSingleAttempt(
 		runId: options.runId,
 		childAgentName: agent.name,
 		childIndex: options.index ?? 0,
+		parentSessionLabel: options.parentSessionLabel,
 		parentEventSink: options.nestedRoute?.eventSink,
 		parentControlInbox: options.nestedRoute?.controlInbox,
 		parentRootRunId: options.nestedRoute?.rootRunId,

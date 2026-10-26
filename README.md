@@ -167,6 +167,16 @@ Review and delivery workflows live in pi-gauntlet; pi-cohort ships delegation pr
 
 `context: "fork"` starts a child from a real branched session instead of a fresh one, when it needs the parent's history. Cost across the whole subtree - main loop plus every foreground/background/nested child - rolls up into one `Σ$` total in the footer; see [doc/observability.md](doc/observability.md).
 
+Each child session is named `<agent> <run id prefix>[/<index>] from <parent>`, so `/resume`, terminal titles, and live-session rosters can tell children apart:
+
+| Child | Session name |
+|---|---|
+| Single `scout` from a session named `billing reports` | `scout 3f9a2c1e from billing reports` |
+| Third task (index 2) of the same parallel run | `scout 3f9a2c1e/2 from billing reports` |
+| `scout` from an unnamed session | `scout 3f9a2c1e from <parent session id>` |
+
+The run id prefix works as the `id` for `subagent` status, interrupt, and resume; the index is the child `index` for resume. A nested child names its parent child: `worker 7b41d0aa from scout 3f9a2c1e from billing reports`.
+
 Full reference: agent/chain authoring in [doc/agents-and-chains.md](doc/agents-and-chains.md), exact command syntax in [doc/commands.md](doc/commands.md), the raw tool API in [doc/programmatic-api.md](doc/programmatic-api.md).
 
 ## Key concepts

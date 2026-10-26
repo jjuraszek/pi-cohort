@@ -110,6 +110,7 @@ test(`runSync drives one real child host surface through a registered backend ($
 			sessionFile,
 			parentModel: "github-copilot/gpt-6",
 			parentThinking: "high",
+			parentSessionLabel: "P",
 			acceptance: { level: "none", reason: "integration fixture" },
 		});
 		assert.equal(output.exitCode, outcome === "success" ? 0 : 1, output.error);
@@ -134,6 +135,7 @@ test(`runSync drives one real child host surface through a registered backend ($
 		const sessionEntry = JSON.parse(fs.readFileSync(sessionFile, "utf8").split("\n")[0]) as { args: string[] };
 		assert.ok(sessionEntry.args.includes("--model"));
 		assert.equal(sessionEntry.args[sessionEntry.args.indexOf("--model") + 1], "github-copilot/gpt-6:high");
+		assert.equal(sessionEntry.args[sessionEntry.args.indexOf("--name") + 1], "worker external from P");
 		assert.deepEqual(requests[0].awareness, { title: "worker" });
 		assert.equal(releases, 1);
 		assert.equal(closes, outcome === "success" ? 1 : 0);

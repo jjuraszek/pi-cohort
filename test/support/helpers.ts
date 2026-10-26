@@ -92,6 +92,7 @@ interface MinimalCtx {
 	sessionManager: {
 		getSessionId: () => string;
 		getSessionFile: () => string | null;
+		getSessionName: () => string | undefined;
 	};
 	modelRegistry: {
 		getAvailable: () => Array<{ provider: string; id: string }>;
@@ -108,6 +109,7 @@ export function makeMinimalCtx(cwd: string): MinimalCtx {
 		sessionManager: {
 			getSessionId: () => "session-123",
 			getSessionFile: () => null,
+			getSessionName: () => undefined,
 		},
 		modelRegistry: {
 			getAvailable: () => [],
