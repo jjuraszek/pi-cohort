@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [7.6.1] - 2026-10-26
 
 ### Added
 - Execution backends can declare `surfaceEnvironmentPrefixes`; each child attempt gets the launched surface's own values for matching keys instead of the parent's, and inherits none of the parent's matching keys. Before, a child started in a terminal-mux pane carried the parent pane's identity (for example `CMUX_SURFACE_ID`), so mux-aware tools in the child acted on the parent's pane.
