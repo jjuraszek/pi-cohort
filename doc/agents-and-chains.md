@@ -83,7 +83,7 @@ Discovery rules:
 - **`SKILL.md` is excluded** by name - a skill manifest carries `name` + `description` frontmatter but is not an agent.
 - **`.chain.md` / `.chain.json` files do not define agents.**
 - **Collisions resolve by priority:** project levels are walked cwd -> git root; nearest level wins. Within a level, `.pi/agents` beats `.agents`. Any project level beats the user roots (`~/.agents`, `<PI_CODING_AGENT_DIR>/agents`).
-- **Settings merge:** project `.pi/settings.json` `agentOverrides` and `disableBuiltins` merge across all walked levels, nearest wins. Override and create writes target the nearest project root.
+- **Settings merge:** `settings.json#subagents` contains all 16 keys: `disableBuiltins`, `agentOverrides`, `executionBackend`, `asyncByDefault`, `forceTopLevelAsync`, `defaultSessionDir`, `maxSubagentDepth`, `control`, `parallel`, `chain`, `worktreeSetupHook`, `worktreeSetupHookTimeoutMs`, `worktreeTeardownHook`, `worktreeTeardownHookTimeoutMs`, `showRosterOnStart`, and `forwardParentFlags`. Extension configuration layers the profile below project `.pi/settings.json` files across walked levels, nearest defined value wins; `control`, `parallel`, and `chain` replace whole objects. Discovery's project merge stays project-only, preserving `agentScope: "project"`; `agentOverrides` replace the whole override per persona name, while `disableBuiltins` takes the nearest defined value. Override and create writes target the nearest project root. See the [settings source and precedence](configuration.md#settings-source-and-precedence) for execution-unit resolution, non-git behavior, and errors.
 
 Use `agentScope: "user" | "project" | "both"` to control discovery; `both` is the default and project definitions win runtime-name collisions.
 

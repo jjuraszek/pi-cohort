@@ -186,7 +186,7 @@ Full reference: agent/chain authoring in [doc/agents-and-chains.md](doc/agents-a
 
 ## Configuration
 
-Most installs need zero configuration. Full env/JSON reference: [doc/configuration.md](doc/configuration.md).
+Most installs need zero configuration. Set options under `subagents` in the profile's `settings.json` or project `.pi/settings.json`; project levels override the profile, nearest wins. See the [settings reference and migration guide](doc/configuration.md) for defaults, whole-object replacement, and moving legacy configuration.
 
 Run history lives under the pinned profile's `pi-cohort/` root and has no automatic age expiry. Status listings can grow without bound as history accumulates. To remove history manually, delete only a terminal top-level run directory after confirming its entire subtree has stopped; never delete queued or running state, individual nested records, or shared route files. This removes that directory's status and resume lookup, not separately stored session files or shared routes. Keep those sessions if you need their context; deleting a run directory is not a complete session purge. Storage details: [doc/observability.md](doc/observability.md#files-logs-and-observability).
 
