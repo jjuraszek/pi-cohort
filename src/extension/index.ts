@@ -6,10 +6,18 @@
  * - Async: Background execution, emits events when done
  *
  * Modes: single (agent + task), parallel (tasks[]), chain (chain[] with {previous})
- * Toggle: async parameter (default: false, configurable via config.json)
+ * Toggle: async parameter (default: false, configurable via settings.json#subagents)
  *
- * Config file: ~/.pi/agent/extensions/pi-cohort/config.json
- *   { "asyncByDefault": true, "forceTopLevelAsync": true, "maxSubagentDepth": 1, "showRosterOnStart": true, "worktreeSetupHook": "./scripts/setup-worktree.mjs" }
+ * Settings: settings.json#subagents (profile or project .pi/settings.json)
+ *   { "subagents": {
+ *     "asyncByDefault": true, "forceTopLevelAsync": true,
+ *     "defaultSessionDir": "./sessions", "maxSubagentDepth": 1,
+ *     "control": {}, "parallel": { "maxTasks": 8 },
+ *     "chain": { "dynamicFanout": { "maxItems": 8 } },
+ *     "worktreeSetupHook": "./scripts/setup-worktree.mjs", "worktreeSetupHookTimeoutMs": 30000,
+ *     "worktreeTeardownHook": "./scripts/teardown-worktree.mjs", "worktreeTeardownHookTimeoutMs": 30000,
+ *     "showRosterOnStart": true, "forwardParentFlags": true, "executionBackend": "auto"
+ *   } }
  */
 
 import * as fs from "node:fs";
@@ -36,7 +44,7 @@ import { inspectSubagentStatus } from "../runs/background/run-status.ts";
 import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/background/notify.ts";
 import { SUBAGENT_CHILD_ENV } from "../runs/shared/pi-args.ts";
 import { formatDuration, shortenPath } from "../shared/formatters.ts";
-import { loadConfig } from "./config.ts";
+import { getAgentDir } from "../shared/utils.ts";
 import {
 	type Details,
 	type SubagentState,
@@ -59,8 +67,6 @@ import {
 	SUBAGENT_CONTROL_MESSAGE_TYPE,
 	type SubagentControlMessageDetails,
 } from "./control-notices.ts";
-
-export { loadConfig } from "./config.ts";
 
 /**
  * Derive subagent session base directory from parent session file.
@@ -249,7 +255,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	ensureAccessibleDir(ASYNC_DIR, true);
 	cleanupOldChainDirs();
 
-	const config = loadConfig();
 	const tempArtifactsDir = getArtifactsDir(null);
 	cleanupAllArtifactDirs(DEFAULT_ARTIFACT_CONFIG.cleanupDays);
 
@@ -538,6 +543,13 @@ DIAGNOSTICS:
 
 	pi.on("session_start", (_event, ctx) => {
 		resetSessionState(ctx);
+		const config = resolveExtensionConfig(ctx.cwd);
+		const legacyConfigPath = path.join(getAgentDir(), "extensions", "pi-cohort", "config.json");
+		if (fs.existsSync(legacyConfigPath)) {
+			const message = `${legacyConfigPath}: pi-cohort no longer reads this file; move its keys under \`subagents\` in \`settings.json\`.`;
+			if (ctx.hasUI) ctx.ui.notify(message, "warning");
+			else console.warn(message);
+		}
 		if (ctx.hasUI && config.showRosterOnStart !== false) {
 			const roster = formatSubagentRoster(ctx.cwd);
 			// Posted to scrollback at start (alongside [Skills]/[Extensions]). Safe to
