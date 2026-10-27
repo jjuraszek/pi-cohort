@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Each child session is named `<agent> <run id prefix>[/<index>] from <parent>`, where `<parent>` is the parent session's name or, when unnamed, its id. `/resume`, terminal titles, and live-session rosters now tell children apart instead of listing unnamed sessions. (#32)
+
 ## [7.6.1] - 2026-10-26
 
 ### Added

@@ -830,6 +830,8 @@ export interface RunSyncOptions {
 	parentModel?: string;
 	/** Parent session thinking level; used when the agent sets no `thinking` */
 	parentThinking?: string;
+	/** Parent session display name, or its id when unnamed; names the child session */
+	parentSessionLabel?: string;
 	/** Skills to inject (overrides agent default if provided) */
 	skills?: string[];
 	structuredOutput?: {

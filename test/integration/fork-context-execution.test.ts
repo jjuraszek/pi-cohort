@@ -54,6 +54,7 @@ interface SessionStubOptions {
 interface SessionManagerStub {
 	getSessionId(): string;
 	getSessionFile(): string | undefined;
+	getSessionName(): string | undefined;
 	getLeafId(): string | null;
 	openSession(sessionFile: string): { createBranchedSession(leafId: string): string | undefined };
 }
@@ -61,6 +62,7 @@ interface SessionManagerStub {
 function makeSessionManagerRecorder(options: SessionStubOptions = {}) {
 	const manager: SessionManagerStub = {
 		getSessionId: () => "session-123",
+		getSessionName: () => undefined,
 		getSessionFile: () => options.sessionFile,
 		getLeafId: () => (options.leafId === undefined ? "leaf-current" : options.leafId),
 		openSession: () => ({
@@ -198,6 +200,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		fs.writeFileSync(options.sessionFile, '{"type":"session","version":1,"id":"parent","timestamp":"2026-04-16T00:00:00.000Z","cwd":"/tmp"}\n', "utf-8");
 		const manager = {
 			getSessionId: () => "session-123",
+			getSessionName: () => undefined,
 			getSessionFile: () => options.sessionFile,
 			getLeafId: () => options.leafId,
 			openSession: (sessionFile: string, sessionDir: string) => {
@@ -503,6 +506,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		fs.writeFileSync(parentSessionFile, '{"type":"session","version":1,"id":"parent","timestamp":"2026-04-16T00:00:00.000Z","cwd":"/tmp"}\n', "utf-8");
 		const manager = {
 			getSessionId: () => "session-123",
+			getSessionName: () => undefined,
 			getSessionFile: () => parentSessionFile,
 			getLeafId: () => "leaf-fail",
 			openSession: () => ({

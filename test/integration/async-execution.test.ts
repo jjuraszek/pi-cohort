@@ -809,7 +809,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 				{ agent: "consumer", task: "Use {outputs.reviews}" },
 			],
 			agents: [makeAgent("producer"), makeAgent("reviewer"), makeAgent("consumer")],
-			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-dynamic" },
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-dynamic", parentSessionLabel: "P" },
 			sessionRoot: originSessionRoot,
 			originSessionRoot,
 			sessionFilesByFlatIndex: [original, undefined],
@@ -836,6 +836,11 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.notEqual(consumerSession, original);
 		assert.match(readMockPiArgs(mockPi, 1).at(-1) ?? "", /Review src\/a\.ts/);
 		assert.match(readMockPiArgs(mockPi, 2).at(-1) ?? "", /Review src\/b\.ts/);
+		for (const index of [1, 2]) {
+			const args = readMockPiArgs(mockPi, index);
+			assert.ok(args.includes("--name"));
+			assert.equal(args[args.indexOf("--name") + 1], `reviewer ${id.slice(0, 8)}/${index} from P`);
+		}
 		assert.match(readMockPiArgs(mockPi, 3).at(-1) ?? "", /"key":"src\/a\.ts"/);
 		const collected = payload.outputs?.reviews?.structured as Array<{ key: string; structured: unknown }>;
 		assert.deepEqual(collected.map((item) => item.key), ["src/a.ts", "src/b.ts"]);

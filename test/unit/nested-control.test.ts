@@ -98,7 +98,7 @@ it("reports the selected root when async jiti is unavailable", async () => {
 	const runtime = { ...mockPi.runtime, piPackageRoot: root };
 	const executor = createExecutor(createState(), [{ name: "worker", source: "user", systemPrompt: "help" }], true, undefined, () => runtime);
 	const result = await executor.execute("launch", { agent: "worker", task: "go", async: true }, new AbortController().signal, undefined, {
-		cwd: root, hasUI: false, sessionManager: { getSessionFile: () => undefined, getSessionId: () => "parent" },
+		cwd: root, hasUI: false, sessionManager: { getSessionFile: () => undefined, getSessionId: () => "parent", getSessionName: () => undefined },
 	} as any);
 	assert.equal(result.isError, true);
 	assert.match(result.content[0].text, /Cannot resolve jiti from selected Pi installation/);
@@ -127,7 +127,7 @@ function ctx(root: string, sessionFile: string | null = null) {
 	return {
 		cwd: root,
 		hasUI: false,
-		sessionManager: { getSessionId() { return "session"; }, getSessionFile() { return sessionFile; } },
+		sessionManager: { getSessionId() { return "session"; }, getSessionFile() { return sessionFile; }, getSessionName() { return undefined; } },
 		modelRegistry: { getAvailable() { return []; } },
 	} as any;
 }

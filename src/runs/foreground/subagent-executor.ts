@@ -37,7 +37,7 @@ import {
 import { discoverAvailableSkills, normalizeSkillInput } from "../../agents/skills.ts";
 import { executeAsyncChain, executeAsyncSingle, formatAsyncStartedMessage, isAsyncAvailable } from "../background/async-execution.ts";
 import { createForkContextResolver } from "../../shared/fork-context.ts";
-import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
+import { resolveCurrentSessionId, resolveSessionLabel } from "../../shared/session-identity.ts";
 import { formatControlNoticeMessage, resolveControlConfig, shouldNotifyControlEvent } from "../shared/subagent-control.ts";
 import { finalizeSingleOutput, injectSingleOutputInstruction, normalizeTopLevelOutput, resolveParallelTaskOutputPath, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
 import { blockedLine } from "../shared/completion-guard.ts";
@@ -225,6 +225,7 @@ function buildAsyncContext(ctx: ExtensionContext, deps: CallExecutorDeps, cwd: s
 		currentModelProvider: ctx.model?.provider,
 		parentModel: parentModelFullId(ctx.model),
 		parentThinking: ctx.thinkingLevel,
+		parentSessionLabel: resolveSessionLabel(ctx.sessionManager),
 		executionBackend: deps.config.executionBackend,
 	};
 }
@@ -1503,6 +1504,7 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 			preferredModelProvider: input.ctx.model?.provider,
 			parentModel: parentModelFullId(input.ctx.model),
 			parentThinking: input.ctx.thinkingLevel,
+			parentSessionLabel: resolveSessionLabel(input.ctx.sessionManager),
 			skills: effectiveSkills === false ? [] : effectiveSkills,
 			acceptance: task.acceptance,
 			acceptanceContext: { mode: "parallel" },
@@ -2064,6 +2066,7 @@ async function runSinglePath(data: ExecutionContextData, deps: CallExecutorDeps)
 		preferredModelProvider: currentProvider,
 		parentModel: parentModelFullId(ctx.model),
 		parentThinking: ctx.thinkingLevel,
+		parentSessionLabel: resolveSessionLabel(ctx.sessionManager),
 		skills: effectiveSkills,
 		acceptance: params.acceptance,
 		acceptanceContext: { mode: "single" },

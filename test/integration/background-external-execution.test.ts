@@ -350,6 +350,7 @@ test("runSingleStep retains the surface and removes its prompt directory when an
 			sessionEnabled: true,
 			id: "bg-runner-throw",
 			flatIndex: 0,
+			parentSessionLabel: "P",
 			flatStepCount: 1,
 			outputFile: path.join(tempDir, "output-0.log"),
 			executionBackendCoordinator: createDetachedExecutionBackendCoordinator({ protocolVersion: 1, registrations: [] }),
@@ -369,6 +370,8 @@ test("runSingleStep retains the surface and removes its prompt directory when an
 		assert.equal(requests.length, 1);
 		assert.equal(fixtureInvocationCount(argsPath), 1, "must not fall back to native execution");
 		assert.equal(fs.existsSync(promptTempDir(argsPath)), false);
+		const childArgs = JSON.parse(fs.readFileSync(argsPath, "utf-8")) as string[];
+		assert.equal(childArgs[childArgs.indexOf("--name") + 1], "worker bg-runne from P");
 	} finally {
 		process.env.PATH = savedPath;
 		dispose();

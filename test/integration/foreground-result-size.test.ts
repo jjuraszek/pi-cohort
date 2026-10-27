@@ -88,6 +88,7 @@ function makeCtx(cwd: string) {
 		sessionManager: {
 			getSessionId: () => "session-123",
 			getSessionFile: () => null,
+			getSessionName: () => undefined,
 		},
 		modelRegistry: { getAvailable: () => [] },
 	};
