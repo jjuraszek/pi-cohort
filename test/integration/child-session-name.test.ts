@@ -3,8 +3,8 @@
  *
  * Proves the executor names each child `<agent> <run id prefix>[/<index>] from
  * <parent session>` through foreground (runSync -> buildPiArgs) and async
- * (executeAsyncSingle -> subagent-runner -> buildPiArgs) dispatch. Uses the
- * mock pi binary; no real model calls.
+ * (executeAsyncSingle/executeAsyncChain -> subagent-runner -> buildPiArgs)
+ * dispatch. Uses the mock pi binary; no real model calls.
  */
 
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
@@ -93,7 +93,7 @@ describe("child session naming", { skip: !available ? "pi packages not available
 			tempArtifactsDir: tempDir,
 			getSubagentSessionRoot: () => tempDir,
 			expandTilde: (value: string) => value,
-			discoverAgents: () => ({ agents: [makeAgent("scout")] }),
+			discoverAgents: () => ({ agents: ["scout", "step1", "pa", "pb"].map((name) => makeAgent(name)) }),
 		});
 	}
 
@@ -130,5 +130,21 @@ describe("child session naming", { skip: !available ? "pi packages not available
 		});
 		await Promise.all(ids.map((id) => waitForAsyncResultFile(id)));
 		assert.deepEqual(recordedSessionNames(mockPi).sort(), ids.map((id) => `scout ${id.slice(0, 8)} from P`).sort());
+	});
+
+	it("names async chain steps and their parallel members", { skip: !asyncAvailable ? "jiti not available" : undefined }, async () => {
+		mockPi.onCall({ output: "async done" });
+		const launch = await makeExecutor().execute(
+			"async-chain",
+			{ chain: [{ agent: "step1", task: "one" }, { parallel: [{ agent: "pa", task: "a" }, { agent: "pb", task: "b" }] }], async: true, clarify: false },
+			new AbortController().signal,
+			undefined,
+			sessionCtx(tempDir, "P"),
+		);
+		const id = launch.details.asyncId;
+		assert.ok(id, launch.content[0]?.text);
+		await waitForAsyncResultFile(id);
+		const run = id.slice(0, 8);
+		assert.deepEqual(recordedSessionNames(mockPi).sort(), [`pa ${run}/1 from P`, `pb ${run}/2 from P`, `step1 ${run} from P`]);
 	});
 });

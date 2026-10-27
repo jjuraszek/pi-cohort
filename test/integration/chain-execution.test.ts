@@ -516,26 +516,34 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 		assert.deepEqual(result.details.results[0].attemptedModels, ["github-copilot/gpt-5-mini"]);
 	});
 
-	it("sequential and parallel-in-chain steps inherit the parent session model and thinking", async () => {
+	it("sequential and parallel-in-chain steps inherit the parent session model, thinking, and name", async () => {
 		mockPi.onCall({ output: "Step 1 ran" });
 		mockPi.onCall({ output: "Parallel a ran" });
 		mockPi.onCall({ output: "Parallel b ran" });
 		const agents = [makeAgent("step1"), makeAgent("pa"), makeAgent("pb")];
+		const parentCtx = makeParentSessionCtx(tempDir, "github-copilot", "gpt-6", "low");
 
 		const result = await executeChain(
 			makeChainParams(
 				[{ agent: "step1", task: "Do step 1" }, { parallel: [{ agent: "pa", task: "a" }, { agent: "pb", task: "b" }] }],
 				agents,
-				{ ctx: makeParentSessionCtx(tempDir, "github-copilot", "gpt-6", "low") },
+				{
+					ctx: { ...parentCtx, sessionManager: { ...parentCtx.sessionManager, getSessionName: () => "P" } },
+					runId: "chainrun-inherit",
+				},
 			),
 		);
 
 		assert.ok(!result.isError, `chain should succeed: ${JSON.stringify(result.content)}`);
 		assert.equal(result.details.results[0].model, "github-copilot/gpt-6:low");
-		for (const index of [0, 1, 2]) {
-			const args = readCallArgs(index);
+		const callArgs = [0, 1, 2].map((index) => readCallArgs(index));
+		for (const args of callArgs) {
 			assert.equal(args[args.indexOf("--model") + 1], "github-copilot/gpt-6:low");
 		}
+		assert.deepEqual(
+			callArgs.map((args) => args[args.indexOf("--name") + 1]).sort(),
+			["pa chainrun/1 from P", "pb chainrun/2 from P", "step1 chainrun from P"],
+		);
 	});
 
 	it("suppresses progress for {task} chain templates when the top-level task is review-only", async () => {
