@@ -1,8 +1,9 @@
 /**
- * Hermetic integration test for child session naming.
+ * Hermetic integration test for child session identity.
  *
  * Proves the executor names each child `<agent> <run id prefix>[/<index>] from
- * <parent session>` through foreground (runSync -> buildPiArgs) and async
+ * <parent session>` and hands it PI_SUBAGENT_PARENT_SESSION_ID through
+ * foreground (runSync -> buildPiArgs) and async
  * (executeAsyncSingle/executeAsyncChain -> subagent-runner -> buildPiArgs)
  * dispatch. Uses the mock pi binary; no real model calls.
  */
@@ -37,13 +38,20 @@ const available = !!(executorMod && asyncMod && typesMod);
 const availabilityMock = createMockPi();
 const asyncAvailable = available && asyncMod!.isAsyncAvailable(availabilityMock.runtime);
 
-async function waitForAsyncResultFile(id: string, timeoutMs = 30_000): Promise<void> {
+const PARENT_SESSION_ID_ENV = "PI_SUBAGENT_PARENT_SESSION_ID";
+
+async function waitForAsyncResultFile(id: string, timeoutMs = 30_000): Promise<{ results: Array<{ output?: string }> }> {
 	const resultPath = path.join(typesMod!.RESULTS_DIR, `${id}.json`);
 	const deadline = Date.now() + timeoutMs;
 	while (!fs.existsSync(resultPath)) {
 		if (Date.now() > deadline) assert.fail(`Timed out waiting for async result file: ${resultPath}`);
 		await new Promise((resolve) => setTimeout(resolve, 100));
 	}
+	return JSON.parse(fs.readFileSync(resultPath, "utf-8"));
+}
+
+function echoedParentSessionId(output: string | undefined): unknown {
+	return (JSON.parse(output ?? "{}") as Record<string, unknown>)[PARENT_SESSION_ID_ENV];
 }
 
 function recordedSessionNames(mockPi: MockPi): string[] {
@@ -62,7 +70,7 @@ function sessionCtx(cwd: string, sessionName: string | undefined) {
 	return { ...ctx, sessionManager: { ...ctx.sessionManager, getSessionName: () => sessionName } };
 }
 
-describe("child session naming", { skip: !available ? "pi packages not available" : undefined }, () => {
+describe("child session identity", { skip: !available ? "pi packages not available" : undefined }, () => {
 	let tempDir: string;
 	let mockPi: MockPi;
 
@@ -82,6 +90,7 @@ describe("child session naming", { skip: !available ? "pi packages not available
 
 	afterEach(() => {
 		removeTempDir(tempDir);
+		delete process.env[PARENT_SESSION_ID_ENV];
 	});
 
 	function makeExecutor() {
@@ -146,5 +155,61 @@ describe("child session naming", { skip: !available ? "pi packages not available
 		await waitForAsyncResultFile(id);
 		const run = id.slice(0, 8);
 		assert.deepEqual(recordedSessionNames(mockPi).sort(), [`pa ${run}/1 from P`, `pb ${run}/2 from P`, `step1 ${run} from P`]);
+	});
+
+	it("gives a foreground child its parent's session id, whether or not the parent is named", async () => {
+		for (const name of ["P", undefined]) {
+			mockPi.reset();
+			mockPi.onCall({ echoEnv: [PARENT_SESSION_ID_ENV] });
+			const result = await makeExecutor().execute("fg-parent-id", { agent: "scout", task: "look" }, new AbortController().signal, undefined, sessionCtx(tempDir, name));
+			assert.equal(result.isError, undefined, result.content[0]?.text);
+			assert.equal(echoedParentSessionId(result.content[0]?.text), "session-123");
+		}
+	});
+
+	it("gives a grandchild its immediate parent's session id, not the inherited one", async () => {
+		process.env[PARENT_SESSION_ID_ENV] = "grandparent-session";
+		mockPi.onCall({ echoEnv: [PARENT_SESSION_ID_ENV] });
+		const result = await makeExecutor().execute("fg-grandchild", { agent: "scout", task: "look" }, new AbortController().signal, undefined, sessionCtx(tempDir, "child"));
+		assert.equal(result.isError, undefined, result.content[0]?.text);
+		assert.equal(echoedParentSessionId(result.content[0]?.text), "session-123");
+	});
+
+	it("gives foreground chain steps and their parallel members the parent's session id", async () => {
+		mockPi.onCall({ echoEnv: [PARENT_SESSION_ID_ENV] });
+		const result = await makeExecutor().execute(
+			"fg-chain-parent-id",
+			{ chain: [{ agent: "step1", task: "one" }, { parallel: [{ agent: "pa", task: "a" }, { agent: "pb", task: "b" }] }], clarify: false },
+			new AbortController().signal,
+			undefined,
+			sessionCtx(tempDir, "P"),
+		);
+		assert.equal(result.isError, undefined, result.content[0]?.text);
+		const outputs = (result.details as { results: Array<{ finalOutput?: string }> }).results.map((step) => echoedParentSessionId(step.finalOutput));
+		assert.deepEqual(outputs, ["session-123", "session-123", "session-123"]);
+	});
+
+	it("gives async chain steps and their parallel members the parent's session id", { skip: !asyncAvailable ? "jiti not available" : undefined }, async () => {
+		mockPi.onCall({ echoEnv: [PARENT_SESSION_ID_ENV] });
+		const launch = await makeExecutor().execute(
+			"async-chain-parent-id",
+			{ chain: [{ agent: "step1", task: "one" }, { parallel: [{ agent: "pa", task: "a" }, { agent: "pb", task: "b" }] }], async: true, clarify: false },
+			new AbortController().signal,
+			undefined,
+			sessionCtx(tempDir, "P"),
+		);
+		const id = launch.details.asyncId;
+		assert.ok(id, launch.content[0]?.text);
+		const persisted = await waitForAsyncResultFile(id);
+		assert.deepEqual(persisted.results.map((step) => echoedParentSessionId(step.output)), ["session-123", "session-123", "session-123"]);
+	});
+
+	it("gives an async child its parent's session id", { skip: !asyncAvailable ? "jiti not available" : undefined }, async () => {
+		mockPi.onCall({ echoEnv: [PARENT_SESSION_ID_ENV] });
+		const launch = await makeExecutor().execute("async-parent-id", { agent: "scout", task: "look", async: true, clarify: false }, new AbortController().signal, undefined, sessionCtx(tempDir, undefined));
+		const id = launch.details.asyncId;
+		assert.ok(id, launch.content[0]?.text);
+		const persisted = await waitForAsyncResultFile(id);
+		assert.equal(echoedParentSessionId(persisted.results[0]?.output), "session-123");
 	});
 });

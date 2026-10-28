@@ -177,6 +177,15 @@ Each child session is named `<agent> <run id prefix>[/<index>] from <parent>`, s
 
 The run id prefix works as the `id` for `subagent` status, interrupt, and resume; the index is the child `index` for resume. A nested child names its parent child: `worker 7b41d0aa from scout 3f9a2c1e from billing reports`.
 
+Every child process also gets these environment variables, stable inputs for other extensions (for example, a session roster linking each child to its parent):
+
+| Variable | Value | Set |
+|---|---|---|
+| `PI_SUBAGENT_CHILD` | `1` | on every child |
+| `PI_SUBAGENT_CHILD_AGENT` | the child's agent name | when the agent is known |
+| `PI_SUBAGENT_RUN_ID` | the full run id; its prefix appears in the session name | when the run id is known |
+| `PI_SUBAGENT_PARENT_SESSION_ID` | the pi session id of the session that launched the child | on every child; a nested child gets its immediate parent's id, never an inherited ancestor's |
+
 Full reference: agent/chain authoring in [doc/agents-and-chains.md](doc/agents-and-chains.md), exact command syntax in [doc/commands.md](doc/commands.md), the raw tool API in [doc/programmatic-api.md](doc/programmatic-api.md).
 
 ## Key concepts

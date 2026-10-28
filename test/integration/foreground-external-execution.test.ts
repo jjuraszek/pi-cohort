@@ -33,7 +33,7 @@ const report = (kind, extra = {}) => append({
   data: { protocolVersion: 1, runId: config.runId, childId: config.childId, attemptId: config.attemptId, kind, sequence: ++reportSequence, timestamp: new Date().toISOString(), ...extra }
 });
 const socket = net.connect(config.controlSocketPath, () => {
-  append({ type: "session", version: 3, cwd: process.cwd(), args, timestamp: new Date().toISOString() });
+  append({ type: "session", version: 3, cwd: process.cwd(), args, parentSessionId: process.env.PI_SUBAGENT_PARENT_SESSION_ID, timestamp: new Date().toISOString() });
   report("ready");
   append({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "durable answer" }], api: "fixture", provider: "fixture", model: "fixture", usage: { input: 2, output: 3, cacheRead: 0, cacheWrite: 0, totalTokens: 5, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: Date.now() } });
   report("settled");
@@ -111,6 +111,7 @@ test(`runSync drives one real child host surface through a registered backend ($
 			parentModel: "github-copilot/gpt-6",
 			parentThinking: "high",
 			parentSessionLabel: "P",
+			parentSessionId: "parent-session-id",
 			acceptance: { level: "none", reason: "integration fixture" },
 		});
 		assert.equal(output.exitCode, outcome === "success" ? 0 : 1, output.error);
@@ -132,10 +133,11 @@ test(`runSync drives one real child host surface through a registered backend ($
 			retained: outcome !== "success",
 		});
 		assert.equal(requests.length, 1);
-		const sessionEntry = JSON.parse(fs.readFileSync(sessionFile, "utf8").split("\n")[0]) as { args: string[] };
+		const sessionEntry = JSON.parse(fs.readFileSync(sessionFile, "utf8").split("\n")[0]) as { args: string[]; parentSessionId?: string };
 		assert.ok(sessionEntry.args.includes("--model"));
 		assert.equal(sessionEntry.args[sessionEntry.args.indexOf("--model") + 1], "github-copilot/gpt-6:high");
 		assert.equal(sessionEntry.args[sessionEntry.args.indexOf("--name") + 1], "worker external from P");
+		assert.equal(sessionEntry.parentSessionId, "parent-session-id");
 		assert.deepEqual(requests[0].awareness, { title: "worker" });
 		assert.equal(releases, 1);
 		assert.equal(closes, outcome === "success" ? 1 : 0);

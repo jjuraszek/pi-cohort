@@ -118,6 +118,7 @@ interface SubagentRunConfig {
 	asyncDir: string;
 	sessionId?: string | null;
 	parentSessionLabel?: string;
+	parentSessionId?: string;
 	runtime: PiRuntimeIdentity;
 	forwardedFlags?: string[];
 	worktreeSetupHook?: string;
@@ -627,6 +628,7 @@ export interface SingleStepContext {
 	runtime: PiRuntimeIdentity;
 	forwardedFlags?: string[];
 	parentSessionLabel?: string;
+	parentSessionId?: string;
 	registerInterrupt?: (interrupt: (() => void) | undefined) => void;
 	nestedRoute?: NestedRouteInfo;
 	onAttemptStart?: (attempt: { model?: string; thinking?: string }) => void;
@@ -793,6 +795,7 @@ export async function runSingleStep(
 					childAgentName: step.agent,
 					childIndex: ctx.flatIndex,
 					parentSessionLabel: ctx.parentSessionLabel,
+					parentSessionId: ctx.parentSessionId,
 					parentEventSink: ctx.nestedRoute?.eventSink,
 					parentControlInbox: ctx.nestedRoute?.controlInbox,
 					parentRootRunId: ctx.nestedRoute?.rootRunId,
@@ -940,6 +943,7 @@ export async function runSingleStep(
 			childAgentName: step.agent,
 			childIndex: ctx.flatIndex,
 			parentSessionLabel: ctx.parentSessionLabel,
+			parentSessionId: ctx.parentSessionId,
 			parentEventSink: ctx.nestedRoute?.eventSink,
 			parentControlInbox: ctx.nestedRoute?.controlInbox,
 			parentRootRunId: ctx.nestedRoute?.rootRunId,
@@ -1983,6 +1987,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					controlConfig: config.controlConfig,
 					forwardedFlags: config.forwardedFlags,
 					parentSessionLabel: config.parentSessionLabel,
+					parentSessionId: config.parentSessionId,
 					executionBackendCoordinator,
 					executionBackendConfig,
 					nestedRoute: config.nestedRoute,
@@ -2274,6 +2279,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 							controlConfig: config.controlConfig,
 							forwardedFlags: config.forwardedFlags,
 							parentSessionLabel: config.parentSessionLabel,
+							parentSessionId: config.parentSessionId,
 							executionBackendCoordinator,
 							executionBackendConfig,
 							nestedRoute: config.nestedRoute,
@@ -2455,6 +2461,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				controlConfig: config.controlConfig,
 				forwardedFlags: config.forwardedFlags,
 				parentSessionLabel: config.parentSessionLabel,
+				parentSessionId: config.parentSessionId,
 				executionBackendCoordinator,
 				executionBackendConfig,
 				nestedRoute: config.nestedRoute,

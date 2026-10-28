@@ -44,7 +44,7 @@ function makeFixtureScript(outcome: "success" | "fail" | "missing-result", argsP
 const fs = require("node:fs");
 const net = require("node:net");
 const args = process.argv.slice(2);
-${argsPath ? `fs.appendFileSync(${JSON.stringify(`${argsPath}.count`)}, "1\\n"); fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(args));` : ""}
+${argsPath ? `fs.appendFileSync(${JSON.stringify(`${argsPath}.count`)}, "1\\n"); fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(args)); fs.writeFileSync(${JSON.stringify(`${argsPath}.parent-session-id`)}, process.env.PI_SUBAGENT_PARENT_SESSION_ID ?? "");` : ""}
 const sessionFile = args[args.indexOf("--session") + 1];
 if (!sessionFile) { console.error("no --session"); process.exit(1); }
 if (${JSON.stringify(outcome)} === "missing-result") process.exit(0);
@@ -351,6 +351,7 @@ test("runSingleStep retains the surface and removes its prompt directory when an
 			id: "bg-runner-throw",
 			flatIndex: 0,
 			parentSessionLabel: "P",
+			parentSessionId: "parent-session-id",
 			flatStepCount: 1,
 			outputFile: path.join(tempDir, "output-0.log"),
 			executionBackendCoordinator: createDetachedExecutionBackendCoordinator({ protocolVersion: 1, registrations: [] }),
@@ -372,6 +373,7 @@ test("runSingleStep retains the surface and removes its prompt directory when an
 		assert.equal(fs.existsSync(promptTempDir(argsPath)), false);
 		const childArgs = JSON.parse(fs.readFileSync(argsPath, "utf-8")) as string[];
 		assert.equal(childArgs[childArgs.indexOf("--name") + 1], "worker bg-runne from P");
+		assert.equal(fs.readFileSync(`${argsPath}.parent-session-id`, "utf-8"), "parent-session-id");
 	} finally {
 		process.env.PATH = savedPath;
 		dispose();

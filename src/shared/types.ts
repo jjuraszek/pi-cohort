@@ -832,6 +832,8 @@ export interface RunSyncOptions {
 	parentThinking?: string;
 	/** Parent session display name, or its id when unnamed; names the child session */
 	parentSessionLabel?: string;
+	/** Parent session id; exported to the child as PI_SUBAGENT_PARENT_SESSION_ID */
+	parentSessionId?: string;
 	/** Skills to inject (overrides agent default if provided) */
 	skills?: string[];
 	structuredOutput?: {
