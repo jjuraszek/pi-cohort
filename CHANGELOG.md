@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [7.6.3] - 2026-10-28
 
 ### Added
 - Every child process gets `PI_SUBAGENT_PARENT_SESSION_ID`, the pi session id of the session that launched it, so a session roster can link each child to its parent without parsing the session name. A nested child gets its immediate parent's id. The README now lists `PI_SUBAGENT_CHILD`, `PI_SUBAGENT_CHILD_AGENT`, `PI_SUBAGENT_RUN_ID`, and `PI_SUBAGENT_PARENT_SESSION_ID` as stable inputs for other extensions. (#34)
