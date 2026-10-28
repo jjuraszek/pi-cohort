@@ -13,6 +13,7 @@ import {
 	SUBAGENT_PARENT_PATH_ENV,
 	SUBAGENT_PARENT_ROOT_RUN_ID_ENV,
 	SUBAGENT_PARENT_RUN_ID_ENV,
+	SUBAGENT_PARENT_SESSION_ID_ENV,
 	SUBAGENT_RUN_DIR_ENV,
 	SUBAGENT_RUN_ID_ENV,
 	applyThinkingSuffix,
@@ -36,6 +37,7 @@ const originalEnv = {
 	PI_SUBAGENT_PARENT_PATH: process.env.PI_SUBAGENT_PARENT_PATH,
 	PI_SUBAGENT_PARENT_CAPABILITY_TOKEN: process.env.PI_SUBAGENT_PARENT_CAPABILITY_TOKEN,
 	PI_SUBAGENT_RUN_ID: process.env.PI_SUBAGENT_RUN_ID,
+	PI_SUBAGENT_PARENT_SESSION_ID: process.env.PI_SUBAGENT_PARENT_SESSION_ID,
 };
 const originalCwd = process.cwd();
 const tempRoots: string[] = [];
@@ -535,6 +537,25 @@ describe("buildPiArgs child session name", () => {
 	it("does not name a child without an agent and run", () => {
 		assert.equal(nameArg(buildPiArgs({ ...base, childAgentName: "scout", parentSessionLabel: "P" }).args), undefined);
 		assert.equal(nameArg(buildPiArgs({ ...base, runId, parentSessionLabel: "P" }).args), undefined);
+	});
+});
+
+describe("buildPiArgs parent session id", () => {
+	const base = { baseArgs: [], task: "hi", sessionEnabled: true, inheritProjectContext: false, inheritSkills: false };
+
+	it("is the PI_SUBAGENT_PARENT_SESSION_ID env var name", () => {
+		assert.equal(SUBAGENT_PARENT_SESSION_ID_ENV, "PI_SUBAGENT_PARENT_SESSION_ID");
+	});
+
+	it("gives every child its parent's session id, fanout or not", () => {
+		assert.equal(buildPiArgs({ ...base, parentSessionId: "P" }).env[SUBAGENT_PARENT_SESSION_ID_ENV], "P");
+		assert.equal(buildPiArgs({ ...base, tools: ["subagent"], parentSessionId: "P" }).env[SUBAGENT_PARENT_SESSION_ID_ENV], "P");
+	});
+
+	it("replaces an inherited parent session id with the immediate parent's", () => {
+		process.env[SUBAGENT_PARENT_SESSION_ID_ENV] = "grandparent";
+		assert.equal(buildPiArgs({ ...base, parentSessionId: "P" }).env[SUBAGENT_PARENT_SESSION_ID_ENV], "P");
+		assert.equal(buildPiArgs({ ...base }).env[SUBAGENT_PARENT_SESSION_ID_ENV], "");
 	});
 });
 

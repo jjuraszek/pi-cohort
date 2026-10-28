@@ -24,6 +24,7 @@ export const SUBAGENT_PARENT_CHILD_INDEX_ENV = "PI_SUBAGENT_PARENT_CHILD_INDEX";
 export const SUBAGENT_PARENT_DEPTH_ENV = "PI_SUBAGENT_PARENT_DEPTH";
 export const SUBAGENT_PARENT_PATH_ENV = "PI_SUBAGENT_PARENT_PATH";
 export const SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV = "PI_SUBAGENT_PARENT_CAPABILITY_TOKEN";
+export const SUBAGENT_PARENT_SESSION_ID_ENV = "PI_SUBAGENT_PARENT_SESSION_ID";
 
 interface BuildPiArgsInput {
 	baseArgs: string[];
@@ -47,6 +48,7 @@ interface BuildPiArgsInput {
 	childIndex?: number;
 	/** Parent session display name, or its id when unnamed; names the child session. */
 	parentSessionLabel?: string;
+	parentSessionId?: string;
 	parentEventSink?: string;
 	parentControlInbox?: string;
 	parentRootRunId?: string;
@@ -218,6 +220,8 @@ export function buildPiArgs(input: BuildPiArgsInput, fileSystem: BuildPiArgsFile
 	env[SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV] = fanoutAuthorized
 		? input.parentCapabilityToken ?? process.env[SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV] ?? ""
 		: "";
+	// Always set, so a grandchild sees its immediate parent rather than an inherited ancestor.
+	env[SUBAGENT_PARENT_SESSION_ID_ENV] = input.parentSessionId ?? "";
 	env.PI_SUBAGENT_INHERIT_PROJECT_CONTEXT = input.inheritProjectContext ? "1" : "0";
 	env.PI_SUBAGENT_INHERIT_SKILLS = input.inheritSkills ? "1" : "0";
 	if (input.runId) {

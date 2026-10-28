@@ -226,6 +226,7 @@ function buildAsyncContext(ctx: ExtensionContext, deps: CallExecutorDeps, cwd: s
 		parentModel: parentModelFullId(ctx.model),
 		parentThinking: ctx.thinkingLevel,
 		parentSessionLabel: resolveSessionLabel(ctx.sessionManager),
+		parentSessionId: ctx.sessionManager.getSessionId(),
 		executionBackend: deps.config.executionBackend,
 	};
 }
@@ -1505,6 +1506,7 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 			parentModel: parentModelFullId(input.ctx.model),
 			parentThinking: input.ctx.thinkingLevel,
 			parentSessionLabel: resolveSessionLabel(input.ctx.sessionManager),
+			parentSessionId: input.ctx.sessionManager.getSessionId(),
 			skills: effectiveSkills === false ? [] : effectiveSkills,
 			acceptance: task.acceptance,
 			acceptanceContext: { mode: "parallel" },
@@ -2067,6 +2069,7 @@ async function runSinglePath(data: ExecutionContextData, deps: CallExecutorDeps)
 		parentModel: parentModelFullId(ctx.model),
 		parentThinking: ctx.thinkingLevel,
 		parentSessionLabel: resolveSessionLabel(ctx.sessionManager),
+		parentSessionId: ctx.sessionManager.getSessionId(),
 		skills: effectiveSkills,
 		acceptance: params.acceptance,
 		acceptanceContext: { mode: "single" },

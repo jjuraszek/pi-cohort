@@ -93,6 +93,7 @@ export async function runExternalSingleAttempt(input: RunExternalSingleAttemptIn
 		childAgentName: agent.name,
 		childIndex: options.index ?? 0,
 		parentSessionLabel: options.parentSessionLabel,
+		parentSessionId: options.parentSessionId,
 		parentEventSink: options.nestedRoute?.eventSink,
 		parentControlInbox: options.nestedRoute?.controlInbox,
 		parentRootRunId: options.nestedRoute?.rootRunId,
