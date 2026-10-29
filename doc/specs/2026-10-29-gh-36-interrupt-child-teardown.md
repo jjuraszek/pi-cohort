@@ -7,6 +7,7 @@
 **Date:** 2026-10-29
 **Repositories:** pi-cohort; pi-gauntlet
 **Source bases:** pi-cohort `562fcf2b482f69670ad1401a533d1b43c3f230ae` (7.6.3); pi-gauntlet `c322049b462b4cfcb34d40c7f169868ade08a505` (7.40.0).
+**Execution checkouts:** pi-cohort uses its existing `gh-36-interrupt-child-teardown` worktree. By explicit user choice, pi-gauntlet uses the sibling primary checkout `../pi-gauntlet/` on `main`, initially clean at `7535fc4d24b12ac50f1598ddfb584f39e80d9a2f` (7.40.1); resolve the sibling path relative to the pi-cohort primary checkout, not its worktree. The completion predicates, their tests, telemetry implementation/tests, and configuration guide are unchanged from the audited sibling base. Do not create a sibling feature worktree or switch its branch; preserve unrelated changes if they appear.
 **Predecessor:** `doc/specs/2026-09-06-mux-execution-backends.md`, `Lifecycle, fallback, and retention` interrupted row only. Sibling predecessor scopes are recorded in Design.
 
 ## Problem
@@ -140,7 +141,7 @@ Also supersedes these sibling definitions only:
 - pi-gauntlet `doc/specs/2026-06-11-closure-review-verify-gate.md`, `Qualifying dispatch` success predicate: zero exit also requires no explicit interruption.
 - pi-gauntlet `doc/specs/2026-08-12-execution-fidelity-hardening.md`, advisory review-cadence completed-agent predicate: exclude interruption while retaining attempted-wave accounting and tie ordering. Follow its existing supersession notices for unrelated scope.
 
-The sibling specs are outside this brainstorm's spec-directory write grant; do not edit the sibling primary checkout. Record that boundary in Open questions and reconcile sibling predecessor documentation in the paired isolated implementation worktree.
+Reconcile the named sibling predecessor scopes with the approved sibling code/documentation changes in its user-selected primary `main` checkout. Keep the core spec and local predecessor in the existing pi-cohort worktree; do not copy the core spec into the sibling or modify unrelated predecessor scopes.
 
 ## Errors and edge cases
 
@@ -197,7 +198,7 @@ Amend the in-suite fixture backends in `test/integration/foreground-external-exe
 
 ### Verification boundary
 
-- Require pi-cohort `env -u PI_CODING_AGENT_DIR npm run test:all` and pi-gauntlet `npm test` in their isolated implementation worktrees. Both must pass before claiming compatibility; no proposed-change test ran during brainstorming.
+- Require pi-cohort `env -u PI_CODING_AGENT_DIR npm run test:all` in its existing worktree and pi-gauntlet `npm test` in its user-selected primary `main` checkout. Both must pass before claiming compatibility; no proposed-change test ran during brainstorming.
 - The exact reporter cmux/adapter-version incident - none: the live runtime and reporter's installed adapter version are unavailable. Actual-process fake-backend tests prove core behavior only, not live cmux reproduction or companion retention compliance.
 
 ## Documentation impact
@@ -221,4 +222,4 @@ No product-policy decision remains open. The user chose paused-with-warning for 
 
 External validation limits: the live cmux runtime and reporter's installed adapter version remain unavailable. This is nonblocking for the explicit fake-backend acceptance rows; retain the limitation in delivery evidence.
 
-Cross-repository documentation boundary: sibling predecessor banners are outside the current spec write grant. Reconcile the named scopes in the paired isolated sibling worktree when implementing its approved documentation changes; do not modify its primary checkout from this brainstorm. The core spec and its local predecessor banner can be committed now.
+Execution location is resolved by the user's instruction `current main ../pi-gauntlet/ (main checkout)`: sibling edits, tests, and scoped commits use that primary checkout on its current `main`; pi-cohort work remains in its existing feature worktree. This changes checkout placement, not components, acceptance criteria, or the paired compatibility requirement.
