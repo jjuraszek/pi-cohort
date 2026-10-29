@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [7.6.4] - 2026-10-29
 
 ### Fixed
 - Async children on external execution backends no longer falsely need attention while a tool call runs past the idle threshold within an open turn; replay now opens the turn, preserving the silence ceiling and final-answer closure. (#37)
