@@ -79,8 +79,15 @@ export async function createChildHostController(options: ChildHostControllerOpti
 			if (pendingShutdown) { pendingShutdown.reject(cause); pendingShutdown = undefined; }
 			if (!ready) cleanup();
 		};
+		const disconnect = () => {
+			if (closed) return;
+			const cause = disconnected(!ready ? "before ready" : active ? "during attempt" : pendingShutdown ? "before shutdown acknowledgement" : "after ready");
+			disconnectCause = cause;
+			fail(cause);
+		};
 		server = (dependencies.createServer ?? net.createServer)(connection => {
 			if (socket || closed) { connection.destroy(); return; }
+			connection.on("error", disconnect);
 			socket = connection;
 			const decoder = new ChildHostFrameDecoder();
 			connection.on("data", data => {
@@ -108,13 +115,7 @@ export async function createChildHostController(options: ChildHostControllerOpti
 					connection.destroy(); return;
 				}
 			});
-			connection.once("close", () => {
-				if (!closed) {
-					const cause = disconnected(!ready ? "before ready" : active ? "during attempt" : pendingShutdown ? "before shutdown acknowledgement" : "after ready");
-					disconnectCause = cause;
-					fail(cause);
-				}
-			});
+			connection.once("close", disconnect);
 		});
 		server.once("error", cause => fail(cause instanceof Error ? cause : new Error("child host server error")));
 		abortListener = () => { launchAborter.abort(); fail(aborted()); };
@@ -159,6 +160,7 @@ export async function createChildHostController(options: ChildHostControllerOpti
 			get lease() { return lease!; },
 			ready: readyPromise,
 			startAttempt(attempt) {
+				if (socket?.writableEnded || socket?.destroyed) disconnect();
 				if (closed || !socket || !ready) return Promise.reject(disconnectCause ?? disconnected("before ready"));
 				if (pendingShutdown) return Promise.reject(new Error("child host is shutting down"));
 				if (active) return Promise.reject(new Error("child host is busy"));
@@ -171,6 +173,7 @@ export async function createChildHostController(options: ChildHostControllerOpti
 				});
 			},
 			shutdown() {
+				if (socket?.writableEnded || socket?.destroyed) disconnect();
 				if (closed) return disconnectCause ? Promise.reject(disconnectCause) : Promise.resolve();
 				if (!socket || !ready) return Promise.reject(disconnectCause ?? disconnected("before ready"));
 				if (active || pendingShutdown) return Promise.reject(new Error("child host is busy"));

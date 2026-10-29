@@ -160,6 +160,32 @@ describe("execution child host controller setup", () => {
 });
 
 describe("execution child host controller attempts", () => {
+	for (const operation of ["shutdown", "startAttempt"] as const) {
+		for (const state of ["write-after-FIN", "writableEnded", "destroyed"] as const) {
+			it(`rejects ${operation} on ${state} without an uncaught socket error`, { timeout: 1_000 }, async () => {
+				const { server, dependencies } = fakeHostDependencies();
+				const controller = await createChildHostController(
+					{ runtime, backend: { ...backend, async launch() { return emptyLease(); } }, runId: "run", childId: "child", cwd: os.tmpdir(), signal: new AbortController().signal },
+					{ childHostCommand: () => ({ command: "echo", args: [] }), ...dependencies },
+				);
+				try {
+					const socket = connectFakeHost(server);
+					await controller.ready;
+					let writes = 0;
+					if (state !== "write-after-FIN") Object.assign(socket, { [state]: true });
+					socket.write = () => {
+						writes++;
+						setImmediate(() => socket.emit("error", Object.assign(new Error("This socket has been ended by the other party"), { code: "EPIPE" })));
+						return false;
+					};
+					await assert.rejects(operation === "shutdown" ? controller.shutdown() : controller.startAttempt({ attemptId: "attempt", command: "echo", args: [], cwd: os.tmpdir(), environment: {} }), /child host disconnected/);
+					assert.equal(writes, state === "write-after-FIN" ? 1 : 0);
+					await assert.rejects(controller.shutdown(), /child host disconnected/);
+				} finally { controller.dispose(); }
+			});
+		}
+	}
+
 	it("maps a host spawn-error frame to the selected runtime error and permits cleanup", { timeout: 1_000 }, async () => {
 		const aborter = new AbortController();
 		const { server, dependencies } = fakeHostDependencies();
