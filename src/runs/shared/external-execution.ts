@@ -299,6 +299,7 @@ export async function createExternalExecution(
 				let fallback = false;
 				let closed = false;
 				let closeAttempted = false;
+				let hostShutdownRequested = false;
 				const diagnostics: string[] = [];
 				const note = (error: unknown) => { diagnostics.push(error instanceof Error ? error.message : String(error)); };
 				const wait = <T>(promise: Promise<T>, label: string) => {
@@ -329,14 +330,20 @@ export async function createExternalExecution(
 				if (fallback) await forceCleanup();
 				try { await wait(exitPromise, "post-shutdown exit"); } catch (error) { note(error); fallback = true; }
 				if (observedExit) {
+					hostShutdownRequested = true;
 					try { await wait(controller.shutdown(), "host shutdown"); } catch (error) { note(error); fallback = true; }
 				}
 				if (fallback) await forceCleanup();
+				if (observedExit && !hostShutdownRequested) {
+					hostShutdownRequested = true;
+					try { await wait(controller.shutdown(), "host shutdown"); } catch (error) { note(error); }
+				}
 				if (!observedExit) {
 					// A failed observation is not exit evidence; keep resources until the remaining budget expires.
 					const remainingExit = exitPromise.catch(() => new Promise<ChildHostExit>(() => {}));
 					try { await wait(remainingExit, "child exit observation"); } catch (error) { note(error); }
 					if (observedExit) {
+						hostShutdownRequested = true;
 						try { await wait(controller.shutdown(), "host shutdown"); } catch (error) { note(error); }
 					}
 				}

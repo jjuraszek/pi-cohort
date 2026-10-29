@@ -688,6 +688,40 @@ describe("external foreground execution owner", () => {
 		assert.deepEqual(fake.calls, calls);
 	});
 
+	it("requests host shutdown when child exit arrives during fallback close", async () => {
+		const fake = harness();
+		let clock = 0;
+		const waits: { label: string; timeout: number; at: number }[] = [];
+		fake.dependencies.monotonicNow = () => clock;
+		fake.dependencies.controlDeadline = async (promise, timeout, label) => {
+			waits.push({ label, timeout, at: clock });
+			if (label === "post-shutdown exit" || label === "host exit observation") {
+				clock += timeout;
+				throw new Error(`${label} timed out`);
+			}
+			clock += 1;
+			return promise;
+		};
+		const close = fake.backend.close.bind(fake.backend);
+		fake.backend.close = async actual => {
+			await close(actual);
+			fake.exit.resolve({ status: 0, signal: null });
+		};
+		fake.setContent(sessionContent("interrupted", ["shutdown"]));
+		fake.terminal.resolve(replay(sessionContent("interrupted")));
+		const owner = await ownerFrom(fake, { controlTimeoutMs: 100 }); fake.ready.resolve();
+		const result = await owner.runAttempt(request());
+		assert.deepEqual(fake.counts(), { closes: 1, shutdowns: 1, releases: 1 });
+		assert.ok(fake.calls.indexOf("host-shutdown") < fake.calls.indexOf("dispose"));
+		assert.equal(waits.some(wait => wait.label === "host exit observation"), false);
+		const shutdownWait = waits.find(wait => wait.label === "host shutdown")!;
+		assert.equal(shutdownWait.at + shutdownWait.timeout, 200);
+		assert.ok(clock < 200);
+		assert.equal(result.error!.includes("manual cleanup"), false);
+		assert.deepEqual(await owner.finish("retained"), { handle, retained: false });
+		assert.deepEqual(fake.counts(), { closes: 1, shutdowns: 1, releases: 1 });
+	});
+
 	for (const closeMode of ["resolve", "reject", "stall"] as const) it(`bounds fallback with ${closeMode} close and no child exit`, async () => {
 		const fake = harness();
 		let clock = 0;
