@@ -13,6 +13,7 @@ import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 import type { MockPi } from "../support/helpers.ts";
 import { DEFAULT_CONTROL_CONFIG } from "../../src/runs/shared/subagent-control.ts";
 import {
@@ -1149,6 +1150,49 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		// No child was spawned for any rejected input.
 		assert.equal(fs.readdirSync(mockPi.dir).filter((name) => name.startsWith("call-")).length, 0);
 	});
+
+	for (const exitCode of [0, 1]) {
+		it(`omits cleanup diagnostics from native single exit ${exitCode}`, async () => {
+			mockPi.onCall({ output: "Native reply", stderr: exitCode ? "Native failure" : "", exitCode });
+			const result = await makeExecutor().execute("native", { agent: "echo", task: "Task" }, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
+			assert.equal(result.details.results[0].exitCode, exitCode);
+			assert.equal(result.isError, exitCode ? true : undefined);
+			assert.equal(result.content[0].text, exitCode ? "Native failure" : "Native reply");
+		});
+	}
+
+	for (const diagnostic of ["", "Process termination could not be confirmed; manual cleanup may be required."]) {
+		it(`renders public single pause with ${diagnostic ? "uncertain" : "clean"} cleanup`, async () => {
+			// Substitute only the child execution boundary; retain the public executor's pause projection.
+			const fixture = path.join(tempDir, "execution.mjs");
+			fs.writeFileSync(fixture, `export async function runSync(_cwd, _agents, agent, task) {
+				return { agent, task, exitCode: 0, interrupted: true, error: ${JSON.stringify(diagnostic || undefined)},
+					messages: [], finalOutput: "Interrupted. Waiting for explicit next action.",
+					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 } };
+			}`);
+			const sourceUrl = new URL("../../src/runs/foreground/subagent-executor.ts", import.meta.url);
+			const source = fs.readFileSync(sourceUrl, "utf8").replace(/from "(\.[^"]+)"/g, (_match, specifier) =>
+				`from "${specifier === "./execution.ts" ? pathToFileURL(fixture).href : new URL(specifier, sourceUrl).href}"`);
+			const entry = path.join(tempDir, "executor.ts");
+			fs.writeFileSync(entry, source.replace('from "@earendil-works/pi-coding-agent"', `from "${import.meta.resolve("@earendil-works/pi-coding-agent")}"`));
+			const { createSubagentExecutor } = await import(pathToFileURL(entry).href);
+			const executor = createSubagentExecutor({
+				captureRuntime: mockPi.captureRuntime,
+				pi: { events: createEventBus(), getSessionName: () => undefined },
+				state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
+				resolveConfig: () => ({}), tempArtifactsDir: tempDir, getSubagentSessionRoot: () => tempDir,
+				expandTilde: value => value, discoverAgents: () => ({ agents: [makeAgent("echo")] }),
+			});
+			const result = await executor.execute("pause", { agent: "echo", task: "Task" }, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
+			assert.equal(result.isError, undefined);
+			assert.equal(result.content[0].text, `Run paused after interrupt (echo). Waiting for explicit next action.${diagnostic ? `\n\nChild 1 (echo): ${diagnostic}` : ""}`);
+			assert.equal(result.details.mode, "single");
+			assert.equal(result.details.results.length, 1);
+			assert.equal(result.details.results[0].exitCode, 0);
+			assert.equal(result.details.results[0].interrupted, true);
+			assert.equal(result.details.results[0].error, diagnostic || undefined);
+		});
+	}
 
 	it("keeps configured single output opt-in at the top-level", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
 		const executor = makeExecutor([makeAgent("echo", { output: "default-report.md" })]);

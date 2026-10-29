@@ -17,8 +17,9 @@ function fakeBackend(): { backend: ExecutionBackend; requests: ExecutionSurfaceR
 		async launch(request) {
 			requests.push(request);
 			const host = spawn(request.command, [...request.args], { cwd: request.cwd, env: request.environment, stdio: "ignore" });
-			hosts.push(host); processes.push(new Promise(resolve => host.once("exit", () => resolve()))); resolveLaunched();
-			return { handle: { protocolVersion: 1, backend: "fake", surface: { kind: "fake", id: "one" }, display: { label: "fake", hint: "fake surface" }, data: null }, events: (async function*() {})(), async reconcile() { return []; }, async release() { releases += 1; } };
+			const exit = new Promise<{ status: number | null; signal: string | null }>(resolve => host.once("exit", (status, signal) => resolve({ status, signal })));
+			hosts.push(host); processes.push(exit.then(() => {})); resolveLaunched();
+			return { handle: { protocolVersion: 1, backend: "fake", surface: { kind: "fake", id: "one" }, display: { label: "fake", hint: "fake surface" }, data: null }, events: (async function*() { yield { type: "exited" as const, surface: { kind: "fake", id: "one" }, timestamp: Date.now(), source: "mux" as const, ...await exit }; })(), async reconcile() { return []; }, async release() { releases += 1; } };
 		},
 		async reattach() { return { status: "gone" }; }, async close() { closes += 1; },
 	} };
@@ -49,7 +50,7 @@ describe("execution child host", unixOnly, () => {
 		assert.deepEqual(fs.readFileSync(output, "utf8").trim().split("\n").map(line => JSON.parse(line)), [{ argv: ["alpha"], cwd: fs.realpathSync(first), token: "first" }, { argv: ["beta"], cwd: fs.realpathSync(second), token: "second" }]);
 		await assert.rejects(controller.startAttempt({ attemptId: "missing", command: path.join(fixture, "missing-command"), args: [], cwd: fixture, environment: {} }), /spawn error/);
 		assert.deepEqual(await controller.startAttempt({ attemptId: "signal", command: process.execPath, args: ["-e", "process.kill(process.pid, 'SIGTERM')"], cwd: fixture, environment: {} }), { status: null, signal: "SIGTERM" });
-		await controller.releaseObserver(); await controller.releaseObserver(); assert.equal(fake.releaseCalls(), 1); await controller.shutdown(); await fake.reap();
+		await controller.releaseObserver(); await controller.releaseObserver(); assert.equal(fake.releaseCalls(), 1); await controller.shutdown(); await fake.reap(); controller.dispose();
 		const configPath = fake.requests[0]!.environment.PI_COHORT_CHILD_HOST_CONFIG!;
 		assert.equal(fake.closeCalls(), 0);
 		assert.equal(fs.existsSync(configPath), false);
@@ -66,7 +67,7 @@ describe("execution child host", unixOnly, () => {
 		const shutdown = controller.shutdown();
 		await assert.rejects(controller.startAttempt({ attemptId: "late", command: process.execPath, args: [], cwd: fixture, environment: {} }), /shutting down/);
 		await shutdown;
-		await fake.reap();
+		await fake.reap(); controller.dispose();
 		fs.rmSync(fixture, { recursive: true, force: true });
 	});
 
@@ -89,6 +90,7 @@ describe("execution child host", unixOnly, () => {
 				await controller.ready;
 				if (scenario.operation === "attempt") await assert.rejects(controller.startAttempt({ attemptId: "attempt", command: process.execPath, args: [], cwd: fixture, environment: {} }), scenario.error);
 				else await assert.rejects(controller.shutdown(), scenario.error);
+				controller.dispose();
 			}
 			await fake.reap(); assertArtifactsRemoved(fake.requests[0]!.environment.PI_COHORT_CHILD_HOST_CONFIG!); fs.rmSync(fixture, { recursive: true, force: true });
 		});
@@ -102,7 +104,7 @@ describe("execution child host", unixOnly, () => {
 		let cause: unknown;
 		await assert.rejects(controller.startAttempt({ attemptId: "attempt", command: process.execPath, args: [], cwd: fixture, environment: {} }), error => { cause = error; return /disconnected after ready/.test(String(error)); });
 		await assert.rejects(controller.shutdown(), error => { assert.equal(error, cause); return true; });
-		assertArtifactsRemoved(fake.requests[0]!.environment.PI_COHORT_CHILD_HOST_CONFIG!); fs.rmSync(fixture, { recursive: true, force: true });
+		controller.dispose(); assertArtifactsRemoved(fake.requests[0]!.environment.PI_COHORT_CHILD_HOST_CONFIG!); fs.rmSync(fixture, { recursive: true, force: true });
 	});
 
 	it("exposes an actionable lease while the host is blocked before ready", async () => {
@@ -113,7 +115,7 @@ describe("execution child host", unixOnly, () => {
 		aborter.abort();
 		await assert.rejects(controller.ready, /launch aborted/);
 		await controller.releaseObserver(); await controller.releaseObserver(); assert.equal(fake.releaseCalls(), 1);
-		await fake.reap(); assertArtifactsRemoved(fake.requests[0]!.environment.PI_COHORT_CHILD_HOST_CONFIG!); fs.rmSync(fixture, { recursive: true, force: true });
+		await fake.reap(); controller.dispose(); assertArtifactsRemoved(fake.requests[0]!.environment.PI_COHORT_CHILD_HOST_CONFIG!); fs.rmSync(fixture, { recursive: true, force: true });
 	});
 
 	it("rejects correlation and ordering violations from the connected host", async t => {
@@ -122,7 +124,7 @@ describe("execution child host", unixOnly, () => {
 			const controller = await createChildHostController({ backend: fake.backend, runId: "run", childId: "child", cwd: fixture, signal: AbortSignal.timeout(5_000) }, { childHostCommand: hostCommand(action) });
 			await assert.rejects(controller.ready, /disconnected before ready/);
 			await controller.releaseObserver();
-			await fake.reap(); assertArtifactsRemoved(fake.requests[0]!.environment.PI_COHORT_CHILD_HOST_CONFIG!); fs.rmSync(fixture, { recursive: true, force: true });
+			await fake.reap(); controller.dispose(); assertArtifactsRemoved(fake.requests[0]!.environment.PI_COHORT_CHILD_HOST_CONFIG!); fs.rmSync(fixture, { recursive: true, force: true });
 		});
 		await t.test("attempt_started without an active attempt", async () => {
 			const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "child-host-invalid-message-")); const fake = fakeBackend();
@@ -130,7 +132,7 @@ describe("execution child host", unixOnly, () => {
 			await controller.ready;
 			fake.hosts[0]!.kill("SIGUSR1"); await fake.reap();
 			await assert.rejects(controller.startAttempt({ attemptId: "attempt", command: process.execPath, args: [], cwd: fixture, environment: {} }), /disconnected after ready/);
-			assertArtifactsRemoved(fake.requests[0]!.environment.PI_COHORT_CHILD_HOST_CONFIG!); fs.rmSync(fixture, { recursive: true, force: true });
+			controller.dispose(); assertArtifactsRemoved(fake.requests[0]!.environment.PI_COHORT_CHILD_HOST_CONFIG!); fs.rmSync(fixture, { recursive: true, force: true });
 		});
 	});
 
@@ -143,7 +145,7 @@ describe("execution child host", unixOnly, () => {
 		const script = "require('fs').writeFileSync(process.env.OUT, JSON.stringify({ id: process.env.SURFACE_ID, stale: process.env.SURFACE_STALE, other: process.env.OTHER }))";
 		await controller.startAttempt({ attemptId: "one", command: process.execPath, args: ["-e", script], cwd: fixture, environment: { OUT: output, SURFACE_ID: "parent-pane", SURFACE_STALE: "parent", OTHER: "kept" } });
 		assert.deepEqual(JSON.parse(fs.readFileSync(output, "utf8")), { id: "child-pane", other: "kept" });
-		await controller.shutdown(); await fake.reap(); fs.rmSync(fixture, { recursive: true, force: true });
+		await controller.shutdown(); await fake.reap(); controller.dispose(); fs.rmSync(fixture, { recursive: true, force: true });
 	});
 
 	it("rejects concurrent and repeated attempts without another launch", async () => {
@@ -153,11 +155,15 @@ describe("execution child host", unixOnly, () => {
 		await controller.ready;
 		await controller.startAttempt({ attemptId: "used", command: process.execPath, args: ["-e", ""], cwd: fixture, environment: {} });
 		await assert.rejects(controller.startAttempt({ attemptId: "used", command: process.execPath, args: [], cwd: fixture, environment: {} }), /already been used/);
-		const running = controller.startAttempt({ attemptId: "once", command: process.execPath, args: ["-e", "setInterval(() => {}, 1_000)"], cwd: fixture, environment: {} });
+		const running = controller.startAttempt({ attemptId: "once", command: process.execPath, args: ["-e", "setTimeout(() => {}, 100)"], cwd: fixture, environment: {} });
 		await assert.rejects(controller.startAttempt({ attemptId: "other", command: process.execPath, args: [], cwd: fixture, environment: {} }), /busy/);
 		aborter.abort();
-		await assert.rejects(running, /launch aborted/);
-		await assert.rejects(controller.startAttempt({ attemptId: "once", command: process.execPath, args: [], cwd: fixture, environment: {} }), /before ready/);
+		assert.equal(fake.requests[0]!.signal.aborted, false);
+		assert.deepEqual(await running, { status: 0, signal: null });
+		await assert.rejects(controller.startAttempt({ attemptId: "once", command: process.execPath, args: [], cwd: fixture, environment: {} }), /already been used/);
+		await controller.shutdown();
+		assert.deepEqual(await controller.hostExit, { status: 0, signal: null });
+		controller.dispose();
 		assert.equal(fake.requests.length, 1);
 		await fake.reap();
 		const configPath = fake.requests[0]!.environment.PI_COHORT_CHILD_HOST_CONFIG!;

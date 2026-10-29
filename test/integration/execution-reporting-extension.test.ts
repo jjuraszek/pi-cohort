@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { describe, it } from "node:test";
 import { createExecutionReportingExtension } from "../../src/execution-backend/reporting-extension.ts";
+import { encodeControlRequest } from "../../src/execution-backend/control-protocol.ts";
 import { replayExecutionSession } from "../../src/execution-backend/session-replay.ts";
 
 const identity = { protocolVersion: 1 as const, runId: "run", childId: "child", attemptId: "attempt" };
@@ -46,15 +47,16 @@ class FakeExtensionAPI {
 }
 
 function messageEntry(id: string, message: unknown): Entry { return { type: "message", id, parentId: null, message }; }
-function report(kind: "ready" | "settled" | "result", overrides: Record<string, unknown> = {}): Entry {
+function report(kind: "ready" | "settled" | "result" | "control", overrides: Record<string, unknown> = {}): Entry {
 	return { type: "custom", id: `report-${kind}`, parentId: null, customType: "pi-cohort:execution-report:v1", data: { ...identity, kind, sequence: 1, timestamp: "2025-01-01T00:00:00.000Z", ...(kind === "result" ? { outcome: "success", finalOutput: "done" } : {}), ...overrides } };
 }
 function kinds(api: FakeExtensionAPI) { return api.appends.map(({ data }) => (data as { kind: string }).kind); }
 
 function setup(manager = new FakeSessionManager()) {
 	const api = new FakeExtensionAPI();
-	createExecutionReportingExtension(config, { createConnection: () => new SilentControlSocket() })(api);
-	return { api, manager };
+	const socket = new SilentControlSocket();
+	createExecutionReportingExtension(config, { createConnection: () => socket })(api);
+	return { api, manager, socket };
 }
 
 describe("execution reporting extension", () => {
@@ -66,6 +68,55 @@ describe("execution reporting extension", () => {
 		const replay = replayExecutionSession([{ type: "session", id: "session" }, ...manager.entries].map(JSON.stringify).join("\n") + "\n", config);
 		assert.equal(replay.result?.outcome, "success");
 	});
+
+	for (const row of [
+		{ name: "applied abort before error", stopReason: "error", control: "socket", outcome: "interrupted" },
+		{ name: "applied abort before success", stopReason: "stop", control: "socket", outcome: "interrupted" },
+		{ name: "error without abort", stopReason: "error", control: "none", outcome: "failed" },
+		{ name: "requested abort only", stopReason: "error", control: "requested", outcome: "failed" },
+		{ name: "another attempt's applied abort", stopReason: "error", control: "other", outcome: "failed" },
+		{ name: "native abort", stopReason: "aborted", control: "none", outcome: "interrupted" },
+		{ name: "missing assistant after applied abort", stopReason: undefined, control: "socket", outcome: "failed" },
+	] as const) {
+		it(`classifies ${row.name} from correlated applied provenance`, () => {
+			const entries = row.stopReason ? [messageEntry("m", assistant({ stopReason: row.stopReason, ...(row.stopReason === "error" ? { errorMessage: "This operation was aborted" } : {}) }))] : [];
+			if (row.control === "requested" || row.control === "other") entries.push(report("control", { action: "abort", state: row.control === "requested" ? "requested" : "applied", ...(row.control === "other" ? { attemptId: "other" } : {}) }));
+			const { api, manager, socket } = setup(new FakeSessionManager(entries));
+			api.emit("session_start", manager);
+			const abort = encodeControlRequest({ ...identity, requestId: "abort-1", action: "abort" });
+			if (row.control === "socket") {
+				socket.emit("data", abort);
+				const controls = api.appends.filter(({ data }) => (data as { kind: string }).kind === "control");
+				assert.deepEqual(controls.map(({ data }) => {
+					const { protocolVersion, runId, childId, attemptId, action, state } = data as typeof identity & { action: string; state: string };
+					return { protocolVersion, runId, childId, attemptId, action, state };
+				}), ["requested", "applied"].map((state) => ({ ...identity, action: "abort", state })));
+			}
+			api.emit("agent_settled", manager);
+			const results = () => manager.entries.filter((entry) => (entry.data as { kind?: string } | undefined)?.kind === "result");
+			assert.equal((results()[0].data as { outcome: string }).outcome, row.outcome);
+			const terminal = JSON.stringify(results());
+			if (row.control === "socket") socket.emit("data", abort);
+			api.emit("agent_settled", manager);
+			assert.equal(results().length, 1);
+			assert.equal(JSON.stringify(results()), terminal);
+		});
+	}
+
+	for (const outcome of ["success", "failed"] as const) {
+		it(`preserves an existing ${outcome} terminal after abort`, () => {
+			const terminal = report("result", { outcome });
+			const bytes = JSON.stringify(terminal);
+			const { api, manager, socket } = setup(new FakeSessionManager([terminal]));
+			api.emit("session_start", manager);
+			const abort = encodeControlRequest({ ...identity, requestId: "abort-1", action: "abort" });
+			socket.emit("data", abort); socket.emit("data", abort);
+			api.emit("agent_settled", manager); api.emit("agent_settled", manager);
+			assert.equal(JSON.stringify(terminal), bytes);
+			assert.equal(manager.entries.filter((entry) => (entry.data as { kind?: string } | undefined)?.kind === "result").length, 1);
+			assert.deepEqual(kinds(api), ["ready", "control", "control"]);
+		});
+	}
 
 	it("requires a persisted session before reporting ready", () => {
 		const manager = new FakeSessionManager(); manager.sessionFile = undefined;

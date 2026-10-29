@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 import type { MockPi } from "../support/helpers.ts";
 import {
 	createMockPi,
@@ -172,6 +173,58 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 		const callFile = callFiles[index];
 		assert.ok(callFile, `expected call ${index}`);
 		return JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")).args as string[];
+	}
+
+	for (const exitCode of [0, 1]) {
+		it(`omits cleanup diagnostics from native chain exit ${exitCode}`, async () => {
+			mockPi.onCall({ output: "Native reply", stderr: exitCode ? "Native failure" : "", exitCode });
+			const result = await executeChain(makeChainParams([{ agent: "echo", task: "Task" }], [makeAgent("echo")]));
+			assert.equal(result.details.results[0].exitCode, exitCode);
+			assert.equal(result.isError, exitCode ? true : undefined);
+			assert.doesNotMatch(result.content[0].text, /Child \d+ \(echo\):|paused after interrupt|manual cleanup/);
+		});
+	}
+
+	for (const kind of ["sequential", "static parallel", "dynamic parallel"]) {
+		for (const diagnostic of ["", "Process termination could not be confirmed; manual cleanup may be required."]) {
+			it(`renders ${kind} public chain pause with ${diagnostic ? "uncertain" : "clean"} cleanup`, async () => {
+				// The child boundary supplies lifecycle facts; executeChain owns accumulation and pause output.
+				const fixture = path.join(tempDir, "execution.mjs");
+				fs.writeFileSync(fixture, `export async function runSync(_cwd, _agents, agent, task) {
+					const interrupted = agent === "echo";
+					return { agent, task, exitCode: 0, interrupted, error: interrupted ? ${JSON.stringify(diagnostic || undefined)} : undefined,
+						messages: [], finalOutput: interrupted ? "Interrupted. Waiting for explicit next action." : "Done",
+						...(agent === "seed" ? { structuredOutput: { items: ["a", "b"] } } : {}),
+						usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 } };
+				}`);
+				const sourceUrl = new URL("../../src/runs/foreground/chain-execution.ts", import.meta.url);
+				const source = fs.readFileSync(sourceUrl, "utf8").replace(/from "(\.[^"]+)"/g, (_match, specifier) =>
+					`from "${specifier === "./execution.ts" ? pathToFileURL(fixture).href : new URL(specifier, sourceUrl).href}"`);
+				const entry = path.join(tempDir, "chain.ts");
+				fs.writeFileSync(entry, source);
+				const { executeChain } = await import(pathToFileURL(entry).href);
+				const seed = { agent: "seed", task: "Seed", as: "targets", outputSchema: { type: "object" } };
+				const pausedStep = kind === "sequential" ? { agent: "echo", task: "Pause" }
+					: kind === "static parallel" ? { parallel: [{ agent: "echo", task: "Pause A" }, { agent: "echo", task: "Pause B" }] }
+					: { expand: { from: { output: "targets", path: "/items" }, maxItems: 2 }, parallel: { agent: "echo", task: "Pause {item}" }, collect: { as: "children" } };
+				const result = await executeChain(makeChainParams([seed, pausedStep, { agent: "never", task: "Must not run" }], [makeAgent("seed"), makeAgent("echo"), makeAgent("never")]));
+				const childCount = kind === "sequential" ? 1 : 2;
+				const suffix = diagnostic ? `\n\n${Array.from({ length: childCount }, (_, index) => `Child ${index + 2} (echo): ${diagnostic}`).join("\n")}` : "";
+				assert.equal(result.isError, undefined);
+				assert.equal(result.content[0].text, `Chain paused after interrupt at step 2 (echo). Waiting for explicit next action.${suffix}`);
+				assert.equal(result.details.mode, "chain");
+				assert.equal(result.details.currentStepIndex, 1);
+				assert.equal(result.details.results.length, childCount + 1);
+				assert.deepEqual(result.details.results.map(child => [child.agent, child.exitCode, child.interrupted, child.error]), [
+					["seed", 0, false, undefined], ...Array.from({ length: childCount }, () => ["echo", 0, true, diagnostic || undefined]),
+				]);
+				if (kind === "dynamic parallel") {
+					assert.equal(result.details.workflowGraph.nodes[1].children.length, 2);
+					assert.match(result.details.results[1].task, /Pause a/);
+					assert.match(result.details.results[2].task, /Pause b/);
+				}
+			});
+		}
 	}
 
 	function acceptanceReport(overrides: Record<string, unknown> = {}): string {

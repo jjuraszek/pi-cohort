@@ -15,6 +15,7 @@ import { handleManagementAction } from "../../agents/agent-management.ts";
 import { buildDoctorReport } from "../../extension/doctor.ts";
 import { clearPendingForegroundControlNotices } from "../../extension/control-notices.ts";
 import { runSync } from "./execution.ts";
+import { formatInterruptedCleanup } from "../../shared/formatters.ts";
 import { recordSyncCost, renderGrandTotal, sumNestedCost } from "../../extension/grand-total.ts";
 import { resolveModelCandidate } from "../shared/model-fallback.ts";
 import { aggregateParallelOutputs } from "../shared/parallel-utils.ts";
@@ -1843,7 +1844,7 @@ async function runParallelPath(data: ExecutionContextData, deps: CallExecutorDep
 		rememberForegroundRun(deps.state, { runtime: data.runtime, sessionRoot: data.sessionRoot, runId, mode: "parallel", cwd: effectiveCwd, results: details.results });
 		if (interrupted) {
 			return {
-				content: [{ type: "text", text: withWorktreeSuffix(`Parallel run paused after interrupt (${interrupted.agent}). Waiting for explicit next action.`) }],
+				content: [{ type: "text", text: withWorktreeSuffix(`Parallel run paused after interrupt (${interrupted.agent}). Waiting for explicit next action.`) + formatInterruptedCleanup(results) }],
 				details,
 			};
 		}
@@ -2124,7 +2125,7 @@ async function runSinglePath(data: ExecutionContextData, deps: CallExecutorDeps)
 
 	if (r.interrupted) {
 		return {
-			content: [{ type: "text", text: `Run paused after interrupt (${params.agent}). Waiting for explicit next action.` }],
+			content: [{ type: "text", text: `Run paused after interrupt (${params.agent}). Waiting for explicit next action.` + formatInterruptedCleanup([r]) }],
 			details,
 		};
 	}

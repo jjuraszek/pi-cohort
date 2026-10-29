@@ -15,6 +15,7 @@ import * as fs from "node:fs";
 import fsSink from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 import type { MockPi } from "../support/helpers.ts";
 import {
 	createEventBus,
@@ -142,6 +143,50 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 		const callFile = fs.readdirSync(mockPi.dir).find((name) => name.startsWith("call-"));
 		assert.ok(callFile, "expected a recorded mock pi call");
 		return JSON.parse(fs.readFileSync(path.join(mockPi.dir, callFile), "utf-8")).args as string[];
+	}
+
+	for (const exitCode of [0, 1]) {
+		it(`omits cleanup diagnostics from native parallel exit ${exitCode}`, async () => {
+			mockPi.onCall({ output: "Native reply", stderr: exitCode ? "Native failure" : "", exitCode });
+			const result = await makeExecutor().execute("native", { tasks: [{ agent: "echo", task: "Task" }] }, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
+			assert.equal(result.details.results[0].exitCode, exitCode);
+			assert.equal(result.isError, undefined);
+			assert.doesNotMatch(result.content[0].text, /Child \d+ \(echo\):|paused after interrupt|manual cleanup/);
+		});
+	}
+
+	for (const diagnostic of ["", "Process termination could not be confirmed; manual cleanup may be required."]) {
+		it(`renders every public parallel pause child with ${diagnostic ? "uncertain" : "clean"} cleanup`, async () => {
+			// Substitute child results, not the public parallel pause return or its formatter.
+			const fixture = path.join(tempDir, "execution.mjs");
+			fs.writeFileSync(fixture, `export async function runSync(_cwd, _agents, agent, task, options) {
+				const interrupted = options.index > 0;
+				return { agent, task, exitCode: 0, interrupted, error: interrupted ? ${JSON.stringify(diagnostic || undefined)} : undefined,
+					messages: [], finalOutput: interrupted ? "Interrupted. Waiting for explicit next action." : "Done",
+					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 } };
+			}`);
+			const sourceUrl = new URL("../../src/runs/foreground/subagent-executor.ts", import.meta.url);
+			const source = fs.readFileSync(sourceUrl, "utf8").replace(/from "(\.[^"]+)"/g, (_match, specifier) =>
+				`from "${specifier === "./execution.ts" ? pathToFileURL(fixture).href : new URL(specifier, sourceUrl).href}"`);
+			const entry = path.join(tempDir, "executor.ts");
+			fs.writeFileSync(entry, source.replace('from "@earendil-works/pi-coding-agent"', `from "${import.meta.resolve("@earendil-works/pi-coding-agent")}"`));
+			const { createSubagentExecutor } = await import(pathToFileURL(entry).href);
+			const executor = createSubagentExecutor({
+				captureRuntime: mockPi.captureRuntime,
+				pi: { events: createEventBus(), getSessionName: () => undefined },
+				state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
+				resolveConfig: () => ({}), tempArtifactsDir: tempDir, getSubagentSessionRoot: () => tempDir,
+				expandTilde: value => value, discoverAgents: () => ({ agents: [makeAgent("echo")] }),
+			});
+			const result = await executor.execute("pause", { tasks: [0, 1, 2].map(() => ({ agent: "echo", task: "Task" })) }, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
+			assert.equal(result.isError, undefined);
+			assert.equal(result.content[0].text, `Parallel run paused after interrupt (echo). Waiting for explicit next action.${diagnostic ? `\n\nChild 2 (echo): ${diagnostic}\nChild 3 (echo): ${diagnostic}` : ""}`);
+			assert.equal(result.details.mode, "parallel");
+			assert.equal(result.details.results.length, 3);
+			assert.deepEqual(result.details.results.map(child => [child.agent, child.exitCode, child.interrupted, child.error]), [
+				["echo", 0, false, undefined], ["echo", 0, true, diagnostic || undefined], ["echo", 0, true, diagnostic || undefined],
+			]);
+		});
 	}
 
 	it("runs multiple agents concurrently via mapConcurrent + runSync", async () => {

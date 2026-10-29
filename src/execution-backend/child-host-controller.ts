@@ -11,7 +11,7 @@ import { getPiSpawnCommand, PiRuntimeLaunchError, type PiRuntimeIdentity } from 
 
 export interface ChildHostAttempt { readonly attemptId: string; readonly command: string; readonly args: readonly string[]; readonly cwd: string; readonly environment: Readonly<Record<string, string>>; }
 export interface ChildHostExit { readonly status: number | null; readonly signal: string | null; }
-export interface ChildHostController { readonly lease: ExecutionBackendLease; readonly ready: Promise<void>; startAttempt(attempt: ChildHostAttempt): Promise<ChildHostExit>; shutdown(): Promise<void>; releaseObserver(): Promise<void>; }
+export interface ChildHostController { readonly lease: ExecutionBackendLease; readonly ready: Promise<void>; readonly hostExit: Promise<ChildHostExit>; dispose(): void; startAttempt(attempt: ChildHostAttempt): Promise<ChildHostExit>; shutdown(): Promise<void>; releaseObserver(): Promise<void>; }
 export interface ChildHostControllerOptions { readonly runtime: PiRuntimeIdentity; readonly backend: ExecutionBackend; readonly runId: string; readonly childId: string; readonly cwd: string; readonly title?: string; readonly signal: AbortSignal; }
 export interface ChildHostControllerDependencies { readonly fs?: typeof fs; readonly ensureJiti?: (root: string) => string | undefined; readonly childHostCommand?: () => { command: string; args: readonly string[] }; readonly platform?: NodeJS.Platform; readonly createServer?: typeof net.createServer; }
 
@@ -36,6 +36,8 @@ export async function createChildHostController(options: ChildHostControllerOpti
 	let server: net.Server | undefined;
 	let socket: net.Socket | undefined;
 	let closed = false;
+	let disposed = false;
+	const launchAborter = new AbortController();
 	let abortListener: (() => void) | undefined;
 	const cleanup = () => {
 		if (abortListener) options.signal.removeEventListener("abort", abortListener);
@@ -75,7 +77,7 @@ export async function createChildHostController(options: ChildHostControllerOpti
 			rejectReady?.(cause); rejectReady = undefined;
 			if (active) { active.reject(cause); active = undefined; }
 			if (pendingShutdown) { pendingShutdown.reject(cause); pendingShutdown = undefined; }
-			cleanup();
+			if (!ready) cleanup();
 		};
 		server = (dependencies.createServer ?? net.createServer)(connection => {
 			if (socket || closed) { connection.destroy(); return; }
@@ -88,7 +90,10 @@ export async function createChildHostController(options: ChildHostControllerOpti
 					if (message.runId !== options.runId || message.childId !== options.childId) { connection.destroy(); return; }
 					if (!ready) {
 						if (message.kind !== "host_ready") { connection.destroy(); return; }
-						ready = true; resolveReady?.(); resolveReady = undefined; rejectReady = undefined; continue;
+						ready = true;
+						if (abortListener) options.signal.removeEventListener("abort", abortListener);
+						abortListener = undefined;
+						resolveReady?.(); resolveReady = undefined; rejectReady = undefined; continue;
 					}
 					if (message.kind === "attempt_started" && active?.attemptId === message.attemptId && !active.started) { active.started = true; continue; }
 					if (message.kind === "attempt_spawn_error" && active?.attemptId === message.attemptId) {
@@ -98,7 +103,7 @@ export async function createChildHostController(options: ChildHostControllerOpti
 						const pending = active; active = undefined; pending.resolve({ status: message.status, signal: message.signal }); continue;
 					}
 					if (message.kind === "shutdown_ack" && pendingShutdown && !active) {
-						const pending = pendingShutdown; pendingShutdown = undefined; closed = true; connection.end(); cleanup(); pending.resolve(); continue;
+						const pending = pendingShutdown; pendingShutdown = undefined; closed = true; pending.resolve(); continue;
 					}
 					connection.destroy(); return;
 				}
@@ -112,7 +117,7 @@ export async function createChildHostController(options: ChildHostControllerOpti
 			});
 		});
 		server.once("error", cause => fail(cause instanceof Error ? cause : new Error("child host server error")));
-		abortListener = () => fail(aborted());
+		abortListener = () => { launchAborter.abort(); fail(aborted()); };
 		options.signal.addEventListener("abort", abortListener, { once: true });
 		await new Promise<void>((resolve, reject) => server!.listen(socketPath!, () => resolve()).once("error", reject));
 		fileSystem.chmodSync(socketPath, 0o600);
@@ -127,10 +132,30 @@ export async function createChildHostController(options: ChildHostControllerOpti
 			environment,
 			runId: options.runId,
 			childId: options.childId,
-			signal: options.signal,
+			signal: launchAborter.signal,
 			...(options.title === undefined ? {} : { awareness: { title: options.title } }),
 		});
+		let resolveHostExit!: (exit: ChildHostExit) => void;
+		const hostExit = new Promise<ChildHostExit>(resolve => { resolveHostExit = resolve; });
+		void (async () => {
+			try {
+				for await (const event of lease!.events) {
+					if (disposed) break;
+					if (event.type === "exited" && event.surface.kind === lease!.handle.surface.kind && event.surface.id === lease!.handle.surface.id) {
+						resolveHostExit({ status: event.status, signal: event.signal });
+					}
+				}
+			} catch { /* Missing exit evidence remains unconfirmed. */ }
+		})();
 		return {
+			hostExit,
+			dispose() {
+				if (disposed) return;
+				disposed = true;
+				fail(disconnected("after disposal"));
+				attemptedIds.clear();
+				cleanup();
+			},
 			get lease() { return lease!; },
 			ready: readyPromise,
 			startAttempt(attempt) {
