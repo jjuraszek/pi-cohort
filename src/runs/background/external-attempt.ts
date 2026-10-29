@@ -123,6 +123,7 @@ function synthesizeChildEvents(message: unknown, emit: (event: SynthesizedChildE
 		emit({ type: "tool_execution_end" });
 		emit({ type: "tool_result_end", message });
 	} else if (msg.role === "assistant") {
+		emit({ type: "message_start" });
 		// Emit tool_execution_start for each tool call in the assistant content.
 		if (Array.isArray(msg.content)) {
 			for (const part of msg.content) {

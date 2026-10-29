@@ -6,6 +6,7 @@ import childProcess, * as childProcessNamespace from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { runSingleStep } from "../../src/runs/background/subagent-runner.ts";
 import { PiRuntimeLaunchError } from "../../src/runs/shared/pi-spawn.ts";
+import { applyChildEventToLifecycle, deriveActivityState, resolveControlConfig, type TurnLifecycleState } from "../../src/runs/shared/subagent-control.ts";
 import { after, describe, it } from "node:test";
 import type { ExternalAttemptRequest, ExternalAttemptResult, ExternalExecution } from "../../src/runs/shared/external-execution.ts";
 import { runExternalBackgroundAttempt, type RunExternalBackgroundAttemptInput, type OnSynthesizedChildEvent } from "../../src/runs/background/external-attempt.ts";
@@ -362,9 +363,65 @@ describe("runExternalBackgroundAttempt", () => {
 		};
 		capturedOnNewSessionMessage?.(assistantMsg);
 		assert.deepEqual(events, [
+			{ type: "message_start", toolName: undefined },
 			{ type: "tool_execution_start", toolName: "bash" },
 			{ type: "message_end", toolName: undefined },
 		]);
+	});
+
+	for (const { name, content, toolEvents } of [
+		{ name: "final answer", content: [{ type: "text", text: "done" }], toolEvents: [] },
+		{
+			name: "several tools",
+			content: [
+				{ type: "toolCall", name: "bash", arguments: { command: "ls" } },
+				{ type: "toolCall", name: "read", arguments: { path: "file.ts" } },
+			],
+			toolEvents: [
+				{ type: "tool_execution_start", toolName: "bash", args: { command: "ls" } },
+				{ type: "tool_execution_start", toolName: "read", args: { path: "file.ts" } },
+			],
+		},
+	]) {
+		it(`synthesizes one message start and end for ${name}`, async () => {
+			const events: Parameters<OnSynthesizedChildEvent>[0][] = [];
+			const { owner, calls } = makeOwner(() => baseAttemptResult());
+			await runExternalBackgroundAttempt(makeInput({ owner, onChildEvent: (event) => events.push(event) }));
+			const forward = calls[0].onNewSessionMessage;
+			assert.ok(forward);
+			const finalMessage = { role: "assistant", content };
+			forward(finalMessage);
+			assert.deepEqual(events, [
+				{ type: "message_start" },
+				...toolEvents,
+				{ type: "message_end", message: finalMessage },
+			]);
+		});
+	}
+
+	it("omits the session callback without onChildEvent", async () => {
+		const { owner, calls } = makeOwner(() => baseAttemptResult());
+		await runExternalBackgroundAttempt(makeInput({ owner }));
+		assert.equal(calls[0].onNewSessionMessage, undefined);
+	});
+
+	it("ignores user, system, and custom session messages", async () => {
+		const events: Parameters<OnSynthesizedChildEvent>[0][] = [];
+		const { owner, calls } = makeOwner(() => baseAttemptResult());
+		await runExternalBackgroundAttempt(makeInput({ owner, onChildEvent: (event) => events.push(event) }));
+		const forward = calls[0].onNewSessionMessage;
+		assert.ok(forward);
+		for (const role of ["user", "system", "custom"]) forward({ role, content: [] });
+		assert.deepEqual(events, []);
+	});
+
+	it("propagates the same callback error synchronously", async () => {
+		const sentinel = new Error("callback failed");
+		const { owner, calls } = makeOwner(() => baseAttemptResult());
+		await runExternalBackgroundAttempt(makeInput({ owner, onChildEvent: () => { throw sentinel; } }));
+		const forward = calls[0].onNewSessionMessage;
+		assert.ok(forward);
+		assert.throws(() => forward({ role: "assistant", content: [] }), (error) => error === sentinel);
 	});
 
 	it("synthesizes tool_execution_end + tool_result_end from toolResult messages via onChildEvent", async () => {
@@ -387,5 +444,60 @@ describe("runExternalBackgroundAttempt", () => {
 			{ type: "tool_execution_end" },
 			{ type: "tool_result_end" },
 		]);
+	});
+});
+
+describe("external replay composition", () => {
+	it("keeps tool turns calm through the ceiling and closes on the final answer", async () => {
+		const events: Parameters<OnSynthesizedChildEvent>[0][] = [];
+		const { owner, calls } = makeOwner(() => baseAttemptResult());
+		await runExternalBackgroundAttempt(makeInput({ owner, onChildEvent: (event) => events.push(event) }));
+		const forward = calls[0].onNewSessionMessage;
+		assert.ok(forward);
+		const config = resolveControlConfig();
+		const startedAt = 1000;
+		let lastActivityAt = startedAt;
+		let lifecycle: TurnLifecycleState = {};
+		let reducedCount = 0;
+		const reduceNewEvents = () => {
+			for (; reducedCount < events.length; reducedCount++) {
+				const event = events[reducedCount];
+				const now = lastActivityAt + 100;
+				const message = event.message as { content?: { type?: string }[] } | undefined;
+				const hasToolCall = event.type === "message_end" && Array.isArray(message?.content)
+					&& message.content.some((part) => part.type === "toolCall");
+				lifecycle = applyChildEventToLifecycle(lifecycle, { type: event.type, hasToolCall }, now);
+				lastActivityAt = now;
+			}
+		};
+		const activityAfter = (elapsed: number) => deriveActivityState({
+			config,
+			startedAt,
+			lastActivityAt,
+			now: lastActivityAt + elapsed,
+			inFlightTurn: lifecycle.turnOpen,
+			lastProductiveSignalAt: lifecycle.lastProductiveSignalAt,
+		});
+
+		forward({ role: "assistant", content: [{ type: "toolCall", id: "t1", name: "bash", arguments: { command: "sleep 90" } }] });
+		reduceNewEvents();
+		assert.equal(lifecycle.turnOpen, true);
+		assert.equal(lifecycle.lastProductiveSignalAt, lastActivityAt);
+		assert.equal(activityAfter(config.needsAttentionAfterMs), undefined);
+		assert.equal(activityAfter(config.needsAttentionAfterMs + 1), "active_long_running");
+		assert.equal(config.inFlightSilenceCeilingMs, 600000);
+		assert.equal(activityAfter(config.inFlightSilenceCeilingMs), "active_long_running");
+		assert.equal(activityAfter(config.inFlightSilenceCeilingMs + 1), "needs_attention");
+		const toolTurnActivityAt = lastActivityAt;
+
+		forward({ role: "toolResult", toolCallId: "t1", toolName: "bash", content: [{ type: "text", text: "done" }], isError: false });
+		reduceNewEvents();
+		assert.equal(lifecycle.turnOpen, true);
+		forward({ role: "assistant", content: [{ type: "text", text: "finished" }] });
+		reduceNewEvents();
+		assert.equal(lifecycle.turnOpen, false);
+		assert.ok(lastActivityAt > toolTurnActivityAt);
+		assert.equal(lifecycle.lastProductiveSignalAt, lastActivityAt);
+		assert.equal(activityAfter(config.needsAttentionAfterMs + 1), "needs_attention");
 	});
 });
