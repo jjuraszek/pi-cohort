@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [7.6.5] - 2026-10-29
 
 ### Fixed
 - Interrupted external children complete bounded child/host cleanup before settling and remain paused with zero exit and preserved diagnostics. Applied abort evidence handles error-shaped terminals without rewriting an earlier terminal; cleanup uncertainty does not trigger fallback or fail-fast. Normal interruption retains the diagnostic surface, but forced cleanup may close it; `retained` records the last known close outcome, not proof of liveness or inspectability. Unconfirmed termination reports `Process termination could not be confirmed; manual cleanup may be required.` The paired pi-gauntlet completion checks exclude explicitly interrupted children from closure-review and cadence credit. Actual-process tests with fake backends prove core behavior only: the live cmux runtime and reporter's installed adapter version remain unavailable, so no live reproduction or companion retention compliance is claimed. (#36)
