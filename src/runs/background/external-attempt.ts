@@ -76,8 +76,8 @@ export interface ExternalBackgroundAttemptResult {
 }
 
 function mapExitCode(result: ExternalAttemptResult): number | null {
-	if (result.outcome === "success") return 0;
-	// A failed or interrupted durable outcome must not become success from zero exit.
+	if (result.interrupted || result.outcome === "success") return 0;
+	// Non-interrupted failures must not become success from zero exit.
 	const code = result.exit.code;
 	return code !== null && code !== 0 ? code : 1;
 }
@@ -184,7 +184,7 @@ export async function runExternalBackgroundAttempt(
 		model: attemptResult.model,
 		error: attemptResult.error,
 		finalOutput: attemptResult.finalOutput,
-		interrupted: attemptResult.outcome === "interrupted",
+		interrupted: attemptResult.interrupted,
 		observedMutationAttempt: observedMutationFromMessages(attemptResult.messages),
 	};
 }

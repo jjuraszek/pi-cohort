@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import * as fs from "node:fs";
+import { pathToFileURL } from "node:url";
 import * as path from "node:path";
 import { after, test } from "node:test";
 import { registerExecutionBackend } from "../../src/execution-backend/registry.ts";
@@ -38,12 +39,14 @@ const unixOnly = { skip: process.platform === "win32" };
 // It reads --session <file> from args, connects to the control socket, and
 // writes session entries directly. The --extension arg (injected by
 // runExternalBackgroundAttempt) is silently ignored.
-function makeFixtureScript(outcome: "success" | "fail" | "missing-result", argsPath?: string) {
+function makeFixtureScript(outcome: "success" | "fail" | "missing-result" | "interrupted", argsPath?: string) {
 	return `#!/usr/bin/env node
 "use strict";
 const fs = require("node:fs");
 const net = require("node:net");
 const args = process.argv.slice(2);
+fs.writeFileSync(require("node:path").join(process.cwd(), "child.pid"), String(process.pid));
+fs.appendFileSync(require("node:path").join(process.cwd(), "child.pids"), process.pid + "\\n");
 ${argsPath ? `fs.appendFileSync(${JSON.stringify(`${argsPath}.count`)}, "1\\n"); fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(args)); fs.writeFileSync(${JSON.stringify(`${argsPath}.parent-session-id`)}, process.env.PI_SUBAGENT_PARENT_SESSION_ID ?? "");` : ""}
 const sessionFile = args[args.indexOf("--session") + 1];
 if (!sessionFile) { console.error("no --session"); process.exit(1); }
@@ -66,7 +69,7 @@ const socket = net.connect(config.controlSocketPath, () => {
   report("ready");
   append({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "background answer" }], api: "fixture", provider: "fixture", model: "fixture", usage: { input: 2, output: 3, cacheRead: 0, cacheWrite: 0, totalTokens: 5, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: ${outcome === "success" ? '"stop"' : '"error"'}, timestamp: Date.now() } });
   report("settled");
-  report("result", { outcome: ${outcome === "success" ? '"success"' : '"failed"'}, finalOutput: "background answer", stopReason: ${outcome === "success" ? '"stop"' : '"error"'} });
+  report("result", { outcome: ${JSON.stringify(outcome === "success" ? "success" : outcome === "interrupted" ? "interrupted" : "failed")}, finalOutput: "background answer", stopReason: ${outcome === "success" ? '"stop"' : '"error"'} });
 });
 let buffer = "";
 socket.on("data", chunk => {
@@ -90,6 +93,8 @@ interface BackendLifecycle {
 	closes: number;
 	launchError?: string;
 	releaseError?: string;
+	suppressExitEvidence?: boolean;
+	onClose?: (reason: string) => void;
 }
 
 function makeBackend(
@@ -112,6 +117,7 @@ function makeBackend(
 				stdio: ["ignore", "ignore", "ignore"],
 			});
 			hosts.push(host);
+			const exited = once(host, "exit");
 			return {
 				handle: {
 					protocolVersion: 1, backend: name,
@@ -119,7 +125,11 @@ function makeBackend(
 					display: { label: "background fixture", hint: "durable" },
 					data: null,
 				},
-				events: (async function*() {})(),
+				events: (async function*() {
+					const [status, signal] = await exited;
+					if (lifecycle?.suppressExitEvidence) return;
+					yield { type: "exited" as const, timestamp: Date.now(), source: "mux" as const, surface: { kind: "fixture", id: "bg-one" }, status, signal };
+				})(),
 				async reconcile() { return []; },
 				async release() {
 					if (lifecycle) lifecycle.releases++;
@@ -128,8 +138,23 @@ function makeBackend(
 			};
 		},
 		async reattach() { return { status: "gone" }; },
-		async close() {
+		async close(_handle, reason) {
+			lifecycle?.onClose?.(reason);
 			if (lifecycle) lifecycle.closes++;
+			if (reason === "explicit_cleanup") {
+				for (const request of requests) {
+					const pidFile = path.join(request.cwd, "child.pid");
+					if (fs.existsSync(pidFile)) {
+						const pid = Number(fs.readFileSync(pidFile, "utf8"));
+						try { process.kill(pid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }
+						for (let i = 0; i < 100; i++) {
+							try { process.kill(pid, 0); } catch (error) { if (error.code === "ESRCH") break; throw error; }
+							await new Promise(resolve => setTimeout(resolve, 10));
+						}
+					}
+				}
+				await cleanupHosts(hosts);
+			}
 		},
 	};
 }
@@ -317,6 +342,71 @@ test("runExternalBackgroundAttempt: onChildEvent receives synthesized events fro
 		removeTempDir(tempDir);
 	}
 });
+
+for (const outcome of ["success", "fail", "interrupted", "missing-result", "malformed-terminal", "warning", "warning-success", "warning-fail"] as const) {
+	test(`runSingleStep pauses accepted interruption over durable ${outcome} after real process exit`, unixOnly, async () => {
+		const tempDir = createTempDir("bg-interrupt-");
+		const binDir = path.join(tempDir, "bin");
+		const argsPath = path.join(tempDir, "args.json");
+		fs.mkdirSync(binDir);
+		const durableOutcome = outcome === "warning-success" ? "success" : outcome === "warning-fail" ? "fail" : outcome === "malformed-terminal" || outcome === "warning" ? "interrupted" : outcome;
+		let script = makeFixtureScript(durableOutcome, argsPath).replaceAll("background answer", "rate limit timeout");
+		if (outcome === "malformed-terminal") script = script
+			.replace(/  report\("result",[^\n]+\n/, "")
+			.replace('    if (request.action === "shutdown")', '    if (request.action === "abort") report("result", { outcome: "invalid", finalOutput: "rate limit timeout" });\n    if (request.action === "shutdown")');
+		if (outcome === "missing-result") script = script
+			.replace('if ("missing-result" === "missing-result") process.exit(0);', "")
+			.replace(/  report\("result",[^\n]+\n/, "");
+		fs.writeFileSync(path.join(binDir, "pi"), script, { mode: 0o755 });
+		const hosts: ReturnType<typeof spawn>[] = [];
+		const requests: ExecutionSurfaceRequest[] = [];
+		const lifecycle = { releases: 0, closes: 0, suppressExitEvidence: outcome.startsWith("warning") };
+		const name = `bg-interrupt-${outcome}-${process.pid}`;
+		const dispose = registerExecutionBackend(makeBackend(name, binDir, requests, hosts, lifecycle));
+		let interrupt: (() => void) | undefined;
+		try {
+			const result = await runSingleStep({
+				agent: "worker", task: "Inspect", modelCandidates: ["first", "second"], completionGuard: false,
+				inheritProjectContext: false, inheritSkills: false,
+			}, {
+				previousOutput: "", outputs: {}, placeholder: "", cwd: tempDir, sessionEnabled: true,
+				id: "bg-interrupt", flatIndex: 0, flatStepCount: 1, outputFile: path.join(tempDir, "output.log"),
+				registerInterrupt: callback => { interrupt = callback; },
+				onChildEvent: event => { if (event.type === "message_end") interrupt?.(); },
+				executionBackendCoordinator: createDetachedExecutionBackendCoordinator({ protocolVersion: 1, registrations: [] }),
+				executionBackendConfig: { protocolVersion: 1, registrations: [], userPreference: name },
+			});
+			assert.equal(result.exitCode, 0, result.error);
+			assert.equal(result.interrupted, true);
+			assert.equal(result.modelAttempts.length, 1);
+			assert.equal(result.modelAttempts[0].success, true);
+			assert.doesNotMatch(result.error ?? "", /External execution (attempt|finish) failed/);
+			assert.equal(result.executionSurface.retained, outcome !== "missing-result" && outcome !== "malformed-terminal");
+			assert.equal(lifecycle.closes, outcome === "missing-result" || outcome === "malformed-terminal" ? 1 : 0);
+			assert.equal(lifecycle.releases, 1);
+			assert.equal(requests.length, 1);
+			assert.equal(fixtureInvocationCount(argsPath), 1);
+			assert.ok(hosts[0].exitCode !== null || hosts[0].signalCode !== null, "host must exit before runSingleStep settles");
+			const childPid = Number(fs.readFileSync(path.join(tempDir, "child.pid"), "utf8"));
+			assert.throws(() => process.kill(childPid, 0), { code: "ESRCH" }, "direct child must exit before emergency cleanup");
+			const session = fs.readFileSync(result.sessionFile, "utf8");
+			if (outcome === "missing-result") {
+				assert.match(result.error ?? "", /^result_missing/);
+				assert.ok(!session.includes('"kind":"result"'), "must not fabricate durable evidence");
+			} else if (outcome === "malformed-terminal") {
+				assert.match(result.error ?? "", /invalid.*outcome|outcome.*invalid/);
+				assert.ok(session.includes('"outcome":"invalid"'), "must not repair malformed durable evidence");
+			} else {
+				if (outcome.startsWith("warning")) assert.ok(result.error?.includes("Process termination could not be confirmed; manual cleanup may be required."));
+				assert.ok(session.includes(`"outcome":"${durableOutcome === "fail" ? "failed" : durableOutcome === "success" ? "success" : "interrupted"}"`), "durable terminal is unchanged");
+			}
+		} finally {
+			dispose();
+			await cleanupHosts(hosts);
+			removeTempDir(tempDir);
+		}
+	});
+}
 
 test("runSingleStep retains the surface and removes its prompt directory when an external attempt throws", unixOnly, async () => {
 	const tempDir = createTempDir("bg-runner-throw-");
@@ -643,4 +733,178 @@ test("runSingleStep retains external leaves when artifact writes or finish fail"
 			removeTempDir(tempDir);
 		}
 	});
+});
+
+test("accepted interruption repeats retained finish without more cleanup", unixOnly, async () => {
+	const tempDir = createTempDir("bg-repeat-retained-");
+	const binDir = path.join(tempDir, "bin");
+	fs.mkdirSync(binDir);
+	fs.writeFileSync(path.join(binDir, "pi"), makeFixtureScript("interrupted"), { mode: 0o755 });
+	const hosts: ReturnType<typeof spawn>[] = [];
+	const requests: ExecutionSurfaceRequest[] = [];
+	const lifecycle = { releases: 0, closes: 0 };
+	const backend = makeBackend(`bg-repeat-${process.pid}`, binDir, requests, hosts, lifecycle);
+	try {
+		const owner = await createExternalExecution({ runId: "repeat", childId: "worker", backend, cwd: tempDir, title: "worker", signal: new AbortController().signal });
+		const sessionFile = path.join(tempDir, "session.jsonl");
+		const result = await runExternalBackgroundAttempt({ owner, attemptId: "repeat-0", args: ["--session", sessionFile, "Inspect"], environment: process.env, cwd: tempDir, sessionFile });
+		assert.equal(result.exitCode, 0);
+		assert.equal(result.interrupted, true);
+		assert.ok(hosts[0].exitCode !== null || hosts[0].signalCode !== null, "host exit precedes attempt settlement");
+		const pid = Number(fs.readFileSync(path.join(tempDir, "child.pid"), "utf8"));
+		assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+		const before = { ...lifecycle };
+		const first = await owner.finish("retained");
+		assert.strictEqual(await owner.finish("retained"), first);
+		assert.deepEqual(first, { handle: owner.surface, retained: true });
+		await assert.rejects(owner.finish("delivered"), /already finishing as retained/);
+		assert.deepEqual(lifecycle, before);
+	} finally {
+		await cleanupHosts(hosts);
+		removeTempDir(tempDir);
+	}
+});
+
+for (const mode of ["sequential", "static", "dynamic", "user-abort"] as const) {
+	test(`runner persists mixed completed and warning-paused children for ${mode}`, unixOnly, async () => {
+		const tempDir = createTempDir("bg-runner-mixed-");
+		const binDir = path.join(tempDir, "bin");
+		fs.mkdirSync(binDir);
+		const warning = "Process termination could not be confirmed; manual cleanup may be required.";
+		const argsPath = path.join(tempDir, "args.json");
+		let script = makeFixtureScript("success", argsPath)
+			.replace('const sessionFile =', 'if (process.env.PI_SUBAGENT_STRUCTURED_OUTPUT_CAPTURE) fs.writeFileSync(process.env.PI_SUBAGENT_STRUCTURED_OUTPUT_CAPTURE, JSON.stringify({ status: "success", value: { items: ["complete", "pause-one", "pause-two"] } }));\nconst sessionFile =')
+			.replace('outcome: "success"', 'outcome: args.at(-1).includes("pause") ? "interrupted" : "success"');
+		if (mode === "user-abort") {
+			const terminal = 'append({ type: "message", message: { role: "assistant", content: [], api: "fixture", provider: "fixture", model: "fixture", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "error", errorMessage: "This operation was aborted", timestamp: Date.now() } }); report("settled"); report("result", { outcome: "interrupted", finalOutput: "", stopReason: "error", error: "This operation was aborted" });';
+			script = makeFixtureScript("success", argsPath)
+				.replace(/  append\(\{ type: "message"[^\n]+\n  report\("settled"\);\n  report\("result",[^\n]+/, '  append({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "tool-1", name: "bash", arguments: { command: "sleep 60" } }], api: "fixture", provider: "fixture", model: "fixture", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "toolUse", timestamp: Date.now() } }); fs.writeFileSync("abort-ready", "1");')
+				.replace('    if (request.action === "shutdown")', `    if (request.action === "abort") { ${terminal} }\n    if (request.action === "shutdown")`);
+		}
+		fs.writeFileSync(path.join(binDir, "pi"), script, { mode: 0o755 });
+		const step = (task: string) => ({ agent: "worker", task, completionGuard: false, inheritProjectContext: false, inheritSkills: false, modelCandidates: ["first", "second"] });
+		const steps = mode === "user-abort" ? [step("running tool"), step("unreachable")] : mode === "sequential"
+			? [step("complete"), { parallel: [step("pause-one"), step("pause-two")], concurrency: 2, failFast: true }, step("unreachable")]
+			: mode === "static" ? [{ parallel: [step("complete"), step("pause-one"), step("pause-two")], concurrency: 3, failFast: true }]
+			: [{ ...step("produce"), outputName: "items", structuredOutputSchema: { type: "object" } }, { expand: { from: { output: "items", path: "/items" }, item: "target", maxItems: 3 }, parallel: step("{target}"), collect: { as: "collected" }, concurrency: 3, failFast: true }];
+		const resultPath = path.join(tempDir, "result.json");
+		const configPath = path.join(tempDir, "config.json");
+		const runnerPath = path.resolve("src/runs/background/subagent-runner.ts");
+		const backendName = `mixed-${mode}`;
+		fs.writeFileSync(configPath, JSON.stringify({ id: backendName, steps, resultPath, cwd: tempDir, placeholder: "{previous}", asyncDir: tempDir, sessionDir: path.join(tempDir, "sessions"), runtime: fixtureRuntime(tempDir), executionBackends: { protocolVersion: 1, registrations: [], userPreference: backendName } }));
+		const entryPath = path.join(tempDir, "runner.mjs");
+		fs.writeFileSync(entryPath, `import assert from "node:assert/strict"; import fs from "node:fs"; import path from "node:path"; import { spawn } from "node:child_process"; import { once } from "node:events"; import { syncBuiltinESMExports } from "node:module";
+import { registerExecutionBackend } from ${JSON.stringify(pathToFileURL(path.resolve("src/execution-backend/registry.ts")).href)};
+${cleanupHosts.toString()}
+${makeBackend.toString()}
+const hosts = [], requests = [], lifecycle = { releases: 0, closes: 0, suppressExitEvidence: ${mode !== "user-abort"} };
+${mode === "user-abort" ? 'const interruptTimer = setInterval(() => { if (fs.existsSync("abort-ready")) { clearInterval(interruptTimer); process.kill(process.pid, "SIGUSR2"); } }, 10);' : ''}
+registerExecutionBackend(makeBackend(${JSON.stringify(backendName)}, "", requests, hosts, lifecycle));
+const rename = fs.renameSync;
+let checkedPause = false;
+fs.renameSync = (from, to) => {
+ if (to === ${JSON.stringify(path.join(tempDir, "status.json"))}) {
+  const status = JSON.parse(fs.readFileSync(from, "utf8"));
+  if (!checkedPause && status.state === "paused") {
+   checkedPause = true;
+   for (const host of hosts) assert.ok(host.exitCode !== null || host.signalCode !== null, "every host exits before paused publication");
+   for (const pid of fs.readFileSync(${JSON.stringify(path.join(tempDir, "child.pids"))}, "utf8").trim().split("\\n")) {
+    assert.throws(() => process.kill(Number(pid), 0), { code: "ESRCH" }, "every direct child exits before paused publication");
+   }
+  }
+ }
+ return rename(from, to);
+};
+syncBuiltinESMExports();
+process.argv[1] = ${JSON.stringify(runnerPath)}; process.argv[2] = ${JSON.stringify(configPath)};
+await import(${JSON.stringify(pathToFileURL(runnerPath).href)});
+`);
+		const runner = spawn(process.execPath, [entryPath], { cwd: tempDir, stdio: ["ignore", "pipe", "pipe"] });
+		let stderr = "";
+		runner.stderr.on("data", chunk => { stderr += chunk; });
+		try {
+			const [code] = await once(runner, "exit");
+			assert.equal(code, 0, stderr);
+			const result = JSON.parse(fs.readFileSync(resultPath, "utf8"));
+			const status = JSON.parse(fs.readFileSync(path.join(tempDir, "status.json"), "utf8"));
+			assert.equal(result.state, "paused", JSON.stringify(result));
+			assert.equal(result.exitCode, 0);
+			assert.equal(status.state, "paused");
+			const affected = result.results.filter(child => child.interrupted);
+			assert.equal(affected.length, mode === "user-abort" ? 1 : 2);
+			for (const paused of affected) {
+				const pausedIndex = result.results.indexOf(paused);
+				assert.equal(paused.interrupted, true);
+				if (mode === "user-abort") assert.equal(paused.error, "This operation was aborted");
+				else {
+					assert.ok(paused.error.includes(warning));
+					assert.ok(result.summary.includes(`Child ${pausedIndex + 1} (${paused.agent}): ${paused.error}`), result.summary);
+				}
+				assert.equal(paused.executionSurface.retained, true);
+				assert.equal(paused.modelAttempts.length, 1);
+				assert.equal(paused.modelAttempts[0].success, true);
+				assert.equal(status.steps[pausedIndex].status, "complete");
+				assert.equal(status.steps[pausedIndex].interrupted, undefined);
+				assert.equal(status.steps[pausedIndex].error, paused.error);
+			}
+			if (mode === "user-abort") {
+				const entries = fs.readFileSync(affected[0].sessionFile, "utf8").trim().split("\n").map(line => JSON.parse(line));
+				const applied = entries.findIndex(entry => entry.data?.action === "abort" && entry.data?.state === "applied");
+				const terminalMessage = entries.findIndex(entry => entry.message?.errorMessage === "This operation was aborted");
+				assert.ok(applied >= 0 && terminalMessage > applied);
+				assert.equal(entries[terminalMessage].message.stopReason, "error");
+				assert.equal(entries.filter(entry => entry.data?.kind === "result").length, 1);
+			}
+			for (const completed of result.results.filter(child => !child.interrupted)) {
+				assert.equal(completed.success, true);
+				assert.equal(completed.interrupted, undefined);
+			}
+			assert.equal(fixtureInvocationCount(argsPath), mode === "dynamic" ? 4 : mode === "user-abort" ? 1 : 3);
+			assert.doesNotMatch(JSON.stringify(result), /External execution (attempt|finish) failed/);
+		} finally {
+			if (runner.exitCode === null) runner.kill("SIGKILL");
+			removeTempDir(tempDir);
+		}
+	});
+}
+
+test("noninterrupted fallback reuses the host and closes only after output persistence", unixOnly, async () => {
+	const tempDir = createTempDir("bg-fallback-");
+	const binDir = path.join(tempDir, "bin");
+	const argsPath = path.join(tempDir, "args.json");
+	const outputFile = path.join(tempDir, "output.log");
+	fs.mkdirSync(binDir);
+	const script = makeFixtureScript("success", argsPath)
+		.replace('outcome: "success"', 'outcome: args.includes("first") ? "failed" : "success", error: args.includes("first") ? "rate limit timeout" : ""')
+		.replaceAll('"background answer"', 'args.includes("first") ? "rate limit timeout" : "background answer"');
+	fs.writeFileSync(path.join(binDir, "pi"), script, { mode: 0o755 });
+	const hosts: ReturnType<typeof spawn>[] = [];
+	const requests: ExecutionSurfaceRequest[] = [];
+	const lifecycle: BackendLifecycle = { releases: 0, closes: 0, onClose(reason) {
+		assert.equal(reason, "delivered");
+		assert.match(fs.readFileSync(outputFile, "utf8"), /background answer$/);
+	} };
+	const name = `bg-fallback-${process.pid}`;
+	const dispose = registerExecutionBackend(makeBackend(name, binDir, requests, hosts, lifecycle));
+	try {
+		const result = await runSingleStep({ agent: "worker", task: "Inspect", modelCandidates: ["first", "second"], completionGuard: false, inheritProjectContext: false, inheritSkills: false }, {
+			previousOutput: "", outputs: {}, placeholder: "", cwd: tempDir, sessionEnabled: true,
+			id: "fallback", flatIndex: 0, flatStepCount: 1, outputFile,
+			executionBackendCoordinator: createDetachedExecutionBackendCoordinator({ protocolVersion: 1, registrations: [] }),
+			executionBackendConfig: { protocolVersion: 1, registrations: [], userPreference: name },
+		});
+		assert.equal(result.exitCode, 0, result.error);
+		assert.equal(result.interrupted, false);
+		assert.equal(result.modelAttempts.length, 2);
+		assert.deepEqual(result.modelAttempts.map(attempt => attempt.success), [false, true]);
+		assert.equal(requests.length, 1);
+		assert.equal(fixtureInvocationCount(argsPath), 2);
+		assert.equal(lifecycle.closes, 1);
+		assert.equal(lifecycle.releases, 1);
+		assert.equal(result.executionSurface.retained, false);
+	} finally {
+		dispose();
+		await cleanupHosts(hosts);
+		removeTempDir(tempDir);
+	}
 });

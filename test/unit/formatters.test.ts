@@ -3,8 +3,36 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
-import { buildChainSummary } from "../../src/shared/formatters.ts";
-import type { ChainTaskOutputEntry, StopRecord } from "../../src/shared/types.ts";
+import * as formatters from "../../src/shared/formatters.ts";
+import type { ChainTaskOutputEntry, SingleResult, StopRecord } from "../../src/shared/types.ts";
+
+const { buildChainSummary } = formatters;
+const cleanupWarning = "Process termination could not be confirmed; manual cleanup may be required.";
+
+describe("formatInterruptedCleanup", () => {
+	for (const { name, children, expected } of [
+		{ name: "no children", children: [], expected: "" },
+		{ name: "clean interrupted children", children: [{ agent: "reviewer", interrupted: true }, { agent: "reviewer", interrupted: true, error: "" }], expected: "" },
+		{ name: "ordinary failures", children: [{ agent: "reviewer", exitCode: 1, error: cleanupWarning }], expected: "" },
+		{ name: "one uncertain interruption", children: [{ agent: "reviewer", interrupted: true, error: cleanupWarning }], expected: `\n\nChild 1 (reviewer): ${cleanupWarning}` },
+		{
+			name: "mixed batch with repeated agents and verbatim diagnostics",
+			children: [
+				{ agent: "reviewer", exitCode: 0 },
+				{ agent: "reviewer", interrupted: true, error: cleanupWarning },
+				{ agent: "reviewer", interrupted: true, error: `Missing terminal result.\n${cleanupWarning}` },
+			],
+			expected: `\n\nChild 2 (reviewer): ${cleanupWarning}\nChild 3 (reviewer): Missing terminal result.\n${cleanupWarning}`,
+		},
+	]) {
+		it(name, () => {
+			assert.equal(typeof formatters.formatInterruptedCleanup, "function");
+			const text = formatters.formatInterruptedCleanup(children as SingleResult[]);
+			assert.equal(text, expected);
+			assert.equal(`Paused.${text}`, `Paused.${expected}`);
+		});
+	}
+});
 
 const steps = [
 	{ parallel: [{ agent: "implementer", as: "impl_1", outputSchema: { type: "object" } }], worktree: true, stopOn: { path: "/status", in: ["BLOCKED"] } },

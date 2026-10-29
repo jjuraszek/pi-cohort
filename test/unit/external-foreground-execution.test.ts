@@ -10,6 +10,8 @@ import type { SessionWatcher } from "../../src/execution-backend/session-watcher
 import type { ExecutionBackend, ExecutionSurfaceHandle } from "../../src/execution-backend/types.ts";
 import {
 	createExternalExecution,
+	isInterruptedExternalAttemptError,
+	externalExecutionDiagnosticCode,
 	type ExternalAttemptRequest,
 	type ExternalExecutionOptions,
 	type ExternalExecutionDependencies,
@@ -41,10 +43,10 @@ const assistant = {
 	timestamp: 2,
 };
 
-function sessionContent(outcome: "success" | "failed" | "interrupted" = "success", controls: readonly ("abort" | "shutdown")[] = [], attemptId = "attempt"): string {
+function sessionContent(outcome: "success" | "failed" | "interrupted" = "success", controls: readonly ("abort" | "shutdown")[] = [], attemptId = "attempt", messageOverrides: Record<string, unknown> = {}): string {
 	const reportIdentity = { ...identity, attemptId };
 	const assistantId = `${attemptId}-assistant`;
-	let content = `${JSON.stringify({ type: "message", id: assistantId, parentId: null, message: assistant })}\n`;
+	let content = `${JSON.stringify({ type: "message", id: assistantId, parentId: null, message: { ...assistant, ...messageOverrides } })}\n`;
 	content += line("ready", 1, {}, {}, reportIdentity);
 	content += line("settled", 2, {}, {}, reportIdentity);
 	content += line("result", 3, { outcome, finalOutput: "done", ...(outcome === "failed" ? { error: "failed safely" } : {}) }, { parentId: assistantId }, reportIdentity);
@@ -78,6 +80,7 @@ function harness() {
 	const ready = deferred<void>();
 	const terminal = deferred<ReplayedSession & { result: NonNullable<ReplayedSession["result"]> }>();
 	const exit = deferred<ChildHostExit>();
+	const hostExit = deferred<ChildHostExit>();
 	const interruptController = new AbortController();
 	const calls: string[] = [];
 	const starts: ChildHostAttempt[] = [];
@@ -89,8 +92,10 @@ function harness() {
 	const controller: ChildHostController = {
 		lease: { handle, events: { async *[Symbol.asyncIterator]() {} }, async reconcile() { return []; }, async release() { releases++; } },
 		ready: ready.promise,
+		hostExit: hostExit.promise,
+		dispose() { calls.push("dispose"); },
 		startAttempt(attempt) { calls.push("start"); starts.push(attempt); return exit.promise; },
-		async shutdown() { calls.push("host-shutdown"); shutdowns++; },
+		async shutdown() { calls.push("host-shutdown"); shutdowns++; hostExit.resolve({ status: 0, signal: null }); },
 		async releaseObserver() { calls.push("release"); releases++; },
 	};
 	const backend = {
@@ -114,7 +119,7 @@ function harness() {
 		ensureSessionFile() { calls.push("session"); },
 	};
 	return {
-		backend, controller, ready, terminal, exit, calls, starts, controls, dependencies,
+		backend, controller, ready, terminal, exit, hostExit, calls, starts, controls, dependencies,
 		interruptController, interruptSignal: interruptController.signal,
 		setContent(value: string) { content = value; },
 		counts: () => ({ releases, closes, shutdowns }),
@@ -328,8 +333,23 @@ describe("external foreground execution owner", () => {
 		const owner = await ownerFrom(fake); fake.ready.resolve();
 		assert.deepEqual(await owner.finish("delivered"), { handle, retained: false });
 		assert.deepEqual(await owner.finish("delivered"), { handle, retained: false });
-		assert.deepEqual(fake.calls, ["controller", "host-shutdown", "backend-close", "release"]);
+		assert.deepEqual(fake.calls, ["controller", "host-shutdown", "backend-close", "release", "dispose"]);
 		assert.deepEqual(fake.counts(), { releases: 1, closes: 1, shutdowns: 1 });
+	});
+
+	it("normal retained finish disposes once after successful shutdown and release", async () => {
+		const fake = harness();
+		const owner = await ownerFrom(fake); fake.ready.resolve();
+		fake.setContent(sessionContent("success", ["shutdown"]));
+		fake.terminal.resolve(replay());
+		fake.exit.resolve({ status: 0, signal: null });
+		await owner.runAttempt(request());
+		assert.equal(fake.calls.includes("dispose"), false);
+		assert.deepEqual(await owner.finish("retained"), { handle, retained: true });
+		await owner.finish("retained");
+		assert.deepEqual(fake.calls.slice(-3), ["host-shutdown", "release", "dispose"]);
+		for (const call of ["dispose", "watcher-close", "control-close", "release"]) assert.equal(fake.calls.filter(value => value === call).length, 1);
+		assert.equal(fake.counts().closes, 0);
 	});
 
 	it("releases after shutdown or close failure and rejects conflicting dispositions", async () => {
@@ -461,7 +481,7 @@ describe("external foreground execution owner", () => {
 		await assert.rejects(pending, /durable shutdown control evidence is missing/);
 	});
 
-	it("rejects abort producing non-interrupted result", async () => {
+	for (const outcome of ["success", "failed", "interrupted"] as const) it(`preserves ${outcome} terminal after accepted abort and completes teardown`, async () => {
 		const fake = harness();
 		const abortRequested = deferred<void>();
 		const baseCreateControl = fake.dependencies.createControl!;
@@ -470,8 +490,11 @@ describe("external foreground execution owner", () => {
 			const originalRequest = baseControl.request.bind(baseControl);
 			baseControl.request = async (action) => {
 				if (action === "abort") {
-					fake.terminal.resolve(replay(sessionContent("success")));
+					fake.terminal.resolve(replay(sessionContent(outcome, [], "attempt", { stopReason: "error", errorMessage: "This operation was aborted" })));
 					abortRequested.resolve();
+				} else {
+					fake.setContent(sessionContent(outcome, ["abort", "shutdown"], "attempt", { stopReason: "error", errorMessage: "This operation was aborted" }));
+					fake.exit.resolve({ status: null, signal: "SIGTERM" });
 				}
 				return originalRequest(action);
 			};
@@ -483,7 +506,492 @@ describe("external foreground execution owner", () => {
 		const pending = owner.runAttempt(request({ interruptSignal: aborter.signal }));
 		aborter.abort();
 		await abortRequested.promise;
-		await assert.rejects(pending, /abort did not produce an interrupted durable result/);
+		const result = await pending;
+		assert.equal(result.outcome, outcome);
+		assert.equal(result.interrupted, true);
+		assert.deepEqual(fake.controls, ["abort", "shutdown"]);
+		assert.equal(fake.counts().shutdowns, 1);
+		await owner.finish("retained");
+		await owner.finish("retained");
+		assert.equal(fake.counts().shutdowns, 1);
+	});
+
+	for (const first of ["result", "exit"] as const) it(`races cancellation against in-flight ${first}-first final replay`, async () => {
+		const fake = harness();
+		const reading = deferred<void>();
+		const lateRead = deferred<string>();
+		let reads = 0;
+		fake.dependencies.readSession = () => {
+			if (++reads === 1) { reading.resolve(); return lateRead.promise; }
+			return Promise.resolve(sessionContent("failed", ["abort", "shutdown"]));
+		};
+		const owner = await ownerFrom(fake); fake.ready.resolve();
+		const aborter = new AbortController();
+		const pending = owner.runAttempt(request({ signal: aborter.signal }));
+		if (first === "result") fake.terminal.resolve(replay(sessionContent("failed")));
+		fake.exit.resolve({ status: 1, signal: null });
+		await reading.promise;
+		aborter.abort();
+		if (first === "exit") fake.terminal.resolve(replay(sessionContent("failed")));
+		for (let index = 0; index < 40; index++) await Promise.resolve();
+		assert.equal(fake.calls.includes("dispose"), true, "cancellation must not wait for the old replay");
+		const result = await pending;
+		assert.equal(result.outcome, "failed");
+		assert.equal(result.interrupted, true);
+		assert.equal(fake.counts().shutdowns, 1);
+		const surface = await owner.finish("retained");
+		lateRead.reject(new Error("late replay failed"));
+		await Promise.resolve();
+		assert.deepEqual(await owner.finish("retained"), surface);
+		assert.equal(fake.counts().shutdowns, 1);
+	});
+
+	it("accepts cancellation while shutdown of an already durable failure is pending", async () => {
+		const fake = harness();
+		const shutdown = deferred<string>();
+		const armed = deferred<void>();
+		const createControl = fake.dependencies.createControl!;
+		fake.dependencies.createControl = async identity => {
+			const control = await createControl(identity);
+			const original = control.request.bind(control);
+			control.request = action => {
+				const response = original(action);
+				if (action === "shutdown") { armed.resolve(); return shutdown.promise; }
+				return response;
+			};
+			return control;
+		};
+		const owner = await ownerFrom(fake); fake.ready.resolve();
+		const aborter = new AbortController();
+		fake.terminal.resolve(replay(sessionContent("failed")));
+		const pending = owner.runAttempt(request({ signal: aborter.signal }));
+		await armed.promise;
+		aborter.abort(); aborter.abort();
+		fake.setContent(sessionContent("failed", ["shutdown"]));
+		shutdown.resolve("shutdown-id");
+		fake.exit.resolve({ status: 1, signal: null });
+		const result = await pending;
+		assert.equal(result.outcome, "failed");
+		assert.equal(result.interrupted, true);
+		assert.deepEqual(fake.controls, ["shutdown"]);
+		assert.equal(fake.counts().shutdowns, 1);
+	});
+
+	for (const mode of ["reject", "stall"] as const) it(`disposes resources before ${mode} observer release`, async () => {
+		const fake = harness();
+		fake.controller.releaseObserver = async () => {
+			assert.equal(fake.calls.includes("dispose"), true);
+			if (mode === "reject") throw new Error("release rejected");
+			await deferred<void>().promise;
+		};
+		fake.dependencies.controlDeadline = async (promise, _timeout, label) => {
+			if (label === "observer release" && mode === "stall") throw new Error("release timed out");
+			return promise;
+		};
+		fake.setContent(sessionContent("interrupted", ["shutdown"]));
+		fake.terminal.resolve(replay(sessionContent("interrupted")));
+		fake.exit.resolve({ status: 0, signal: null });
+		const owner = await ownerFrom(fake); fake.ready.resolve();
+		const result = await owner.runAttempt(request());
+		assert.match(result.error!, /release (rejected|timed out)/);
+		assert.equal(result.error!.includes("manual cleanup"), false);
+		await owner.finish("retained");
+	});
+
+	for (const evidence of ["applied", "requested-only"] as const) it(`validates delayed ${evidence} shutdown evidence after process settlement`, async () => {
+		const fake = harness();
+		const shutdownRequested = deferred<void>();
+		const createControl = fake.dependencies.createControl!;
+		fake.dependencies.createControl = async identity => {
+			const control = await createControl(identity);
+			const original = control.request.bind(control);
+			control.request = async action => {
+				const response = await original(action);
+				if (action === "shutdown") shutdownRequested.resolve();
+				return response;
+			};
+			return control;
+		};
+		fake.setContent(sessionContent("interrupted"));
+		fake.terminal.resolve(replay(sessionContent("interrupted")));
+		const owner = await ownerFrom(fake); fake.ready.resolve();
+		const pending = owner.runAttempt(request());
+		const checked = evidence === "requested-only"
+			? assert.rejects(pending, /durable shutdown control evidence is missing/)
+			: pending;
+		await shutdownRequested.promise;
+		await new Promise<void>(resolve => setImmediate(resolve));
+		assert.equal(fake.calls.includes("dispose"), false);
+		fake.setContent(evidence === "applied" ? sessionContent("interrupted", ["shutdown"]) : sessionContent("interrupted") + line("control", 4, { action: "shutdown", state: "requested" }));
+		fake.exit.resolve({ status: 0, signal: null });
+		const result = await checked;
+		if (evidence === "applied") {
+			assert.equal(result!.interrupted, true);
+			assert.equal(result!.error, undefined);
+		}
+		assert.equal(fake.counts().closes, 0);
+		assert.deepEqual(await owner.finish("retained"), { handle, retained: true });
+	});
+
+	it("waits for independent host exit before settlement and disposal", async () => {
+		const fake = harness();
+		fake.controller.shutdown = async () => { fake.calls.push("host-shutdown"); };
+		const owner = await ownerFrom(fake); fake.ready.resolve();
+		const aborter = new AbortController();
+		const pending = owner.runAttempt(request({ signal: aborter.signal }));
+		let settled = false;
+		void pending.then(() => { settled = true; });
+		aborter.abort();
+		fake.setContent(sessionContent("interrupted", ["abort", "shutdown"]));
+		fake.terminal.resolve(replay(sessionContent("interrupted")));
+		fake.exit.resolve({ status: 0, signal: null });
+		for (let index = 0; index < 30; index++) await Promise.resolve();
+		assert.equal(fake.calls.includes("host-shutdown"), true);
+		assert.equal(settled, false);
+		assert.equal(fake.calls.includes("dispose"), false);
+		fake.hostExit.resolve({ status: 0, signal: null });
+		assert.equal((await pending).error, undefined);
+		assert.equal(fake.calls.includes("dispose"), true);
+	});
+
+	it("keeps resources through fallback when child exit rejects and host already exited", async () => {
+		const fake = harness();
+		let clock = 0;
+		fake.dependencies.monotonicNow = () => clock;
+		fake.dependencies.controlDeadline = async (promise, timeout, label) => {
+			if (label === "child exit observation") {
+				const outcome = await Promise.race([
+					promise.then(() => "resolved", () => "rejected"),
+					(async () => { for (let index = 0; index < 5; index++) await Promise.resolve(); return "pending"; })(),
+				]);
+				assert.equal(outcome, "pending", "rejected exit observation must not end the fallback window");
+				for (const call of ["dispose", "watcher-close", "control-close", "release"]) assert.equal(fake.calls.includes(call), false);
+				clock += timeout;
+				throw new Error(`${label} timed out`);
+			}
+			return promise;
+		};
+		fake.controller.dispose = () => { assert.equal(clock, 200); fake.calls.push("dispose"); };
+		fake.hostExit.resolve({ status: 0, signal: null });
+		fake.exit.reject(new Error("child host disconnected during attempt"));
+		fake.setContent(sessionContent("interrupted", ["abort", "shutdown"]));
+		fake.terminal.resolve(replay(sessionContent("interrupted")));
+		const owner = await ownerFrom(fake, { controlTimeoutMs: 100 }); fake.ready.resolve();
+		const aborter = new AbortController(); aborter.abort();
+		const result = await owner.runAttempt(request({ signal: aborter.signal }));
+		assert.equal(clock, 200);
+		assert.deepEqual(result.exit, { code: null, signal: null });
+		assert.match(result.error!, /Process termination could not be confirmed/);
+		assert.equal(fake.counts().closes, 1);
+		const calls = [...fake.calls];
+		await owner.finish("retained"); await owner.finish("retained");
+		assert.deepEqual(fake.calls, calls);
+	});
+
+	it("requests host shutdown when child exit arrives during fallback close", async () => {
+		const fake = harness();
+		let clock = 0;
+		const waits: { label: string; timeout: number; at: number }[] = [];
+		fake.dependencies.monotonicNow = () => clock;
+		fake.dependencies.controlDeadline = async (promise, timeout, label) => {
+			waits.push({ label, timeout, at: clock });
+			if (label === "post-shutdown exit" || label === "host exit observation") {
+				clock += timeout;
+				throw new Error(`${label} timed out`);
+			}
+			clock += 1;
+			return promise;
+		};
+		const close = fake.backend.close.bind(fake.backend);
+		fake.backend.close = async actual => {
+			await close(actual);
+			fake.exit.resolve({ status: 0, signal: null });
+		};
+		fake.setContent(sessionContent("interrupted", ["shutdown"]));
+		fake.terminal.resolve(replay(sessionContent("interrupted")));
+		const owner = await ownerFrom(fake, { controlTimeoutMs: 100 }); fake.ready.resolve();
+		const result = await owner.runAttempt(request());
+		assert.deepEqual(fake.counts(), { closes: 1, shutdowns: 1, releases: 1 });
+		assert.ok(fake.calls.indexOf("host-shutdown") < fake.calls.indexOf("dispose"));
+		assert.equal(waits.some(wait => wait.label === "host exit observation"), false);
+		const shutdownWait = waits.find(wait => wait.label === "host shutdown")!;
+		assert.equal(shutdownWait.at + shutdownWait.timeout, 200);
+		assert.ok(clock < 200);
+		assert.equal(result.error!.includes("manual cleanup"), false);
+		assert.deepEqual(await owner.finish("retained"), { handle, retained: false });
+		assert.deepEqual(fake.counts(), { closes: 1, shutdowns: 1, releases: 1 });
+	});
+
+	for (const closeMode of ["resolve", "reject", "stall"] as const) it(`bounds fallback with ${closeMode} close and no child exit`, async () => {
+		const fake = harness();
+		let clock = 0;
+		const waits: { label: string; timeout: number; clock: number }[] = [];
+		const lateClose = deferred<void>();
+		let closes = 0;
+		fake.backend.close = async (_handle, reason) => {
+			assert.equal(reason, "explicit_cleanup"); closes++;
+			if (closeMode === "reject") throw new Error("close rejected");
+			if (closeMode === "stall") await lateClose.promise;
+		};
+		fake.dependencies.monotonicNow = () => clock;
+		fake.dependencies.controlDeadline = async (promise, timeout, label) => {
+			waits.push({ label, timeout, clock });
+			if (label === "post-shutdown exit" || label === "child exit observation" || label === "explicit cleanup" && closeMode === "stall") {
+				clock += timeout;
+				throw new Error(`${label} timed out`);
+			}
+			clock += 1;
+			return promise;
+		};
+		fake.hostExit.resolve({ status: 0, signal: null });
+		fake.setContent(sessionContent("success", ["abort", "shutdown"]));
+		const owner = await ownerFrom(fake, { controlTimeoutMs: 100 }); fake.ready.resolve();
+		const aborter = new AbortController(); aborter.abort();
+		fake.terminal.resolve(replay());
+		const result = await owner.runAttempt(request({ signal: aborter.signal }));
+		assert.equal(result.interrupted, true);
+		assert.equal(result.outcome, "success");
+		assert.match(result.error!, /Process termination could not be confirmed; manual cleanup may be required\./);
+		assert.deepEqual(result.exit, { code: null, signal: null });
+		assert.equal(closes, 1);
+		assert.equal(fake.calls.includes("dispose"), true);
+		const surface = await owner.finish("retained");
+		assert.equal(surface.retained, closeMode !== "resolve");
+		assert.deepEqual(await owner.finish("retained"), surface);
+		lateClose.resolve(); await Promise.resolve();
+		assert.equal(surface.retained, closeMode !== "resolve");
+		assert.equal(closes, 1);
+		assert.ok(waits.every(wait => wait.clock + wait.timeout <= (wait.label === "abort request" || wait.label === "post-abort terminal" || wait.label === "child shutdown" || wait.label === "post-shutdown exit" ? 100 : 200)));
+		await assert.rejects(owner.runAttempt(request()), /already been used/);
+		await assert.rejects(owner.runAttempt(request({ attemptId: "next" })), /interruption-cleaned/);
+		await assert.rejects(owner.finish("delivered"), /already finishing/);
+	});
+
+	it("annotates the original corrupt-report diagnostic only after teardown", async () => {
+		const fake = harness();
+		const diagnostic = Object.assign(new TypeError("corrupt report"), { code: "original" });
+		fake.dependencies.readSession = async () => { throw diagnostic; };
+		const owner = await ownerFrom(fake); fake.ready.resolve();
+		const aborter = new AbortController(); aborter.abort();
+		const pending = owner.runAttempt(request({ signal: aborter.signal }));
+		fake.terminal.reject(diagnostic);
+		fake.exit.resolve({ status: 1, signal: null });
+		await assert.rejects(pending, error => {
+			assert.strictEqual(error, diagnostic);
+			assert.equal(isInterruptedExternalAttemptError(error), true);
+			assert.equal(diagnostic.code, "original");
+			assert.equal(fake.calls.includes("dispose"), true);
+			assert.deepEqual(fake.controls, ["abort", "shutdown"]);
+			return true;
+		});
+	});
+
+	for (const action of ["abort", "shutdown"] as const) for (const mode of ["reject", "stall"] as const) it(`falls back once when ${action} control ${mode}s and child exit stalls`, async () => {
+		const fake = harness();
+		const createControl = fake.dependencies.createControl!;
+		fake.dependencies.createControl = async identity => {
+			const control = await createControl(identity);
+			const original = control.request.bind(control);
+			control.request = async requested => {
+				await original(requested);
+				if (requested === "abort") fake.terminal.resolve(replay(sessionContent("interrupted")));
+				if (requested === action) {
+					if (mode === "reject") throw new Error(`${action} rejected`);
+					await deferred<void>().promise;
+				}
+				return "control-id";
+			};
+			return control;
+		};
+		fake.dependencies.controlDeadline = async (promise, _timeout, label) => {
+			if (action === "abort" && label === "post-shutdown exit") throw new Error("child exit stalled");
+			if (mode === "stall" && label === (action === "abort" ? "abort request" : "child shutdown")) throw new Error(`${action} stalled`);
+			return promise;
+		};
+		const close = fake.backend.close.bind(fake.backend);
+		fake.backend.close = async actual => {
+			await close(actual);
+			fake.exit.resolve({ status: 0, signal: null });
+			fake.hostExit.resolve({ status: 0, signal: null });
+		};
+		fake.setContent(sessionContent("interrupted", ["abort", "shutdown"]));
+		const owner = await ownerFrom(fake); fake.ready.resolve();
+		const aborter = new AbortController(); aborter.abort();
+		const result = await owner.runAttempt(request({ signal: aborter.signal }));
+		assert.equal(result.interrupted, true);
+		assert.match(result.error!, new RegExp(`${action} (rejected|stalled)`));
+		assert.equal(fake.counts().closes, 1);
+		assert.deepEqual(fake.controls, ["abort", "shutdown"]);
+		assert.deepEqual(await owner.finish("retained"), { handle, retained: false });
+	});
+
+	it("retains a responsive surface when only the abort request rejects", async () => {
+		const fake = harness();
+		const createControl = fake.dependencies.createControl!;
+		fake.dependencies.createControl = async identity => {
+			const control = await createControl(identity);
+			const original = control.request.bind(control);
+			control.request = async action => {
+				await original(action);
+				if (action === "abort") {
+					fake.terminal.resolve(replay(sessionContent("interrupted")));
+					throw new Error("abort rejected");
+				}
+				fake.exit.resolve({ status: 0, signal: null });
+				return "shutdown-id";
+			};
+			return control;
+		};
+		fake.setContent(sessionContent("interrupted", ["abort", "shutdown"]));
+		const owner = await ownerFrom(fake); fake.ready.resolve();
+		const aborter = new AbortController(); aborter.abort();
+		const result = await owner.runAttempt(request({ signal: aborter.signal }));
+		assert.match(result.error!, /abort rejected/);
+		assert.equal(result.error!.includes("manual cleanup"), false);
+		assert.deepEqual(fake.counts(), { closes: 0, shutdowns: 1, releases: 1 });
+		assert.deepEqual(await owner.finish("retained"), { handle, retained: true });
+	});
+
+	for (const mode of ["confirmed", "unconfirmed", "closed", "rejected", "hanging"] as const) it(`rejects delivered finish after ${mode} interrupted cleanup without repeating cleanup`, async () => {
+		const fake = harness();
+		if (mode !== "confirmed") {
+			fake.controller.shutdown = async () => {
+				fake.calls.push("host-shutdown");
+				if (mode !== "unconfirmed") throw new Error("host busy");
+			};
+			const close = fake.backend.close.bind(fake.backend);
+			fake.backend.close = async actual => {
+				await close(actual);
+				if (fake.counts().closes > 1) throw new Error("duplicate close");
+				if (mode === "rejected") throw new Error("close rejected");
+				if (mode === "hanging") await deferred<void>().promise;
+				if (mode === "closed") fake.hostExit.resolve({ status: 0, signal: null });
+			};
+			fake.dependencies.controlDeadline = async (promise, _timeout, label) => {
+				if (label === "host exit observation" || label === "explicit cleanup" && mode === "hanging") throw new Error(`${label} timed out`);
+				return promise;
+			};
+		}
+		fake.setContent(sessionContent("interrupted", ["shutdown"]));
+		fake.terminal.resolve(replay(sessionContent("interrupted")));
+		fake.exit.resolve({ status: 0, signal: null });
+		const owner = await ownerFrom(fake); fake.ready.resolve();
+		await owner.runAttempt(request());
+		const calls = [...fake.calls];
+		await assert.rejects(owner.finish("delivered"), /interruption-cleaned.*retained/);
+		await assert.rejects(owner.finish("delivered"), /interruption-cleaned.*retained/);
+		assert.deepEqual(fake.calls, calls);
+		assert.equal(fake.counts().closes, mode === "confirmed" || mode === "unconfirmed" ? 0 : 1);
+		assert.deepEqual(await owner.finish("retained"), { handle, retained: mode !== "closed" });
+		assert.deepEqual(fake.calls, calls);
+	});
+
+	it("records watcher disposal rejection without skipping interrupted finalization", async () => {
+		const fake = harness();
+		const createWatcher = fake.dependencies.createWatcher!;
+		fake.dependencies.createWatcher = (...args) => {
+			const watcher = createWatcher(...args);
+			watcher.close = () => { fake.calls.push("watcher-close"); throw new Error("watcher close rejected"); };
+			return watcher;
+		};
+		fake.setContent(sessionContent("interrupted", ["shutdown"]));
+		fake.terminal.resolve(replay(sessionContent("interrupted")));
+		fake.exit.resolve({ status: 0, signal: null });
+		const owner = await ownerFrom(fake); fake.ready.resolve();
+		const result = await owner.runAttempt(request());
+		assert.match(result.error!, /watcher close rejected/);
+		assert.equal(fake.calls.filter(call => call === "watcher-close").length, 1);
+		for (const call of ["dispose", "control-close", "release"]) assert.ok(fake.calls.includes(call));
+		const calls = [...fake.calls];
+		assert.deepEqual(await owner.finish("retained"), { handle, retained: true });
+		assert.deepEqual(fake.calls, calls);
+		await assert.rejects(owner.runAttempt(request({ attemptId: "next" })), /interruption-cleaned/);
+	});
+
+	it("preserves result_missing after terminal timeout and bounded cleanup", async () => {
+		const fake = harness();
+		let clock = 0;
+		fake.dependencies.monotonicNow = () => clock;
+		fake.dependencies.controlDeadline = async (promise, timeout, label) => {
+			if (label === "post-abort terminal" || label.includes("exit")) {
+				clock += timeout;
+				throw new Error(`${label} timed out`);
+			}
+			return promise;
+		};
+		fake.setContent(line("ready", 1) + line("settled", 2));
+		const owner = await ownerFrom(fake, { controlTimeoutMs: 100 }); fake.ready.resolve();
+		const aborter = new AbortController(); aborter.abort();
+		await assert.rejects(owner.runAttempt(request({ signal: aborter.signal })), error => {
+			assert.equal(isInterruptedExternalAttemptError(error), true);
+			assert.equal(externalExecutionDiagnosticCode(error), "result_missing");
+			assert.match((error as Error).message, /manual cleanup may be required/);
+			assert.equal(fake.calls.includes("dispose"), true);
+			assert.equal(fake.counts().closes, 1);
+			return true;
+		});
+		assert.ok(clock <= 200);
+		await owner.finish("retained");
+	});
+
+	for (const mode of ["busy", "stall"] as const) it(`bounds ${mode} host shutdown with one fallback and independent exit observation`, async () => {
+		const fake = harness();
+		let clock = 0;
+		const waits: { label: string; timeout: number; at: number }[] = [];
+		fake.dependencies.monotonicNow = () => clock;
+		fake.controller.shutdown = async () => {
+			fake.calls.push("host-shutdown");
+			if (mode === "busy") throw new Error("host busy");
+			await deferred<void>().promise;
+		};
+		fake.dependencies.controlDeadline = async (promise, timeout, label) => {
+			waits.push({ label, timeout, at: clock });
+			if (label === "host shutdown" && mode === "stall") {
+				clock += timeout;
+				throw new Error("host shutdown timed out");
+			}
+			clock += 1;
+			return promise;
+		};
+		const close = fake.backend.close.bind(fake.backend);
+		fake.backend.close = async actual => {
+			await close(actual);
+			assert.equal(fake.calls.includes("dispose"), false);
+			fake.hostExit.resolve({ status: 0, signal: null });
+		};
+		fake.setContent(sessionContent("interrupted", ["shutdown"]));
+		fake.terminal.resolve(replay(sessionContent("interrupted")));
+		fake.exit.resolve({ status: 0, signal: null });
+		const owner = await ownerFrom(fake, { controlTimeoutMs: 100 }); fake.ready.resolve();
+		const result = await owner.runAttempt(request());
+		assert.match(result.error!, /host (busy|shutdown timed out)/);
+		assert.equal(result.error!.includes("manual cleanup"), false);
+		assert.equal(fake.counts().closes, 1);
+		assert.ok(clock <= 200);
+		const fallbackIndex = waits.findIndex(wait => wait.label === "explicit cleanup");
+		assert.ok(fallbackIndex > 0);
+		for (const [index, wait] of waits.entries()) assert.equal(wait.at + wait.timeout, index < fallbackIndex ? 100 : 200);
+		const calls = [...fake.calls];
+		assert.deepEqual(await owner.finish("retained"), { handle, retained: false });
+		await owner.finish("retained");
+		assert.deepEqual(fake.calls, calls);
+	});
+
+	it("observes missing host evidence without destructively closing a responsive surface", async () => {
+		const fake = harness();
+		fake.controller.shutdown = async () => {};
+		fake.dependencies.controlDeadline = async (promise, _timeout, label) => {
+			if (label === "host exit observation") throw new Error("host evidence absent");
+			return promise;
+		};
+		fake.setContent(sessionContent("interrupted", ["shutdown"]));
+		const owner = await ownerFrom(fake); fake.ready.resolve();
+		fake.terminal.resolve(replay(sessionContent("interrupted")));
+		fake.exit.resolve({ status: 0, signal: null });
+		const result = await owner.runAttempt(request());
+		assert.match(result.error!, /manual cleanup may be required/);
+		assert.equal(fake.counts().closes, 0);
+		assert.deepEqual(await owner.finish("retained"), { handle, retained: true });
 	});
 
 	it("rejects post-abort terminal wait exceeding control timeout", async () => {

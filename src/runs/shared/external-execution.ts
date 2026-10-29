@@ -79,6 +79,10 @@ export function externalExecutionDiagnosticCode(error: unknown): ExternalExecuti
 	return error instanceof ExternalExecutionDiagnosticError ? error.code : undefined;
 }
 
+export function isInterruptedExternalAttemptError(error: unknown): error is Error & { interrupted: true } {
+	return error instanceof Error && (error as Error & { interrupted?: boolean }).interrupted === true;
+}
+
 export type ExternalExecutionDisposition = "delivered" | "retained";
 export interface ExternalExecutionFinishResult {
 	readonly handle: ExecutionSurfaceHandle;
@@ -104,6 +108,7 @@ export interface ExternalExecutionDependencies {
 	readonly readSession?: (sessionFile: string) => Promise<string>;
 	readonly ensureSessionFile?: (sessionFile: string) => void;
 	readonly readyDeadline?: (ready: Promise<void>, timeoutMs: number, safeLabel: string) => Promise<void>;
+	readonly monotonicNow?: () => number;
 	readonly controlDeadline?: <T>(promise: Promise<T>, timeoutMs: number, label: string) => Promise<T>;
 }
 
@@ -168,9 +173,9 @@ function proveControl(replayed: ReplayedSession, action: "abort" | "shutdown"): 
 	if (requested < 0 || applied <= requested) throw new Error(`durable ${action} control evidence is missing`);
 }
 
-function mapResult(request: ExternalAttemptRequest, replayed: ReplayedSession, exit: ChildHostExit): ExternalAttemptResult {
+function mapResult(request: ExternalAttemptRequest, replayed: ReplayedSession, exit: ChildHostExit, validateExit = true): ExternalAttemptResult {
 	if (!replayed.result) throw new ExternalExecutionDiagnosticError("result_missing");
-	if (replayed.result.outcome === "success" && (exit.status !== 0 || exit.signal !== null)) throw new Error("successful durable result conflicts with child exit");
+	if (validateExit && replayed.result.outcome === "success" && (exit.status !== 0 || exit.signal !== null)) throw new Error("successful durable result conflicts with child exit");
 	const messages = replayed.messages.filter((message): message is Message => message.role === "user" || message.role === "assistant" || message.role === "toolResult");
 	const aggregate = usageFrom(messages);
 	return {
@@ -240,6 +245,8 @@ export async function createExternalExecution(
 	const deadline = dependencies.readyDeadline ?? withReadyDeadline;
 	const controlTimeoutMs = options.controlTimeoutMs ?? 30_000;
 	const controlDeadline = dependencies.controlDeadline ?? withControlDeadline;
+	const now = dependencies.monotonicNow ?? (() => performance.now());
+	let interruptedFinish: ExternalExecutionFinishResult | undefined;
 	const ready = deadline(controller.ready, options.readyTimeoutMs ?? 30_000, controller.lease.handle.display.label);
 	void ready.catch(() => {});
 	const watchDependencies = defaultWatchDependencies();
@@ -260,11 +267,20 @@ export async function createExternalExecution(
 	const runAttempt = async (request: ExternalAttemptRequest): Promise<ExternalAttemptResult> => {
 		if (active) throw new Error("external execution owner is busy");
 		if (!request.attemptId || attemptedIds.has(request.attemptId)) throw new Error("external execution attemptId has already been used");
+		if (interruptedFinish) throw new Error("external execution owner has been interruption-cleaned");
 		active = true;
 		attemptedIds.add(request.attemptId);
 		let control: ExecutionControlChannel | undefined;
 		let watcher: SessionWatcher | undefined;
 		const abort = abortPromise([request.signal, request.interruptSignal]);
+		let interruptedAt: number | undefined;
+		let disposed = false;
+		const acceptInterruption = () => { interruptedAt ??= now(); };
+		const signals = [request.signal, request.interruptSignal];
+		for (const signal of signals) {
+			if (signal?.aborted) acceptInterruption();
+			else signal?.addEventListener("abort", acceptInterruption, { once: true });
+		}
 		try {
 			await ready;
 			ensureSessionFile(request.sessionFile);
@@ -273,39 +289,163 @@ export async function createExternalExecution(
 			watcher = createWatcher(request.sessionFile, identity, request.onNewSessionMessage);
 			const environment = { ...request.environment, [PI_COHORT_REPORT_CONFIG]: control.configPath };
 			const exitPromise = controller.startAttempt({ attemptId: request.attemptId, command: request.command, args: [...request.args], cwd: request.cwd, environment });
-			const first = await Promise.race([
+			let observedExit: ChildHostExit | undefined;
+			let hostExited = false;
+			void exitPromise.then(exit => { observedExit = exit; }, () => {});
+			void controller.hostExit.then(() => { hostExited = true; }, () => {});
+			const finalizeInterrupted = async (initial?: ReplayedSession, initialError?: unknown, shutdownRequest?: Promise<string>): Promise<ExternalAttemptResult> => {
+				acceptInterruption();
+				let endpoint = interruptedAt! + controlTimeoutMs;
+				let fallback = false;
+				let closed = false;
+				let closeAttempted = false;
+				let hostShutdownRequested = false;
+				const diagnostics: string[] = [];
+				const note = (error: unknown) => { diagnostics.push(error instanceof Error ? error.message : String(error)); };
+				const wait = <T>(promise: Promise<T>, label: string) => {
+					void promise.catch(() => {});
+					const remaining = Math.max(0, endpoint - now());
+					return remaining > 0 ? controlDeadline(promise, remaining, label) : Promise.reject(new Error(`${label} deadline exhausted`));
+				};
+				const forceCleanup = async () => {
+					if (closeAttempted) return;
+					closeAttempted = true;
+					endpoint = interruptedAt! + 2 * controlTimeoutMs;
+					try { await wait(options.backend.close(controller.lease.handle, "explicit_cleanup"), "explicit cleanup"); closed = true; } catch (error) { note(error); }
+				};
+				let replayed = initial;
+				let primary = initialError;
+				if (!initial) {
+					try { await wait(control!.request("abort"), "abort request"); } catch (error) { note(error); }
+					if (!initialError) {
+						try { replayed = await wait(watcher!.terminal, "post-abort terminal"); } catch (error) { primary = error; fallback = true; }
+					}
+				}
+				try { await wait(shutdownRequest ?? control!.request("shutdown"), "child shutdown"); } catch (error) { note(error); fallback = true; }
+				if (fallback) endpoint = interruptedAt! + 2 * controlTimeoutMs;
+				try {
+					replayed = replayExecutionSession(await wait(readSession(request.sessionFile), "final replay"), identity);
+					if (!replayed.result && !initialError) primary = new ExternalExecutionDiagnosticError("result_missing");
+				} catch (error) { primary ??= error; }
+				if (fallback) await forceCleanup();
+				try { await wait(exitPromise, "post-shutdown exit"); } catch (error) { note(error); fallback = true; }
+				if (observedExit) {
+					hostShutdownRequested = true;
+					try { await wait(controller.shutdown(), "host shutdown"); } catch (error) { note(error); fallback = true; }
+				}
+				if (fallback) await forceCleanup();
+				if (observedExit && !hostShutdownRequested) {
+					hostShutdownRequested = true;
+					try { await wait(controller.shutdown(), "host shutdown"); } catch (error) { note(error); }
+				}
+				if (!observedExit) {
+					// A failed observation is not exit evidence; keep resources until the remaining budget expires.
+					const remainingExit = exitPromise.catch(() => new Promise<ChildHostExit>(() => {}));
+					try { await wait(remainingExit, "child exit observation"); } catch (error) { note(error); }
+					if (observedExit) {
+						hostShutdownRequested = true;
+						try { await wait(controller.shutdown(), "host shutdown"); } catch (error) { note(error); }
+					}
+				}
+				// Socket delivery is not application; shutdown reports can arrive until process settlement.
+				if (observedExit && now() < endpoint) {
+					try { replayed = replayExecutionSession(await wait(readSession(request.sessionFile), "final replay"), identity); }
+					catch (error) { primary ??= error; }
+				}
+				if (!hostExited) {
+					try { await wait(controller.hostExit, "host exit observation"); } catch (error) { note(error); }
+				}
+				if (!primary) {
+					try {
+						if (!replayed?.result) throw new ExternalExecutionDiagnosticError("result_missing");
+						if (!initial) proveControl(replayed, "abort");
+						proveControl(replayed, "shutdown");
+					} catch (error) { primary = error; }
+				}
+				try { watcher!.close(); } catch (error) { note(error); }
+				finally {
+					try { controller.dispose(); } catch (error) { note(error); }
+					finally {
+						disposed = true;
+						try { await wait(control!.close(), "control disposal"); } catch (error) { note(error); }
+						finally {
+							try { await wait(releaseObserver(), "observer release"); } catch (error) { note(error); }
+						}
+					}
+				}
+				interruptedFinish = { handle: controller.lease.handle, retained: !closed };
+				if (!observedExit || !hostExited || (fallback && !closed)) diagnostics.push("Process termination could not be confirmed; manual cleanup may be required.");
+				if (primary) {
+					const error = primary instanceof Error ? primary : new Error(String(primary));
+					Object.assign(error, { interrupted: true });
+					if (diagnostics.length) error.message += `; ${diagnostics.join("; ")}`;
+					throw error;
+				}
+				const result = mapResult(request, replayed!, observedExit ?? { status: null, signal: null }, false);
+				return { ...result, interrupted: true, ...(diagnostics.length ? { error: [result.error, ...diagnostics].filter(Boolean).join("; ") } : {}) };
+			};
+			let first;
+			try { first = await Promise.race([
 				watcher.terminal.then(replayed => ({ kind: "result" as const, replayed })),
 				exitPromise.then(exit => ({ kind: "exit" as const, exit })),
 				abort.promise.then(() => ({ kind: "abort" as const })),
+			]); } catch (error) {
+				if (interruptedAt !== undefined) return await finalizeInterrupted(undefined, error);
+				throw error;
+			}
+			if (first.kind === "abort") return await finalizeInterrupted();
+			if (first.kind === "result" && (interruptedAt !== undefined || first.replayed.result?.outcome === "interrupted")) return await finalizeInterrupted(first.replayed);
+			const finalReplay = () => Promise.race([
+				readSession(request.sessionFile).then(content => replayExecutionSession(content, identity)),
+				abort.promise.then(() => undefined),
 			]);
 			let replayed: ReplayedSession;
 			let exit: ChildHostExit;
-			if (first.kind === "abort") {
-				await control.request("abort");
-				replayed = await controlDeadline(watcher.terminal, controlTimeoutMs, "post-abort terminal");
-				if (replayed.result.outcome !== "interrupted") throw new Error("abort did not produce an interrupted durable result");
-				await control.request("shutdown");
-				exit = await controlDeadline(exitPromise, controlTimeoutMs, "post-shutdown exit");
-				replayed = replayExecutionSession(await readSession(request.sessionFile), identity);
-				proveControl(replayed, "abort");
-				proveControl(replayed, "shutdown");
-			} else if (first.kind === "result") {
+			if (first.kind === "result") {
 				replayed = first.replayed;
-				await control.request("shutdown");
-				exit = await controlDeadline(exitPromise, controlTimeoutMs, "post-shutdown exit");
-				replayed = replayExecutionSession(await readSession(request.sessionFile), identity);
+				const shutdownRequest = control.request("shutdown");
+				try {
+					const shutdown = await Promise.race([shutdownRequest.then(() => "shutdown" as const), abort.promise.then(() => "abort" as const)]);
+					if (shutdown === "abort") return await finalizeInterrupted(replayed, undefined, shutdownRequest);
+					const stopped = await Promise.race([
+						controlDeadline(exitPromise, controlTimeoutMs, "post-shutdown exit").then(exit => ({ exit })),
+						abort.promise.then(() => ({ exit: undefined })),
+					]);
+					if (!stopped.exit || interruptedAt !== undefined) return await finalizeInterrupted(replayed, undefined, shutdownRequest);
+					exit = stopped.exit;
+				} catch (error) {
+					if (interruptedAt !== undefined && !disposed) return await finalizeInterrupted(replayed, error, shutdownRequest);
+					throw error;
+				}
+				let final: ReplayedSession | undefined;
+				try { final = await finalReplay(); } catch (error) {
+					if (interruptedAt !== undefined) return await finalizeInterrupted(replayed, error, shutdownRequest);
+					throw error;
+				}
+				if (!final || interruptedAt !== undefined) return await finalizeInterrupted(replayed, undefined, shutdownRequest);
+				replayed = final;
 				proveControl(replayed, "shutdown");
 			} else {
 				exit = first.exit;
-				replayed = replayExecutionSession(await readSession(request.sessionFile), identity);
-				if (!replayed.result) throw new ExternalExecutionDiagnosticError("result_missing");
+				let final: ReplayedSession | undefined;
+				try {
+					final = await finalReplay();
+					if (final && !final.result) throw new ExternalExecutionDiagnosticError("result_missing");
+				} catch (error) {
+					if (interruptedAt !== undefined) return await finalizeInterrupted(undefined, error);
+					throw error;
+				}
+				if (!final) return await finalizeInterrupted();
+				replayed = final;
+				if (interruptedAt !== undefined || replayed.result!.outcome === "interrupted") return await finalizeInterrupted(replayed);
 			}
 			return mapResult(request, replayed, exit);
 		} finally {
 			abort.close();
-			watcher?.close();
-			await control?.close();
-			active = false;
+			for (const signal of signals) signal?.removeEventListener("abort", acceptInterruption);
+			try {
+				if (!disposed) { watcher?.close(); await control?.close(); }
+			} finally { active = false; }
 		}
 	};
 
@@ -317,13 +457,17 @@ export async function createExternalExecution(
 			if (finishDisposition && finishDisposition !== disposition) {
 				return Promise.reject(new Error(`external execution owner is already finishing as ${finishDisposition}`));
 			}
+			if (interruptedFinish && disposition === "delivered") {
+				return Promise.reject(new Error("interruption-cleaned external execution owner accepts only retained finish"));
+			}
 			finishDisposition = disposition;
 			return (finishPromise ??= (async () => {
 				if (active) throw new Error("external execution owner is busy");
+				if (interruptedFinish) return interruptedFinish;
 				if (disposition === "retained") {
 					await finishWithCleanup(
 						async () => { await controller.shutdown(); },
-						releaseObserver,
+						async () => { try { await releaseObserver(); } finally { controller.dispose(); } },
 					);
 					return { handle: controller.lease.handle, retained: true };
 				}
@@ -332,7 +476,7 @@ export async function createExternalExecution(
 						await controller.shutdown();
 						await options.backend.close(controller.lease.handle, "delivered");
 					},
-					releaseObserver,
+					async () => { try { await releaseObserver(); } finally { controller.dispose(); } },
 				);
 				return { handle: controller.lease.handle, retained: false };
 			})().catch(error => {

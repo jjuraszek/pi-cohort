@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Message } from "@earendil-works/pi-ai";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
+import { formatInterruptedCleanup } from "../../shared/formatters.ts";
 import { appendJsonl, getArtifactPaths } from "../../shared/artifacts.ts";
 import { getPiSpawnCommand, parsePiRuntime, PiRuntimeLaunchError, type PiRuntimeIdentity } from "../shared/pi-spawn.ts";
 import { captureSingleOutputSnapshot, finalizeSingleOutput, formatFileOnlyFailure, formatSavedOutputReference, resolveSingleOutput, type SingleOutputSnapshot } from "../shared/single-output.ts";
@@ -90,6 +91,7 @@ import type { DetachedExecutionBackendConfig } from "../../execution-backend/typ
 import {
 	createExternalExecution,
 	externalExecutionDiagnosticCode,
+	isInterruptedExternalAttemptError,
 	type ExternalExecution,
 } from "../shared/external-execution.ts";
 import { runExternalBackgroundAttempt } from "./external-attempt.ts";
@@ -135,6 +137,7 @@ interface SubagentRunConfig {
 }
 
 interface StepResult {
+	interrupted?: RunPiStreamingResult["interrupted"];
 	agent: string;
 	output: string;
 	error?: string;
@@ -823,12 +826,14 @@ export async function runSingleStep(
 						});
 					} catch (error) {
 						if (error instanceof PiRuntimeLaunchError) throw error;
+						const interrupted = isInterruptedExternalAttemptError(error);
 						run = {
 							stderr: "",
-							exitCode: 1,
+							exitCode: interrupted ? 0 : 1,
+							interrupted,
 							messages: [],
 							usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
-							error: safeExternalFailure("attempt", error),
+							error: interrupted ? error.message : safeExternalFailure("attempt", error),
 							finalOutput: "",
 							executionHandle: externalOwner.handle,
 						};
@@ -837,14 +842,14 @@ export async function runSingleStep(
 					cleanupTempDir(tempDir); // F1: caller (not helper) cleans up tempDir
 				}
 
-				const hiddenError = run.exitCode === 0 && !run.error ? detectSubagentError(run.messages) : null;
+				const hiddenError = run.exitCode === 0 && !run.interrupted && !run.error ? detectSubagentError(run.messages) : null;
 				const blockedOutput = stripAcceptanceReport(getFinalOutput(run.messages));
 				const blockedError = run.exitCode === 0 && !run.interrupted && !run.error && !hiddenError?.hasError && blockedLine(blockedOutput)
 					? blockedOutput
 					: undefined;
 				let structuredOutput: unknown;
 				let structuredError: string | undefined;
-				if (effectiveStructuredOutput && run.exitCode === 0 && !run.error && !hiddenError?.hasError && !blockedError) {
+				if (effectiveStructuredOutput && run.exitCode === 0 && !run.interrupted && !run.error && !hiddenError?.hasError && !blockedError) {
 					const structured = readStructuredOutput({
 						schema: effectiveStructuredOutput.schema,
 						schemaPath: effectiveStructuredOutput.schemaPath,
@@ -853,7 +858,7 @@ export async function runSingleStep(
 					if (structured.error) structuredError = structured.error;
 					else structuredOutput = structured.value;
 				}
-				const completionGuard = run.exitCode === 0 && !run.error && !hiddenError?.hasError && !blockedError && step.completionGuard !== false
+				const completionGuard = run.exitCode === 0 && !run.interrupted && !run.error && !hiddenError?.hasError && !blockedError && step.completionGuard !== false
 					? evaluateCompletionMutationGuard({
 						agent: step.agent,
 						task: taskForCompletionGuard,
@@ -871,7 +876,7 @@ export async function runSingleStep(
 						? 1
 						: hiddenError?.hasError
 						? (hiddenError.exitCode ?? 1)
-						: run.error && run.exitCode === 0
+						: run.error && !run.interrupted && run.exitCode === 0
 							? 1
 							: run.exitCode;
 				const error = blockedError
@@ -884,7 +889,7 @@ export async function runSingleStep(
 						: run.error || (run.exitCode !== 0 && run.stderr.trim() ? run.stderr.trim() : undefined));
 				const attempt: ModelAttempt = {
 					model: candidate ?? run.model ?? step.model ?? "default",
-					success: effectiveExitCode === 0 && !error,
+					success: effectiveExitCode === 0 && (run.interrupted || !error),
 					exitCode: effectiveExitCode,
 					error,
 					usage: run.usage,
@@ -894,7 +899,7 @@ export async function runSingleStep(
 				completionGuardTriggeredFinal = completionGuardTriggered;
 				finalOutputSnapshot = outputSnapshot;
 				finalResult = { ...run, exitCode: effectiveExitCode, model: candidate ?? run.model, error, structuredOutput } as RunPiStreamingResult & { structuredOutput?: unknown };
-				if (attempt.success || completionGuardTriggered || blockedError) break;
+				if (run.interrupted || attempt.success || completionGuardTriggered || blockedError) break;
 				if (!isRetryableModelFailure(error) || index === candidates.length - 1) break;
 				attemptNotes.push(formatModelAttemptNote(attempt, candidates[index + 1]));
 			}
@@ -1145,7 +1150,7 @@ export async function runSingleStep(
 
 	// Finish only after core finalization, retaining every failed external leaf.
 	if (externalOwner) {
-		const isDelivered = effectiveFinalExitCode === 0 && !acceptanceCanFailRun;
+		const isDelivered = effectiveFinalExitCode === 0 && !acceptanceCanFailRun && !finalResult?.interrupted;
 		let finishResult: Awaited<ReturnType<ExternalExecution["finish"]>>;
 		try {
 			finishResult = await externalOwner.finish(isDelivered ? "delivered" : "retained");
@@ -1998,6 +2003,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					onChildEvent: (event) => updateStepFromChildEvent(fi, event),
 				});
 				const taskEndTime = Date.now();
+				if (singleResult.interrupted) interrupted = true;
 				statusPayload.steps[fi].status = singleResult.exitCode === 0 ? "complete" : "failed";
 				statusPayload.steps[fi].endedAt = taskEndTime;
 				statusPayload.steps[fi].durationMs = taskEndTime - taskStartTime;
@@ -2029,6 +2035,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					agent: pr.agent,
 					output: pr.output,
 					error: pr.error,
+					...(pr.interrupted ? { interrupted: true } : {}),
 					success: pr.exitCode === 0,
 					exitCode: pr.exitCode,
 					skipped: pr.skipped,
@@ -2293,6 +2300,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 						const taskEndTime = Date.now();
 						const taskDuration = taskEndTime - taskStartTime;
 
+						if (singleResult.interrupted) interrupted = true;
 						statusPayload.steps[fi].status = singleResult.exitCode === 0 ? "complete" : "failed";
 						statusPayload.steps[fi].endedAt = taskEndTime;
 						statusPayload.steps[fi].durationMs = taskDuration;
@@ -2361,6 +2369,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 						agent: pr.agent,
 						output: pr.output,
 						error: pr.error,
+						...(pr.interrupted ? { interrupted: true } : {}),
 						success: pr.exitCode === 0,
 						exitCode: pr.exitCode,
 						skipped: pr.skipped,
@@ -2477,6 +2486,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				agent: singleResult.agent,
 				output: singleResult.output,
 				error: singleResult.error,
+				...(singleResult.interrupted ? { interrupted: true } : {}),
 				success: singleResult.exitCode === 0,
 				exitCode: singleResult.exitCode,
 				sessionFile: singleResult.sessionFile,
@@ -2511,6 +2521,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			}
 
 			const stepEndTime = Date.now();
+			if (singleResult.interrupted) interrupted = true;
 			statusPayload.steps[flatIndex].status = singleResult.exitCode === 0 ? "complete" : "failed";
 			statusPayload.steps[flatIndex].endedAt = stepEndTime;
 			statusPayload.steps[flatIndex].durationMs = stepEndTime - stepStartTime;
@@ -2682,11 +2693,12 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			mode: resultMode,
 			success: !interrupted && results.every((r) => r.success),
 			state: interrupted ? "paused" : results.every((r) => r.success) ? "complete" : "failed",
-			summary: interrupted ? "Paused after interrupt. Waiting for explicit next action." : summary,
+			summary: interrupted ? "Paused after interrupt. Waiting for explicit next action." + formatInterruptedCleanup(results) : summary,
 			results: results.map((r) => ({
 				agent: r.agent,
 				output: r.output,
 				error: r.error,
+				...(r.interrupted ? { interrupted: true } : {}),
 				success: r.success,
 				skipped: r.skipped || undefined,
 				sessionFile: r.sessionFile,

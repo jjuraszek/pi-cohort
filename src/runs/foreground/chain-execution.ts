@@ -35,7 +35,7 @@ import { discoverAvailableSkills, normalizeSkillInput } from "../../agents/skill
 import type { ExtensionConfig } from "../../shared/types.ts";
 import { runSync } from "./execution.ts";
 import type { PiRuntimeIdentity } from "../shared/pi-spawn.ts";
-import { buildChainSummary, buildChainOutputsSection, buildChainStopSection, type ChainSummaryOptions } from "../../shared/formatters.ts";
+import { buildChainSummary, buildChainOutputsSection, buildChainStopSection, formatInterruptedCleanup, type ChainSummaryOptions } from "../../shared/formatters.ts";
 import { compactForegroundDetails, getSingleResultOutput, mapConcurrent, resolveChildCwd } from "../../shared/utils.ts";
 import { recordRun } from "../shared/run-history.ts";
 import {
@@ -748,7 +748,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					const interrupted = interruptedIndexInStep >= 0 ? parallelResults[interruptedIndexInStep] : undefined;
 					if (interrupted) {
 						return {
-							content: [{ type: "text", text: `Chain paused after interrupt at step ${stepIndex + 1} (${interrupted.agent}). Waiting for explicit next action.` }],
+							content: [{ type: "text", text: `Chain paused after interrupt at step ${stepIndex + 1} (${interrupted.agent}). Waiting for explicit next action.` + formatInterruptedCleanup(results) }],
 							details: buildChainExecutionDetails(makeDetailsInput({
 								currentStepIndex: stepIndex,
 								currentFlatIndex: globalTaskIndex - step.parallel.length + interruptedIndexInStep,
@@ -957,7 +957,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				const interrupted = interruptedIndexInStep >= 0 ? parallelResults[interruptedIndexInStep] : undefined;
 				if (interrupted) {
 					return {
-						content: [{ type: "text", text: `Chain paused after interrupt at step ${stepIndex + 1} (${interrupted.agent}). Waiting for explicit next action.` }],
+						content: [{ type: "text", text: `Chain paused after interrupt at step ${stepIndex + 1} (${interrupted.agent}). Waiting for explicit next action.` + formatInterruptedCleanup(results) }],
 						details: buildChainExecutionDetails(makeDetailsInput({
 							currentStepIndex: stepIndex,
 							currentFlatIndex: globalTaskIndex - dynamicParallelStep.parallel.length + interruptedIndexInStep,
@@ -1228,7 +1228,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 
 				if (r.interrupted) {
 					return {
-						content: [{ type: "text", text: `Chain paused after interrupt at step ${stepIndex + 1} (${r.agent}). Waiting for explicit next action.` }],
+						content: [{ type: "text", text: `Chain paused after interrupt at step ${stepIndex + 1} (${r.agent}). Waiting for explicit next action.` + formatInterruptedCleanup(results) }],
 						details: buildChainExecutionDetails(makeDetailsInput({ currentStepIndex: stepIndex, currentFlatIndex: globalTaskIndex - 1 })),
 					};
 				}

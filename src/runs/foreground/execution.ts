@@ -76,6 +76,8 @@ import {
 } from "./attempt-finalization.ts";
 import {
 	createExternalExecution,
+	externalExecutionDiagnosticCode,
+	isInterruptedExternalAttemptError,
 	type ExternalExecution,
 	type ExternalExecutionOptions,
 } from "../shared/external-execution.ts";
@@ -808,7 +810,16 @@ export async function runSync(
 				});
 			} catch (error) {
 				runtimeFailure = error instanceof PiRuntimeLaunchError;
-				result = failedResult(agentName, task, runtimeFailure ? (error as Error).message : safeExternalFailure("attempt"));
+				if (isInterruptedExternalAttemptError(error)) {
+					const code = externalExecutionDiagnosticCode(error);
+					result = {
+						...failedResult(agentName, task, `${error.message}${code ? ` (${code})` : ""}`),
+						exitCode: 0,
+						interrupted: true,
+					};
+				} else {
+					result = failedResult(agentName, task, runtimeFailure ? (error as Error).message : safeExternalFailure("attempt"));
+				}
 			}
 		} else {
 			try {
@@ -825,7 +836,7 @@ export async function runSync(
 		sumUsage(aggregateUsage, result.usage);
 		totalToolCount += result.progressSummary?.toolCount ?? 0;
 		totalDurationMs += result.progressSummary?.durationMs ?? 0;
-		const attemptSucceeded = result.exitCode === 0 && !result.error;
+		const attemptSucceeded = result.exitCode === 0 && (result.interrupted || !result.error);
 		const attempt: ModelAttempt = {
 			model: candidate ?? result.model ?? agent.model ?? "default",
 			success: attemptSucceeded,
@@ -834,7 +845,7 @@ export async function runSync(
 			usage: { ...result.usage },
 		};
 		modelAttempts.push(attempt);
-		if (attemptSucceeded) {
+		if (result.interrupted || attemptSucceeded) {
 			break;
 		}
 		if (runtimeFailure || blockedLine(result.error ?? "") || !isRetryableModelFailure(result.error) || i === modelsToTry.length - 1) {

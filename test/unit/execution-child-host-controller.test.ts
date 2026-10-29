@@ -10,7 +10,7 @@ import { createMockPi } from "../support/mock-pi.ts";
 import { PiRuntimeLaunchError } from "../../src/runs/shared/pi-spawn.ts";
 import { PI_COHORT_CHILD_HOST_CONFIG } from "../../src/execution-backend/child-host-runtime.ts";
 import { CHILD_HOST_PROTOCOL_VERSION, decodeChildHostFrames, encodeChildHostMessage } from "../../src/execution-backend/child-host-protocol.ts";
-import type { ExecutionBackend } from "../../src/execution-backend/types.ts";
+import type { ExecutionBackend, ExecutionBackendEvent } from "../../src/execution-backend/types.ts";
 
 const backend: ExecutionBackend = {
 	name: "test", protocolVersion: 1,
@@ -27,12 +27,14 @@ const runtime = fixture.runtime;
 const testDependencies = { platform: "darwin" as const };
 
 class FakeSocket extends EventEmitter {
+	destroys = 0;
 	write(_data: string, callback?: (error?: Error | null) => void): boolean { callback?.(); return true; }
 	end(): this { this.emit("close", false); return this; }
-	destroy(): this { this.emit("close", false); return this; }
+	destroy(): this { this.destroys++; this.emit("close", false); return this; }
 }
 
 class FakeServer extends EventEmitter {
+	lastSocket?: FakeSocket;
 	private connectionListener: ((socket: Socket) => void) | undefined;
 
 	setConnectionListener(listener: (socket: Socket) => void): void { this.connectionListener = listener; }
@@ -41,6 +43,7 @@ class FakeServer extends EventEmitter {
 	connect(): FakeSocket {
 		assert.ok(this.connectionListener, "fake server must receive the connection listener");
 		const socket = new FakeSocket();
+		this.lastSocket = socket;
 		this.connectionListener(socket as Socket);
 		return socket;
 	}
@@ -98,6 +101,7 @@ describe("execution child host controller setup", () => {
 			const controller = await createChildHostController(options, dependencies);
 			connectFakeHost(server);
 			await controller.ready;
+			controller.dispose();
 			aborter.abort();
 			let jitiChecks = 0;
 			await assert.rejects(createChildHostController({ ...options, signal: new AbortController().signal }, {
@@ -156,6 +160,32 @@ describe("execution child host controller setup", () => {
 });
 
 describe("execution child host controller attempts", () => {
+	for (const operation of ["shutdown", "startAttempt"] as const) {
+		for (const state of ["write-after-FIN", "writableEnded", "destroyed"] as const) {
+			it(`rejects ${operation} on ${state} without an uncaught socket error`, { timeout: 1_000 }, async () => {
+				const { server, dependencies } = fakeHostDependencies();
+				const controller = await createChildHostController(
+					{ runtime, backend: { ...backend, async launch() { return emptyLease(); } }, runId: "run", childId: "child", cwd: os.tmpdir(), signal: new AbortController().signal },
+					{ childHostCommand: () => ({ command: "echo", args: [] }), ...dependencies },
+				);
+				try {
+					const socket = connectFakeHost(server);
+					await controller.ready;
+					let writes = 0;
+					if (state !== "write-after-FIN") Object.assign(socket, { [state]: true });
+					socket.write = () => {
+						writes++;
+						setImmediate(() => socket.emit("error", Object.assign(new Error("This socket has been ended by the other party"), { code: "EPIPE" })));
+						return false;
+					};
+					await assert.rejects(operation === "shutdown" ? controller.shutdown() : controller.startAttempt({ attemptId: "attempt", command: "echo", args: [], cwd: os.tmpdir(), environment: {} }), /child host disconnected/);
+					assert.equal(writes, state === "write-after-FIN" ? 1 : 0);
+					await assert.rejects(controller.shutdown(), /child host disconnected/);
+				} finally { controller.dispose(); }
+			});
+		}
+	}
+
 	it("maps a host spawn-error frame to the selected runtime error and permits cleanup", { timeout: 1_000 }, async () => {
 		const aborter = new AbortController();
 		const { server, dependencies } = fakeHostDependencies();
@@ -166,7 +196,7 @@ describe("execution child host controller attempts", () => {
 		const selectedBackend: ExecutionBackend = { ...backend, async launch(request) {
 			launches++;
 			directory = path.dirname(request.environment[PI_COHORT_CHILD_HOST_CONFIG]);
-			return { async release() { releases++; } };
+			return { ...emptyLease(), async release() { releases++; } };
 		} };
 		try {
 			const controller = await createChildHostController(
@@ -199,6 +229,7 @@ describe("execution child host controller attempts", () => {
 			assert.equal(launches, 1);
 			assert.equal(releases, 1);
 			assert.equal(sent.length, 2);
+			controller.dispose();
 			assert.equal(fs.existsSync(directory), false);
 		} finally {
 			aborter.abort();
@@ -215,6 +246,7 @@ describe("execution child host controller releaseObserver", () => {
 			async detect() { return { available: true, version: "1", capabilities: [] }; },
 			async launch() {
 				return {
+					...emptyLease(),
 					async release() { releaseCallCount++; },
 				};
 			},
@@ -236,6 +268,7 @@ describe("execution child host controller releaseObserver", () => {
 			const release2 = controller.releaseObserver();
 
 			await Promise.all([release1, release2]);
+			controller.dispose();
 
 			// Should have called release exactly once, not twice
 			assert.equal(releaseCallCount, 1, "release() should be called exactly once for concurrent calls");
@@ -252,6 +285,7 @@ describe("execution child host controller releaseObserver", () => {
 			async detect() { return { available: true, version: "1", capabilities: [] }; },
 			async launch() {
 				return {
+					...emptyLease(),
 					async release() {
 						releaseAttempt++;
 						if (releaseAttempt === 1) throw new Error("first release failed");
@@ -280,9 +314,126 @@ describe("execution child host controller releaseObserver", () => {
 			// Second call should retry, not silently succeed
 			await controller.releaseObserver();
 
+			controller.dispose();
 			assert.equal(releaseAttempt, 2, "release() should have been called twice (initial attempt + retry)");
 		} finally {
 			aborter.abort();
 		}
 	});
 });
+
+
+describe("execution child host lifetime", () => {
+	for (const earlyReady of [false, true]) it(`detaches launch cancellation at readiness (early=${earlyReady})`, async () => {
+		const aborter = new AbortController();
+		const { server, dependencies } = fakeHostDependencies();
+		let launchSignal!: AbortSignal;
+		const selectedBackend = { ...backend, async launch(request) {
+			launchSignal = request.signal;
+			if (earlyReady) { connectFakeHost(server); aborter.abort(); }
+			return emptyLease();
+		} };
+		const controller = await createChildHostController({ runtime, backend: selectedBackend, runId: "run", childId: "child", cwd: os.tmpdir(), signal: aborter.signal }, dependencies);
+		if (!earlyReady) connectFakeHost(server);
+		await controller.ready;
+		aborter.abort();
+		try {
+			assert.notEqual(launchSignal, aborter.signal);
+			assert.equal(launchSignal.aborted, false);
+			const shutdown = controller.shutdown();
+			serverSocketAck(server);
+			await shutdown;
+		} finally { controller.dispose(); }
+	});
+
+	it("forwards cancellation before readiness to launch", async () => {
+		const aborter = new AbortController();
+		const { dependencies } = fakeHostDependencies();
+		let launchSignal!: AbortSignal;
+		const selectedBackend = { ...backend, async launch(request) { launchSignal = request.signal; return emptyLease(); } };
+		const controller = await createChildHostController({ runtime, backend: selectedBackend, runId: "run", childId: "child", cwd: os.tmpdir(), signal: aborter.signal }, dependencies);
+		aborter.abort();
+		await assert.rejects(controller.ready, /launch aborted/);
+		assert.equal(launchSignal.aborted, true);
+		controller.dispose();
+	});
+
+	it("observes only matching host exit independently of child exit and retains resources until disposal", async () => {
+		const { server, dependencies } = fakeHostDependencies();
+		let push!: (event: ExecutionBackendEvent) => void;
+		let end!: () => void;
+		let releases = 0;
+		let directory = "";
+		const events = { async *[Symbol.asyncIterator]() {
+			while (true) {
+				const event = await new Promise<ExecutionBackendEvent | undefined>(resolve => { push = resolve; end = () => resolve(undefined); });
+				if (!event) return;
+				yield event;
+			}
+		} };
+		const selectedBackend = { ...backend, async launch(request) {
+			directory = path.dirname(request.environment[PI_COHORT_CHILD_HOST_CONFIG]);
+			return { ...emptyLease(), events, async release() { releases++; } };
+		} };
+		const controller = await createChildHostController({ runtime, backend: selectedBackend, runId: "run", childId: "child", cwd: os.tmpdir(), signal: new AbortController().signal }, dependencies);
+		const socket = connectFakeHost(server);
+		await controller.ready;
+		try {
+			assert.ok(controller.hostExit instanceof Promise);
+			let observed = false;
+			void controller.hostExit.then(() => { observed = true; });
+			const tick = () => new Promise(resolve => setImmediate(resolve));
+			for (const event of [
+				{ type: "exited", surface: { kind: "test", id: "other" }, status: 0, signal: null },
+				{ type: "exited", surface: { kind: "other", id: "1" }, status: 0, signal: null },
+				{ type: "surface_closed", surface: { kind: "test", id: "1" }, requested: true },
+			]) { push({ ...event, timestamp: 0, source: "mux" } as ExecutionBackendEvent); await tick(); assert.equal(observed, false); }
+			const attempt = controller.startAttempt({ attemptId: "a", command: "node", args: [], cwd: os.tmpdir(), environment: {} });
+			let childObserved = false;
+			void attempt.then(() => { childObserved = true; });
+			push({ type: "exited", surface: { kind: "test", id: "1" }, status: null, signal: "SIGTERM", timestamp: 0, source: "mux" });
+			assert.deepEqual(await controller.hostExit, { status: null, signal: "SIGTERM" });
+			assert.equal(childObserved, false);
+			for (const message of [{ kind: "attempt_started", attemptId: "a" }, { kind: "attempt_exited", attemptId: "a", status: 0, signal: null }]) socket.emit("data", encodeChildHostMessage({ protocolVersion: 1, runId: "run", childId: "child", ...message }));
+			assert.deepEqual(await attempt, { status: 0, signal: null });
+			const shutdown = controller.shutdown(); serverSocketAck(server); await shutdown;
+			assert.equal(fs.existsSync(directory), true);
+			assert.equal(releases, 0);
+			assert.equal(socket.destroys, 0);
+			await controller.releaseObserver();
+			assert.equal(releases, 1);
+			controller.dispose(); controller.dispose();
+			assert.equal(socket.destroys, 1);
+			assert.equal(fs.existsSync(directory), false);
+		} finally { end?.(); controller.dispose(); }
+	});
+
+	for (const action of ["disconnect", "ack", "exhaustion", "disposal"]) it(`does not infer host exit from ${action}`, async () => {
+		const { server, dependencies } = fakeHostDependencies();
+		let releases = 0;
+		const controller = await createChildHostController({ runtime, backend: { ...backend, async launch() { return { ...emptyLease(), async release() { releases++; } }; } }, runId: "run", childId: "child", cwd: os.tmpdir(), signal: new AbortController().signal }, dependencies);
+		const socket = connectFakeHost(server); await controller.ready;
+		try {
+			assert.ok(controller.hostExit instanceof Promise);
+			let observed = false; void controller.hostExit.then(() => { observed = true; });
+			if (action === "ack") { const pending = controller.shutdown(); serverSocketAck(server); await pending; }
+			if (action === "disconnect" || action === "disposal") {
+				const pending = controller.startAttempt({ attemptId: "a", command: "node", args: [], cwd: os.tmpdir(), environment: {} });
+				if (action === "disconnect") socket.destroy(); else controller.dispose();
+				await assert.rejects(pending, /disconnected/);
+			}
+			await new Promise(resolve => setImmediate(resolve));
+			assert.equal(observed, false); assert.equal(releases, 0);
+			await controller.releaseObserver(); assert.equal(releases, 1);
+			controller.dispose(); controller.dispose();
+			await assert.rejects(controller.startAttempt({ attemptId: "b", command: "node", args: [], cwd: os.tmpdir(), environment: {} }), /disconnected/);
+		} finally { controller.dispose(); }
+	});
+});
+
+function emptyLease() {
+	return { handle: { protocolVersion: 1, backend: "test", surface: { kind: "test", id: "1" }, display: { label: "test", hint: "test" }, data: null }, events: { async *[Symbol.asyncIterator]() {} }, async reconcile() { return []; }, async release() {} };
+}
+function serverSocketAck(server: FakeServer): void {
+	server.lastSocket!.emit("data", encodeChildHostMessage({ protocolVersion: 1, kind: "shutdown_ack", runId: "run", childId: "child" }));
+}

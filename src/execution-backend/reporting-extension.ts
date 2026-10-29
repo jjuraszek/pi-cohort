@@ -51,12 +51,12 @@ function append(
 	} as ExecutionReport);
 }
 
-function result(messages: readonly AgentMessage[]): Omit<ExecutionReport, "protocolVersion" | "runId" | "childId" | "attemptId" | "sequence" | "timestamp"> {
+function result(messages: readonly AgentMessage[], appliedAbort: boolean): Omit<ExecutionReport, "protocolVersion" | "runId" | "childId" | "attemptId" | "sequence" | "timestamp"> {
 	messages.forEach(assertNoMalformedStandardMessage);
 	const standardMessages = messages.filter(isStandardMessage);
 	const finalAssistant = [...standardMessages].reverse().find(isAssistantMessage);
 	if (!finalAssistant) return { kind: "result", outcome: "failed", finalOutput: "", error: "result_missing" };
-	const interrupted = finalAssistant.stopReason === "aborted";
+	const interrupted = appliedAbort || finalAssistant.stopReason === "aborted";
 	const failed = !interrupted && (finalAssistant.stopReason === "error" || typeof finalAssistant.errorMessage === "string");
 	return {
 		kind: "result",
@@ -134,7 +134,8 @@ export function createExecutionReportingExtension(
 			if (existing.some((report) => report.kind === "result")) return;
 			if (!existing.some((report) => report.kind === "settled")) append(pi, context, config, { kind: "settled" });
 			const messages = context.sessionManager.getBranch().flatMap((entry) => entry.type === "message" ? [entry.message] : []);
-			append(pi, context, config, result(messages));
+			const appliedAbort = existing.some((report) => report.kind === "control" && report.action === "abort" && report.state === "applied");
+			append(pi, context, config, result(messages, appliedAbort));
 		});
 	};
 }

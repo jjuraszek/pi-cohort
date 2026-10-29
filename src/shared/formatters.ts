@@ -53,6 +53,13 @@ export function formatDuration(ms: number): string {
 	return `${Math.floor(ms / 60000)}m${Math.floor((ms % 60000) / 1000)}s`;
 }
 
+export function formatInterruptedCleanup(results: readonly Pick<SingleResult, "agent" | "interrupted" | "error">[]): string {
+	const lines = results.flatMap((result, index) => result.interrupted && result.error
+		? [`Child ${index + 1} (${result.agent}): ${result.error}`]
+		: []);
+	return lines.length ? `\n\n${lines.join("\n")}` : "";
+}
+
 export interface ChainSummaryOptions {
 	stop?: StopRecord;
 	outputs?: ChainTaskOutputEntry[];
