@@ -1,5 +1,7 @@
 # Mux execution backends: discovery record and ratified architecture
 
+> **Superseded by:** [doc/specs/2026-10-29-gh-36-interrupt-child-teardown.md](./2026-10-29-gh-36-interrupt-child-teardown.md) - Lifecycle, fallback, and retention interrupted row only: forced-cleanup exception and unconfirmed-exit reporting.
+
 ## Codebase recon
 
 ### Request and repository state
