@@ -140,28 +140,30 @@ describe("registerSubagentNotify", () => {
 		}]);
 	});
 
-	it("labels paused completions as paused even without an exit code", () => {
-		const { events, sent } = createPi();
+	for (const cleanup of ["", "\n\nChild 1 (worker): Process termination could not be confirmed; manual cleanup may be required."]) {
+		it(`labels paused completions as paused and preserves summary${cleanup ? " with cleanup warning" : ""}`, () => {
+			const { events, sent } = createPi();
 
-		events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
-			id: "notify-paused-1",
-			agent: "worker",
-			success: false,
-			state: "paused",
-			summary: "Paused after interrupt. Waiting for explicit next action.",
-			timestamp: 789,
-		});
+			events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
+				id: cleanup ? "notify-paused-warning" : "notify-paused-1",
+				agent: "worker",
+				success: false,
+				state: "paused",
+				summary: "Paused after interrupt. Waiting for explicit next action." + cleanup,
+				timestamp: 789,
+			});
 
-		assert.equal(sent.length, 1);
-		assert.deepEqual(sent[0], {
-			message: {
-				customType: "subagent-notify",
-				content: "Background task paused: **worker**\n\nPaused after interrupt. Waiting for explicit next action.",
-				display: true,
-			},
-			options: { triggerTurn: true },
+			assert.equal(sent.length, 1);
+			assert.deepEqual(sent[0], {
+				message: {
+					customType: "subagent-notify",
+					content: "Background task paused: **worker**\n\nPaused after interrupt. Waiting for explicit next action." + cleanup,
+					display: true,
+				},
+				options: { triggerTurn: true },
+			});
 		});
-	});
+	}
 
 	it("stops notifying once the returned unsubscribe is called", () => {
 		const { events, sent, unsubscribe } = createPi();

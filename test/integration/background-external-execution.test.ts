@@ -836,7 +836,10 @@ await import(${JSON.stringify(pathToFileURL(runnerPath).href)});
 				const pausedIndex = result.results.indexOf(paused);
 				assert.equal(paused.interrupted, true);
 				if (mode === "user-abort") assert.equal(paused.error, "This operation was aborted");
-				else assert.ok(paused.error.includes(warning));
+				else {
+					assert.ok(paused.error.includes(warning));
+					assert.ok(result.summary.includes(`Child ${pausedIndex + 1} (${paused.agent}): ${paused.error}`), result.summary);
+				}
 				assert.equal(paused.executionSurface.retained, true);
 				assert.equal(paused.modelAttempts.length, 1);
 				assert.equal(paused.modelAttempts[0].success, true);
