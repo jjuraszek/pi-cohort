@@ -135,6 +135,8 @@ The experimental backend reporting slice persists versioned custom session entri
 
 The host replays complete JSONL records only, tolerates one incomplete trailing write, filters other attempts, rejects correlation/sequence/lifecycle violations, and reconstructs active messages from the exact result entry's `parentId` branch. Messages are not duplicated in result data. Reporter configuration is supplied only through `PI_COHORT_REPORT_CONFIG`, an owner-only regular JSON file; the configuration contains correlation identifiers, never task content or credentials.
 
+A correlated durable `control` entry with `action: "abort", state: "applied"` classifies a newly written terminal as `interrupted`, including an error-shaped final assistant message. Error text alone is not abort evidence. A previously written terminal remains immutable; accepted cancellation still stops fallback and preserves caller-facing interruption without rewriting that terminal.
+
 ### Persistent child-host wire protocol
 
 The experimental external-terminal host uses a private owner-only Unix socket. Its
@@ -153,3 +155,11 @@ shutdown_host -> shutdown_ack
 
 Every message is correlated by `runId` and `childId`; attempt messages also carry
 one non-reusable `attemptId`. Protocol frames and environments are never logged.
+
+For an accepted interruption, the execution owner sends child shutdown regardless of terminal classification, observes child exit, and requests host shutdown before the attempt resolves or rejects. Cleanup is one-shot. Two absolute budgets use `controlTimeoutMs` (default 30,000 ms): the graceful budget starts at accepted interruption and covers abort, terminal observation, and child/host shutdown and exit; at most one additional fallback budget covers forced cleanup, remaining exit observation, and resource disposal. The default coordinator wait is bounded to 60,000 ms; later awaits and `finish()` do not restart either budget. A stalled or rejected graceful shutdown uses `close(handle, "explicit_cleanup")` at most once within the fallback budget. Late completion cannot rewrite the settled result.
+
+Confirmed termination requires both the correlated child's `attempt_exited` and the launched host's lease `exited` fact within those budgets. `shutdown_ack`, socket closure, `surface_closed`, and a successful close request are not exit evidence. Responsive shutdown without host-exit proof ends with uncertainty, not a destructive close solely to obtain proof. Unconfirmed termination adds exactly `Process termination could not be confirmed; manual cleanup may be required.` to paused diagnostics and visible output.
+
+Normal interruption retains the diagnostic surface without requesting routine closure; forced cleanup may sacrifice it. After interrupted settlement, `finish("retained")` returns the stored `{handle, retained}` without contacting the host or repeating cleanup; delivered finish is rejected. `retained: false` records a completed explicit-close request, and `true` means core has not confirmed a close. This boolean is the last known close outcome, not proof of process liveness or an inspectable surface. Companion EXIT traps remain outside core's retention promise.
+
+Actual-process tests with fake backends verify core cleanup, not live cmux behavior or companion retention compliance. The live cmux runtime and the reporter's installed adapter version remain unavailable, so no live reproduction is claimed.
