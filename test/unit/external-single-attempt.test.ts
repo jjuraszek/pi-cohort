@@ -289,7 +289,7 @@ describe("runExternalSingleAttempt", () => {
 	});
 
 	it("maps an interrupted owner outcome the same way native interruption is mapped", async () => {
-		const { owner } = makeOwner(() => baseAttemptResult({ outcome: "interrupted", finalOutput: "partial", exit: { code: null, signal: "SIGTERM" } }));
+		const { owner } = makeOwner(() => baseAttemptResult({ outcome: "interrupted", interrupted: true, finalOutput: "partial", exit: { code: null, signal: "SIGTERM" } }));
 		const result = await runExternalSingleAttempt({
 			owner,
 			attemptId: "a1",
@@ -304,6 +304,24 @@ describe("runExternalSingleAttempt", () => {
 		assert.equal(result.interrupted, true);
 		assert.equal(result.error, undefined);
 		assert.equal(result.finalOutput, "partial");
+	});
+
+	for (const row of [
+		{ name: "immutable success", outcome: "success", error: undefined },
+		{ name: "immutable retryable failure", outcome: "failed", error: "rate limit" },
+		{ name: "uncertain interrupted cleanup", outcome: "interrupted", error: "Process termination could not be confirmed; manual cleanup may be required." },
+	] as const) it(`preserves accepted interruption and diagnostics for ${row.name}`, async () => {
+		const durable = baseAttemptResult({ outcome: row.outcome, interrupted: true, error: row.error, exit: { code: 1, signal: null } });
+		const { owner } = makeOwner(() => durable);
+		const result = await runExternalSingleAttempt({
+			owner, attemptId: "a1", runtimeCwd: "/work", agent: makeAgent("worker"), model: undefined, task: "Task",
+			options: { runId: "run-1", sessionFile: SESSION_FILE },
+			shared: { sessionEnabled: true, systemPrompt: "", attemptNotes: [] },
+		});
+		assert.equal(result.exitCode, 0);
+		assert.equal(result.interrupted, true);
+		assert.equal(result.error, row.error);
+		assert.equal(durable.outcome, row.outcome);
 	});
 
 	it("reclassifies a hidden tool error (exitCode 0, isError toolResult) as a failed result via the shared finalizer", async () => {
@@ -480,7 +498,8 @@ describe("runExternalSingleAttempt", () => {
 		assert.equal(fs.existsSync(promptDir), false);
 	});
 
-	it("cleans up the temp prompt directory even when the owner attempt throws", async () => {
+	for (const interrupted of [false, true]) it(`cleans up the temp prompt directory and preserves ${interrupted ? "annotated diagnostic" : "ordinary rejection"} identity`, async () => {
+		const rejection = Object.assign(new Error("result_missing"), { interrupted, code: "result_missing" });
 		let promptDir = "";
 		const owner: ExternalExecution = {
 			surface: { protocolVersion: 1, backend: "fake", surface: { kind: "pane", id: "p1" }, display: { label: "fake", hint: "safe" }, data: "" },
@@ -491,7 +510,7 @@ describe("runExternalSingleAttempt", () => {
 				assert.ok(promptPath);
 				promptDir = path.dirname(promptPath);
 				assert.equal(fs.existsSync(promptDir), true);
-				throw new Error("owner attempt failed safely");
+				throw rejection;
 			},
 			async finish(disposition) {
 				return { handle: this.surface, retained: disposition === "retained" };
@@ -508,7 +527,7 @@ describe("runExternalSingleAttempt", () => {
 				options: { runId: "run-1", sessionFile: SESSION_FILE },
 				shared: { sessionEnabled: true, systemPrompt: "a non-empty system prompt", attemptNotes: [] },
 			}),
-			/owner attempt failed safely/,
+			(error: unknown) => error === rejection && (error as typeof rejection).code === "result_missing",
 		);
 		assert.equal(fs.existsSync(promptDir), false);
 	});

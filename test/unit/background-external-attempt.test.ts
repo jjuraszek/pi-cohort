@@ -230,13 +230,22 @@ describe("runExternalBackgroundAttempt", () => {
 		assert.equal(result.exitCode, 42);
 	});
 
-	it("maps an interrupted durable outcome to exitCode 1 even when exit code is zero", async () => {
-		const { owner } = makeOwner(() =>
-			baseAttemptResult({ outcome: "interrupted", finalOutput: "partial", exit: { code: 0, signal: null } }),
-		);
-		const result = await runExternalBackgroundAttempt(makeInput({ owner }));
-		assert.equal(result.exitCode, 1, "interrupted durable must not become success from zero exit");
-		assert.equal(result.interrupted, true);
+	for (const outcome of ["success", "failed", "interrupted"] as const) {
+		for (const error of [undefined, "Process termination could not be confirmed; manual cleanup may be required."]) {
+			it(`preserves accepted interruption over durable ${outcome}, diagnostic ${Boolean(error)}`, async () => {
+				const { owner } = makeOwner(() => baseAttemptResult({ outcome, interrupted: true, error, exit: { code: 1, signal: null } }));
+				const result = await runExternalBackgroundAttempt(makeInput({ owner }));
+				assert.equal(result.exitCode, 0);
+				assert.equal(result.interrupted, true);
+				assert.equal(result.error, error);
+			});
+		}
+	}
+
+	it("preserves the original annotated diagnostic rejection", async () => {
+		const diagnostic = Object.assign(new Error("result_missing"), { code: "result_missing", interrupted: true });
+		const { owner } = makeOwner(() => { throw diagnostic; });
+		await assert.rejects(runExternalBackgroundAttempt(makeInput({ owner })), error => error === diagnostic);
 	});
 
 	it("maps messages, usage, model, and finalOutput from the owner result", async () => {

@@ -133,9 +133,9 @@ export async function runExternalSingleAttempt(input: RunExternalSingleAttemptIn
 		result.exitCode = exitCodeOf(attemptResult.exit);
 
 		const observedMutationAttempt = toolMutationFromAssistantMessages(attemptResult.messages);
-		const interruptedByControl = attemptResult.outcome === "interrupted";
+		const interruptedByControl = attemptResult.interrupted;
 
-		return finalizeSingleAttempt(result, progress, {
+		const finalized = finalizeSingleAttempt(result, progress, {
 			agent,
 			options,
 			outputSnapshot: shared.outputSnapshot,
@@ -145,6 +145,8 @@ export async function runExternalSingleAttempt(input: RunExternalSingleAttemptIn
 			emitControlEvent,
 			startTime,
 		});
+		if (attemptResult.interrupted) finalized.error = attemptResult.error;
+		return finalized;
 	} finally {
 		cleanupTempDir(tempDir);
 	}
