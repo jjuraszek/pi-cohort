@@ -598,6 +598,41 @@ describe("external foreground execution owner", () => {
 		await owner.finish("retained");
 	});
 
+	for (const evidence of ["applied", "requested-only"] as const) it(`validates delayed ${evidence} shutdown evidence after process settlement`, async () => {
+		const fake = harness();
+		const shutdownRequested = deferred<void>();
+		const createControl = fake.dependencies.createControl!;
+		fake.dependencies.createControl = async identity => {
+			const control = await createControl(identity);
+			const original = control.request.bind(control);
+			control.request = async action => {
+				const response = await original(action);
+				if (action === "shutdown") shutdownRequested.resolve();
+				return response;
+			};
+			return control;
+		};
+		fake.setContent(sessionContent("interrupted"));
+		fake.terminal.resolve(replay(sessionContent("interrupted")));
+		const owner = await ownerFrom(fake); fake.ready.resolve();
+		const pending = owner.runAttempt(request());
+		const checked = evidence === "requested-only"
+			? assert.rejects(pending, /durable shutdown control evidence is missing/)
+			: pending;
+		await shutdownRequested.promise;
+		await new Promise<void>(resolve => setImmediate(resolve));
+		assert.equal(fake.calls.includes("dispose"), false);
+		fake.setContent(evidence === "applied" ? sessionContent("interrupted", ["shutdown"]) : sessionContent("interrupted") + line("control", 4, { action: "shutdown", state: "requested" }));
+		fake.exit.resolve({ status: 0, signal: null });
+		const result = await checked;
+		if (evidence === "applied") {
+			assert.equal(result!.interrupted, true);
+			assert.equal(result!.error, undefined);
+		}
+		assert.equal(fake.counts().closes, 0);
+		assert.deepEqual(await owner.finish("retained"), { handle, retained: true });
+	});
+
 	it("waits for independent host exit before settlement and disposal", async () => {
 		const fake = harness();
 		fake.controller.shutdown = async () => { fake.calls.push("host-shutdown"); };

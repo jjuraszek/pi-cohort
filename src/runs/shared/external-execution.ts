@@ -325,10 +325,6 @@ export async function createExternalExecution(
 				try {
 					replayed = replayExecutionSession(await wait(readSession(request.sessionFile), "final replay"), identity);
 					if (!replayed.result && !initialError) primary = new ExternalExecutionDiagnosticError("result_missing");
-					else if (!primary) {
-						if (!initial) proveControl(replayed, "abort");
-						proveControl(replayed, "shutdown");
-					}
 				} catch (error) { primary ??= error; }
 				if (fallback) await forceCleanup();
 				try { await wait(exitPromise, "post-shutdown exit"); } catch (error) { note(error); fallback = true; }
@@ -344,8 +340,20 @@ export async function createExternalExecution(
 						try { await wait(controller.shutdown(), "host shutdown"); } catch (error) { note(error); }
 					}
 				}
+				// Socket delivery is not application; shutdown reports can arrive until process settlement.
+				if (observedExit && now() < endpoint) {
+					try { replayed = replayExecutionSession(await wait(readSession(request.sessionFile), "final replay"), identity); }
+					catch (error) { primary ??= error; }
+				}
 				if (!hostExited) {
 					try { await wait(controller.hostExit, "host exit observation"); } catch (error) { note(error); }
+				}
+				if (!primary) {
+					try {
+						if (!replayed?.result) throw new ExternalExecutionDiagnosticError("result_missing");
+						if (!initial) proveControl(replayed, "abort");
+						proveControl(replayed, "shutdown");
+					} catch (error) { primary = error; }
 				}
 				try { watcher!.close(); } catch (error) { note(error); }
 				finally {
