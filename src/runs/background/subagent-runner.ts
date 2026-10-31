@@ -732,7 +732,7 @@ export async function runSingleStep(
 		}
 	}
 
-	if (step.sessionFile) {
+	if (step.sessionFile && backendSelection.selection.kind === "native") {
 		try {
 			stampSessionHeaderCwd(step.sessionFile, childCwd);
 		} catch (error) {
