@@ -19,6 +19,7 @@ import type { MockPi } from "../support/helpers.ts";
 import { getArtifactPaths } from "../../src/shared/artifacts.ts";
 import { formatModelAttemptNote } from "../../src/runs/shared/model-fallback.ts";
 import { DEFAULT_CONTROL_CONFIG } from "../../src/runs/shared/subagent-control.ts";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 
 interface AsyncExecutionResult {
 	content: Array<{ text?: string }>;
@@ -1085,6 +1086,123 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		}
 	});
 
+	it("detached fork chain replaces provisional cwd with late-resolved tree cwd", { skip: process.platform === "win32" || !isAsyncAvailable() ? "requires shell hooks and jiti" : undefined }, async () => {
+		const repoDir = createRepo("pi-async-fork-tree-");
+		const treeTemplate = "{outputs.impl.treePath}";
+		const originalWrite = defaultFs.writeFileSync;
+		const mockScript = fs.readFileSync(mockPi.runtime.piEntryPath, "utf8");
+		const launchCwds = path.join(tempDir, "launch-cwds.jsonl");
+		let serialized: any;
+		const provisionalHeaders: Array<{ cwd: string; parentSession?: string }> = [];
+		try {
+			// Capture physical paths inside the children before the runner can remove their checkouts.
+			fs.writeFileSync(mockPi.runtime.piEntryPath,
+				`import { appendFileSync as recordLaunchCwd, realpathSync as resolveLaunchCwd } from "node:fs";\nrecordLaunchCwd(${JSON.stringify(launchCwds)}, JSON.stringify(resolveLaunchCwd.native(process.cwd())) + "\\n");\n${mockScript}`);
+			const hookPath = path.join(tempDir, "fork-tree-hook.sh");
+			fs.writeFileSync(hookPath, '#!/bin/sh\ncat >/dev/null\necho patched >> input.md\necho "{}"\n');
+			fs.chmodSync(hookPath, 0o755);
+			const parent = SessionManager.create(repoDir, path.join(tempDir, "parent-sessions"));
+			parent.appendMessage({ role: "user", content: "parent prompt" });
+			const parentBytes = fs.readFileSync(parent.getSessionFile()!);
+			const executor = createSubagentExecutor({
+				pi: { events: createEventBus(), getSessionName: () => undefined },
+				state: { baseCwd: repoDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
+				resolveConfig: () => ({ worktreeSetupHook: hookPath }), tempArtifactsDir: tempDir,
+				getSubagentSessionRoot: () => tempDir, expandTilde: (p: string) => p,
+				discoverAgents: () => ({ agents: [makeAgent("worker", { completionGuard: false }), makeAgent("reviewer")] }),
+				captureRuntime: mockPi.captureRuntime,
+			});
+			mockPi.onCall({ output: "Produced" });
+			mockPi.onCall({ output: "Sequential", echoCwd: true });
+			mockPi.onCall({ output: "Group", echoCwd: true });
+			mockPi.onCall({ output: "Literal override", echoCwd: true });
+			defaultFs.writeFileSync = ((file: any, data: any, ...rest: any[]) => {
+				if (typeof file === "string" && typeof data === "string" && data.startsWith("{")) {
+					const value = JSON.parse(data);
+					if (value.steps?.length === 3 && value.steps[1].cwd === treeTemplate) {
+						serialized = value;
+						for (const step of value.steps.flatMap((step: any) => step.parallel ?? [step])) {
+							provisionalHeaders.push(JSON.parse(fs.readFileSync(step.sessionFile, "utf8").split("\n")[0]));
+						}
+					}
+				}
+				return (originalWrite as any)(file, data, ...rest);
+			}) as typeof originalWrite;
+			let started: AsyncExecutionResult;
+			try {
+				started = await executor.execute("fork-tree", { context: "fork", async: true, clarify: false, chain: [
+					{ parallel: [{ agent: "worker", task: "Produce", as: "impl", output: false, progress: false }], worktree: true },
+					{ agent: "reviewer", task: "Sequential", cwd: treeTemplate, output: false, progress: false },
+					{ parallel: [{ agent: "reviewer", task: "Group", output: false, progress: false }, { agent: "reviewer", task: "Override", cwd: repoDir, output: false, progress: false }], cwd: treeTemplate, concurrency: 1 },
+				], acceptance: { level: "none", reason: "Only observing fork cwd" } }, new AbortController().signal, undefined, { ...makeMinimalCtx(repoDir), sessionManager: parent });
+			} finally {
+				defaultFs.writeFileSync = originalWrite;
+			}
+			const id = started!.details?.asyncId;
+			assert.ok(id, JSON.stringify(started!));
+			assert.equal(serialized.steps[1].cwd, treeTemplate);
+			assert.equal(serialized.steps[2].cwd, treeTemplate);
+			assert.equal(serialized.steps[2].parallel[0].cwd, treeTemplate);
+			assert.equal(serialized.steps[2].parallel[1].cwd, repoDir);
+			assert.equal(provisionalHeaders.length, 4);
+			for (const header of provisionalHeaders) {
+				assert.equal(header.cwd, repoDir);
+				assert.equal(header.parentSession, parent.getSessionFile());
+			}
+			const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf8")) as AsyncResultPayload;
+			assert.equal(payload.success, true, JSON.stringify(payload));
+			const physicalCwds = fs.readFileSync(launchCwds, "utf8").trim().split("\n").map((line) => JSON.parse(line) as string);
+			assert.equal(physicalCwds.length, 4);
+			const physicalTree = physicalCwds[1];
+			const tree = payload.outputs?.impl?.treePath;
+			assert.ok(tree);
+			assert.notEqual(tree, provisionalHeaders[1].cwd);
+			for (const [index, expected] of [tree, tree, repoDir].entries()) {
+				const childArgs = readMockPiArgs(mockPi, index + 1);
+				const header = JSON.parse(fs.readFileSync(childArgs[childArgs.indexOf("--session") + 1], "utf8").split("\n")[0]);
+				assert.equal(header.cwd, expected);
+				assert.equal(header.parentSession, parent.getSessionFile());
+				assert.equal(JSON.parse(payload.results[index + 1]!.output!.split("\n").at(-1)!).cwd, index < 2 ? physicalTree : fs.realpathSync.native(repoDir));
+			}
+			assert.deepEqual(fs.readFileSync(parent.getSessionFile()!), parentBytes);
+			assert.equal(fs.existsSync(tree), false);
+			assert.doesNotMatch(git(repoDir, ["worktree", "list", "--porcelain"]), /worktree-trees/);
+		} finally {
+			defaultFs.writeFileSync = originalWrite;
+			fs.writeFileSync(mockPi.runtime.piEntryPath, mockScript);
+			removeTempDir(repoDir);
+		}
+	});
+
+	it("detached single fork keeps lexical explicit cwd and observes its realpath", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		const target = path.join(tempDir, "target");
+		const childCwd = path.join(tempDir, "child-link");
+		fs.mkdirSync(target);
+		fs.symlinkSync(target, childCwd, process.platform === "win32" ? "junction" : "dir");
+		const parent = SessionManager.create(tempDir, path.join(tempDir, "parent-sessions"));
+		parent.appendMessage({ role: "user", content: "parent prompt" });
+		const parentBytes = fs.readFileSync(parent.getSessionFile()!);
+		const executor = createSubagentExecutor({
+			pi: { events: createEventBus(), getSessionName: () => undefined },
+			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
+			resolveConfig: () => ({}), tempArtifactsDir: tempDir,
+			getSubagentSessionRoot: () => tempDir, expandTilde: (p: string) => p,
+			discoverAgents: () => ({ agents: [makeAgent("reviewer")] }), captureRuntime: mockPi.captureRuntime,
+		});
+		mockPi.onCall({ output: "Inspect", echoCwd: true });
+		const started = await executor.execute("fork-single", { agent: "reviewer", task: "Inspect", context: "fork", cwd: childCwd, async: true, clarify: false, acceptance: { level: "none", reason: "Only observing fork cwd" } }, new AbortController().signal, undefined, { ...makeMinimalCtx(tempDir), sessionManager: parent });
+		const id = started.details?.asyncId;
+		assert.ok(id, JSON.stringify(started));
+		const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf8")) as AsyncResultPayload;
+		assert.equal(payload.success, true, JSON.stringify(payload));
+		const args = readMockPiArgs(mockPi, 0);
+		const header = JSON.parse(fs.readFileSync(args[args.indexOf("--session") + 1], "utf8").split("\n")[0]);
+		assert.equal(header.cwd, childCwd);
+		assert.equal(header.parentSession, parent.getSessionFile());
+		assert.equal(JSON.parse(payload.results[0]!.output!.split("\n").at(-1)!).cwd, fs.realpathSync.native(target));
+		assert.deepEqual(fs.readFileSync(parent.getSessionFile()!), parentBytes);
+	});
+
 	for (const ending of ["normal", "stopOn", "failFast", "checked"] as const) {
 		it(`async tree cwd preserves templates, shares snapshots and cleans up after ${ending}`, { skip: process.platform === "win32" || !isAsyncAvailable() ? "requires shell hooks and jiti" : undefined }, async () => {
 			const repoDir = createRepo("pi-async-tree-");
@@ -1666,7 +1784,9 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			const repo = createRepo("pi-teardown-async-");
 			const record = path.join(tempDir, "teardown.jsonl");
 			const hook = path.join(repo, "teardown.cjs");
-			fs.writeFileSync(hook, `#!${process.execPath}\nconst fs = require('node:fs'); const p = JSON.parse(fs.readFileSync(0, 'utf8')); if (!fs.existsSync(p.worktreePath) || process.cwd() !== fs.realpathSync(p.worktreePath)) process.exit(9); fs.appendFileSync(${JSON.stringify(record)}, JSON.stringify(p)+'\\n'); ${mode === "nonzero" ? "process.exit(7)" : mode === "timeout" ? "setInterval(() => {}, 1000)" : ""}\n`);
+			fs.writeFileSync(hook, mode === "timeout"
+				? `#!${process.execPath}\nsetInterval(() => {}, 1000);\n`
+				: `#!${process.execPath}\nconst fs = require('node:fs'); const p = JSON.parse(fs.readFileSync(0, 'utf8')); if (!fs.existsSync(p.worktreePath) || process.cwd() !== fs.realpathSync(p.worktreePath)) process.exit(9); fs.appendFileSync(${JSON.stringify(record)}, JSON.stringify(p)+'\\n'); ${mode === "nonzero" ? "process.exit(7)" : ""}\n`);
 			fs.chmodSync(hook, 0o755);
 			fs.mkdirSync(path.join(repo, ".pi"));
 			fs.writeFileSync(path.join(repo, ".pi/settings.json"), JSON.stringify({ subagents: {
@@ -1674,6 +1794,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			} }));
 			git(repo, ["add", "."]);
 			git(repo, ["commit", "-m", "Configure project hooks"]);
+			const branchesBefore = git(repo, ["branch", "--list"]);
 			const id = `teardown-${mode}-${Date.now().toString(36)}`;
 			try {
 				mockPi.onCall({ output: "async teardown success" });
@@ -1694,12 +1815,24 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 				assert.equal(payload.success, true);
 				assert.equal(payload.results[0].output, "async teardown success");
 				const deadline = Date.now() + 5000;
-				while (git(repo, ["worktree", "list", "--porcelain"]).includes("pi-worktree-")) {
-					assert.ok(Date.now() < deadline, "checkout removal must finish");
+				while (git(repo, ["worktree", "list", "--porcelain"]).includes("pi-worktree-") || git(repo, ["branch", "--list"]) !== branchesBefore) {
+					assert.ok(Date.now() < deadline, "checkout and branch removal must finish");
 					await new Promise((resolve) => setTimeout(resolve, 20));
 				}
 				if (["empty", "single"].includes(mode)) assert.equal(fs.existsSync(record), false);
-				else {
+				else if (mode === "timeout") {
+					assert.equal(fs.existsSync(record), false, "the timed-out hook never writes a payload");
+					const logPath = path.join(ASYNC_DIR!, id, "runner.log");
+					let warning: RegExpMatchArray | null = null;
+					while (!warning) {
+						const log = fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf8") : "";
+						warning = log.match(/worktree teardown hook failed for '([^'\n]+)': timed out after 500ms\b/);
+						if (warning) break;
+						assert.ok(Date.now() < deadline, `missing teardown warning: ${log}`);
+						await new Promise((resolve) => setTimeout(resolve, 20));
+					}
+					assert.equal(fs.existsSync(warning[1]), false, "timed-out checkout must be removed");
+				} else {
 					const records = fs.readFileSync(record, "utf8").trim().split("\n").map((line) => JSON.parse(line));
 					assert.equal(records.length, 1);
 					const p = records[0];
@@ -1707,11 +1840,11 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 					assert.equal(p.repoRoot, fs.realpathSync(repo)); assert.equal(p.agentCwd, p.worktreePath);
 					assert.equal(p.runId, `${id}-s0`); assert.equal(p.baseCommit, git(repo, ["rev-parse", "HEAD"]));
 					assert.equal(fs.existsSync(p.worktreePath), false); assert.equal(git(repo, ["branch", "--list", p.branch]), "");
-					if (mode === "nonzero" || mode === "timeout") {
+					if (mode === "nonzero") {
 						const logPath = path.join(ASYNC_DIR!, id, "runner.log");
 						let log = "";
 						while (!log.split("\n").some((line) =>
-							line.includes("worktree teardown hook") && line.includes(p.worktreePath) && (mode === "nonzero" ? /exit\s+code\s+7\b/i : /timed out/i).test(line))) {
+							line.includes("worktree teardown hook") && line.includes(p.worktreePath) && /exit\s+code\s+7\b/i.test(line))) {
 							assert.ok(Date.now() < deadline, `missing teardown warning: ${log}`);
 							await new Promise((resolve) => setTimeout(resolve, 20));
 							log = fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf8") : "";
