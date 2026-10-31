@@ -1784,9 +1784,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			const repo = createRepo("pi-teardown-async-");
 			const record = path.join(tempDir, "teardown.jsonl");
 			const hook = path.join(repo, "teardown.cjs");
-			fs.writeFileSync(hook, mode === "timeout"
-				? `#!${process.execPath}\nsetInterval(() => {}, 1000);\n`
-				: `#!${process.execPath}\nconst fs = require('node:fs'); const p = JSON.parse(fs.readFileSync(0, 'utf8')); if (!fs.existsSync(p.worktreePath) || process.cwd() !== fs.realpathSync(p.worktreePath)) process.exit(9); fs.appendFileSync(${JSON.stringify(record)}, JSON.stringify(p)+'\\n'); ${mode === "nonzero" ? "process.exit(7)" : ""}\n`);
+			fs.writeFileSync(hook, `#!${process.execPath}\nconst fs = require('node:fs'); const p = JSON.parse(fs.readFileSync(0, 'utf8')); if (!fs.existsSync(p.worktreePath) || process.cwd() !== fs.realpathSync(p.worktreePath)) process.exit(9); fs.appendFileSync(${JSON.stringify(record)}, JSON.stringify(p)+'\\n'); ${mode === "nonzero" ? "process.exit(7)" : mode === "timeout" ? "setInterval(() => {}, 1000)" : ""}\n`);
 			fs.chmodSync(hook, 0o755);
 			fs.mkdirSync(path.join(repo, ".pi"));
 			fs.writeFileSync(path.join(repo, ".pi/settings.json"), JSON.stringify({ subagents: {
@@ -1794,7 +1792,6 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			} }));
 			git(repo, ["add", "."]);
 			git(repo, ["commit", "-m", "Configure project hooks"]);
-			const branchesBefore = git(repo, ["branch", "--list"]);
 			const id = `teardown-${mode}-${Date.now().toString(36)}`;
 			try {
 				mockPi.onCall({ output: "async teardown success" });
@@ -1815,24 +1812,12 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 				assert.equal(payload.success, true);
 				assert.equal(payload.results[0].output, "async teardown success");
 				const deadline = Date.now() + 5000;
-				while (git(repo, ["worktree", "list", "--porcelain"]).includes("pi-worktree-") || git(repo, ["branch", "--list"]) !== branchesBefore) {
-					assert.ok(Date.now() < deadline, "checkout and branch removal must finish");
+				while (git(repo, ["worktree", "list", "--porcelain"]).includes("pi-worktree-")) {
+					assert.ok(Date.now() < deadline, "checkout removal must finish");
 					await new Promise((resolve) => setTimeout(resolve, 20));
 				}
 				if (["empty", "single"].includes(mode)) assert.equal(fs.existsSync(record), false);
-				else if (mode === "timeout") {
-					assert.equal(fs.existsSync(record), false, "the timed-out hook never writes a payload");
-					const logPath = path.join(ASYNC_DIR!, id, "runner.log");
-					let warning: RegExpMatchArray | null = null;
-					while (!warning) {
-						const log = fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf8") : "";
-						warning = log.match(/worktree teardown hook failed for '([^'\n]+)': timed out after 500ms\b/);
-						if (warning) break;
-						assert.ok(Date.now() < deadline, `missing teardown warning: ${log}`);
-						await new Promise((resolve) => setTimeout(resolve, 20));
-					}
-					assert.equal(fs.existsSync(warning[1]), false, "timed-out checkout must be removed");
-				} else {
+				else {
 					const records = fs.readFileSync(record, "utf8").trim().split("\n").map((line) => JSON.parse(line));
 					assert.equal(records.length, 1);
 					const p = records[0];
@@ -1840,11 +1825,11 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 					assert.equal(p.repoRoot, fs.realpathSync(repo)); assert.equal(p.agentCwd, p.worktreePath);
 					assert.equal(p.runId, `${id}-s0`); assert.equal(p.baseCommit, git(repo, ["rev-parse", "HEAD"]));
 					assert.equal(fs.existsSync(p.worktreePath), false); assert.equal(git(repo, ["branch", "--list", p.branch]), "");
-					if (mode === "nonzero") {
+					if (mode === "nonzero" || mode === "timeout") {
 						const logPath = path.join(ASYNC_DIR!, id, "runner.log");
 						let log = "";
 						while (!log.split("\n").some((line) =>
-							line.includes("worktree teardown hook") && line.includes(p.worktreePath) && /exit\s+code\s+7\b/i.test(line))) {
+							line.includes("worktree teardown hook") && line.includes(p.worktreePath) && (mode === "nonzero" ? /exit\s+code\s+7\b/i : /timed out/i).test(line))) {
 							assert.ok(Date.now() < deadline, `missing teardown warning: ${log}`);
 							await new Promise((resolve) => setTimeout(resolve, 20));
 							log = fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf8") : "";

@@ -408,6 +408,54 @@ for (const outcome of ["success", "fail", "interrupted", "missing-result", "malf
 	});
 }
 
+for (const scenario of ["fork", "fresh", "missing", "headerless"] as const) {
+	test(`runSingleStep stamps supplied external forks before launch: ${scenario}`, unixOnly, async () => {
+		const tempDir = createTempDir("bg-external-stamp-");
+		const binDir = path.join(tempDir, "bin");
+		fs.mkdirSync(binDir);
+		fs.writeFileSync(path.join(binDir, "pi"), makeFixtureScript("success"), { mode: 0o755 });
+		const sessionFile = path.join(tempDir, "session-0-attempt-0.jsonl");
+		const header = { type: "session", cwd: "/parent-A", parentSession: "parent.jsonl" };
+		const history = '{"type":"message", "id":"history", "parentId":null, "message":{"role":"user","timestamp":0,"content":[{"type":"text","text":"prior"}]}}\n';
+		if (scenario === "fork") fs.writeFileSync(sessionFile, JSON.stringify(header) + "\n" + history, { mode: 0o600 });
+		if (scenario === "headerless") fs.writeFileSync(sessionFile, "{}\n", { mode: 0o600 });
+		const requests: ExecutionSurfaceRequest[] = [];
+		const hosts: ReturnType<typeof spawn>[] = [];
+		const name = `bg-stamp-${scenario}-${process.pid}`;
+		const backend = makeBackend(name, binDir, requests, hosts);
+		const dispose = registerExecutionBackend(backend);
+		try {
+			const result = await runSingleStep({
+				agent: "worker", task: "Inspect", cwd: "{outputs.target}", completionGuard: false,
+				inheritProjectContext: false, inheritSkills: false,
+				...(scenario === "fresh" ? {} : { sessionFile }),
+			}, {
+				cwd: tempDir, outputs: { target: { text: tempDir, agent: "producer", stepIndex: 0 } }, previousOutput: "", placeholder: "{previous}",
+				sessionEnabled: true, sessionDir: tempDir, id: "stamp", flatIndex: 0, flatStepCount: 1,
+				outputFile: path.join(tempDir, "output.log"),
+				onAttemptStart() {
+					if (scenario === "fork") assert.equal(fs.readFileSync(sessionFile, "utf8"), JSON.stringify({ ...header, cwd: tempDir }) + "\n" + history);
+					else assert.equal(fs.existsSync(sessionFile), false, "fresh external attempt is not stamped or pre-created");
+				},
+				executionBackendCoordinator: createDetachedExecutionBackendCoordinator({ protocolVersion: 1, registrations: [] }),
+				executionBackendConfig: { protocolVersion: 1, registrations: [], userPreference: name },
+			});
+			if (scenario === "missing" || scenario === "headerless") {
+				assert.equal(result.exitCode, 1);
+				assert.match(result.error ?? "", /Failed to stamp session header cwd:/);
+				assert.equal(requests.length, 0);
+			} else {
+				assert.equal(result.exitCode, 0, result.error);
+				assert.equal(requests.length, 1);
+			}
+		} finally {
+			dispose();
+			await cleanupHosts(hosts);
+			removeTempDir(tempDir);
+		}
+	});
+}
+
 test("runSingleStep retains the surface and removes its prompt directory when an external attempt throws", unixOnly, async () => {
 	const tempDir = createTempDir("bg-runner-throw-");
 	const binDir = path.join(tempDir, "bin");
@@ -431,13 +479,13 @@ test("runSingleStep retains the surface and removes its prompt directory when an
 			systemPrompt: "runner fixture prompt",
 			inheritProjectContext: false,
 			inheritSkills: false,
-			sessionFile: path.join(tempDir, "session-0-attempt-0.jsonl"),
 		}, {
 			previousOutput: "",
 			outputs: {},
 			placeholder: "",
 			cwd: tempDir,
 			sessionEnabled: true,
+			sessionDir: tempDir,
 			id: "bg-runner-throw",
 			flatIndex: 0,
 			parentSessionLabel: "P",
@@ -548,7 +596,6 @@ test("runSingleStep treats an external output-save EISDIR as a retained failed l
 			systemPrompt: "runner fixture prompt",
 			inheritProjectContext: false,
 			inheritSkills: false,
-			sessionFile: path.join(tempDir, "session-0-attempt-0.jsonl"),
 			outputMode: "file-only",
 			outputPath,
 			completionGuard: false,
@@ -558,6 +605,7 @@ test("runSingleStep treats an external output-save EISDIR as a retained failed l
 			placeholder: "",
 			cwd: tempDir,
 			sessionEnabled: true,
+			sessionDir: tempDir,
 			id: "bg-runner-output",
 			flatIndex: 0,
 			flatStepCount: 1,
@@ -682,7 +730,6 @@ test("runSingleStep retains external leaves when artifact writes or finish fail"
 				outputPath: path.join(tempDir, "requested.md"),
 				inheritProjectContext: false,
 				inheritSkills: false,
-				sessionFile: path.join(tempDir, "session-0-attempt-0.jsonl"),
 				completionGuard: false,
 			}, {
 				previousOutput: "",
@@ -699,6 +746,7 @@ test("runSingleStep retains external leaves when artifact writes or finish fail"
 					includeMetadata: true,
 					cleanupDays: 1,
 				},
+				sessionDir: tempDir,
 				id: runId,
 				flatIndex: 0,
 				flatStepCount: 1,
