@@ -8,16 +8,16 @@ interface ForkableSessionManager {
 	getSessionFile(): string | undefined;
 	getLeafId(): string | null;
 	getSessionDir?(): string;
-	openSession?: (path: string, sessionDir?: string) => { createBranchedSession(leafId: string): string | undefined };
+	openSession?: (path: string, sessionDir: string | undefined, cwd: string) => { createBranchedSession(leafId: string): string | undefined };
 }
 
 interface ForkContextResolverOptions {
 	sessionDirForIndex?: (index: number) => string;
-	openSession?: (path: string, sessionDir?: string) => { createBranchedSession(leafId: string): string | undefined };
+	openSession?: (path: string, sessionDir: string | undefined, cwd: string) => { createBranchedSession(leafId: string): string | undefined };
 }
 
 interface ForkContextResolver {
-	sessionFileForIndex(index?: number): string | undefined;
+	sessionFileForIndex(index: number, cwd: string): string | undefined;
 }
 
 export function resolveSubagentContext(value: unknown): SubagentExecutionContext {
@@ -47,12 +47,12 @@ export function createForkContextResolver(
 
 	const openSession = options.openSession
 		?? sessionManager.openSession
-		?? ((file: string, dir?: string) => SessionManager.open(file, dir));
+		?? ((file: string, dir: string | undefined, cwd: string) => SessionManager.open(file, dir, cwd));
 	const sessionDir = sessionManager.getSessionDir?.();
 	const cachedSessionFiles = new Map<number, string>();
 
 	return {
-		sessionFileForIndex(index = 0): string | undefined {
+		sessionFileForIndex(index: number, cwd: string): string | undefined {
 			const cached = cachedSessionFiles.get(index);
 			if (cached) return cached;
 			try {
@@ -62,7 +62,7 @@ export function createForkContextResolver(
 				const destination = options.sessionDirForIndex?.(index);
 				if (destination) fs.mkdirSync(destination, { recursive: true });
 				const assignedDir = destination ? fs.realpathSync.native(destination) : undefined;
-				const sourceManager = openSession(parentSessionFile, destination ?? sessionDir);
+				const sourceManager = openSession(parentSessionFile, destination ?? sessionDir, cwd);
 				const sessionFile = sourceManager.createBranchedSession(leafId);
 				if (!sessionFile) {
 					throw new Error("Session manager did not return a forked session file.");

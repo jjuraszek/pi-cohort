@@ -37,7 +37,7 @@ describe("createForkContextResolver", () => {
 			}),
 		});
 
-		assert.equal(resolver.sessionFileForIndex(0), undefined);
+		assert.equal(resolver.sessionFileForIndex(0, "/tmp"), undefined);
 		assert.equal(calls, 0);
 	});
 
@@ -66,14 +66,15 @@ describe("createForkContextResolver", () => {
 		try {
 			const parentSessionFile = path.join(tempDir, "parent.jsonl");
 			writeMinimalSessionFile(parentSessionFile, "parent");
-			const openedPaths: string[] = [];
+			const openedPaths: [string, string | undefined, string][] = [];
+			const childCwd = path.join(tempDir, "B");
 			const seenLeafIds: string[] = [];
 			const resolver = createForkContextResolver({
 				getSessionFile: () => parentSessionFile,
 				getLeafId: () => "leaf-xyz",
 			}, "fork", {
-				openSession: (sessionFile: string) => {
-					openedPaths.push(sessionFile);
+				openSession: (sessionFile: string, sessionDir: string | undefined, cwd: string) => {
+					openedPaths.push([sessionFile, sessionDir, cwd]);
 					return {
 						createBranchedSession: (leafId: string) => {
 							seenLeafIds.push(leafId);
@@ -85,11 +86,11 @@ describe("createForkContextResolver", () => {
 				},
 			});
 
-			resolver.sessionFileForIndex(0);
-			resolver.sessionFileForIndex(1);
-			resolver.sessionFileForIndex(2);
+			resolver.sessionFileForIndex(0, childCwd);
+			resolver.sessionFileForIndex(1, childCwd);
+			resolver.sessionFileForIndex(2, childCwd);
 
-			assert.deepEqual(openedPaths, [parentSessionFile, parentSessionFile, parentSessionFile]);
+			assert.deepEqual(openedPaths, Array(3).fill([parentSessionFile, undefined, childCwd]));
 			assert.deepEqual(seenLeafIds, ["leaf-xyz", "leaf-xyz", "leaf-xyz"]);
 		} finally {
 			fs.rmSync(tempDir, { recursive: true, force: true });
@@ -100,7 +101,11 @@ describe("createForkContextResolver", () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cohort-fork-default-"));
 		try {
 			const sessionDir = path.join(tempDir, "sessions");
-			const parent = SessionManager.create(tempDir, sessionDir);
+			const parentCwd = path.join(tempDir, "A");
+			const childCwd = path.join(tempDir, "B");
+			fs.mkdirSync(parentCwd);
+			fs.mkdirSync(childCwd);
+			const parent = SessionManager.create(parentCwd, sessionDir);
 			parent.appendMessage({ role: "user", content: "parent prompt" });
 			const parentSessionFile = parent.getSessionFile();
 			const leafId = parent.getLeafId();
@@ -114,11 +119,15 @@ describe("createForkContextResolver", () => {
 				getSessionDir: () => sessionDir,
 			}, "fork", { sessionDirForIndex: (index) => path.join(tempDir, `run-${index}`) });
 
-			const childSessionFile = resolver.sessionFileForIndex(0);
+			const parentBytes = fs.readFileSync(parentSessionFile, "utf-8");
+			const childSessionFile = resolver.sessionFileForIndex(0, childCwd);
 			assert.ok(childSessionFile);
 			assert.notEqual(childSessionFile, parentSessionFile);
 			assert.equal(path.dirname(childSessionFile), fs.realpathSync.native(path.join(tempDir, "run-0")));
-			assert.equal(resolver.sessionFileForIndex(0), childSessionFile);
+			assert.equal(resolver.sessionFileForIndex(0, childCwd), childSessionFile);
+			assert.equal(JSON.parse(fs.readFileSync(childSessionFile, "utf-8").split("\n")[0]).cwd, childCwd);
+			assert.equal(JSON.parse(parentBytes.split("\n")[0]).cwd, parentCwd);
+			assert.equal(fs.readFileSync(parentSessionFile, "utf-8"), parentBytes);
 			assert.equal(fs.existsSync(childSessionFile), true);
 			assert.deepEqual(SessionManager.open(childSessionFile).getBranch(leafId), parent.getBranch(leafId));
 			assert.equal(parent.getSessionFile(), parentSessionFile);
@@ -143,7 +152,7 @@ describe("createForkContextResolver", () => {
 
 			const resolver = createForkContextResolver(parent, "fork");
 			assert.throws(
-				() => resolver.sessionFileForIndex(0),
+				() => resolver.sessionFileForIndex(0, tempDir),
 				/Failed to create forked subagent session: Parent session file does not exist: .*Pi has not persisted enough history to fork yet\./,
 			);
 			assert.equal(parent.getSessionFile(), parentSessionFile);
@@ -174,9 +183,9 @@ describe("createForkContextResolver", () => {
 				}),
 			});
 
-			const singleSession = resolver.sessionFileForIndex(0);
-			const parallelSessions = [resolver.sessionFileForIndex(1), resolver.sessionFileForIndex(2)];
-			const chainSessions = [resolver.sessionFileForIndex(3), resolver.sessionFileForIndex(4)];
+			const singleSession = resolver.sessionFileForIndex(0, tempDir);
+			const parallelSessions = [resolver.sessionFileForIndex(1, tempDir), resolver.sessionFileForIndex(2, tempDir)];
+			const chainSessions = [resolver.sessionFileForIndex(3, tempDir), resolver.sessionFileForIndex(4, tempDir)];
 
 			assert.equal(singleSession, path.join(tempDir, "fork-1.jsonl"));
 			assert.deepEqual(parallelSessions, [path.join(tempDir, "fork-2.jsonl"), path.join(tempDir, "fork-3.jsonl")]);
@@ -193,22 +202,27 @@ describe("createForkContextResolver", () => {
 			const parentSessionFile = path.join(tempDir, "parent.jsonl");
 			writeMinimalSessionFile(parentSessionFile, "parent");
 			let calls = 0;
+			const openedArgs: [string, string | undefined, string][] = [];
+			const destination = path.join(tempDir, "destination");
 			const resolver = createForkContextResolver({
 				getSessionFile: () => parentSessionFile,
 				getLeafId: () => "leaf-abc",
-			}, "fork", {
-				openSession: () => ({
-					createBranchedSession: () => {
-						calls++;
-						const childSessionFile = path.join(tempDir, `fork-${calls}.jsonl`);
-						writeMinimalSessionFile(childSessionFile, `child-${calls}`);
-						return childSessionFile;
-					},
-				}),
-			});
+				openSession: (file, dir, cwd) => {
+					openedArgs.push([file, dir, cwd]);
+					return {
+						createBranchedSession: () => {
+							calls++;
+							const childSessionFile = path.join(destination, `fork-${calls}.jsonl`);
+							writeMinimalSessionFile(childSessionFile, `child-${calls}`);
+							return childSessionFile;
+						},
+					};
+				},
+			}, "fork", { sessionDirForIndex: () => destination });
 
-			const first = resolver.sessionFileForIndex(7);
-			const second = resolver.sessionFileForIndex(7);
+			const first = resolver.sessionFileForIndex(7, tempDir);
+			const second = resolver.sessionFileForIndex(7, tempDir);
+			assert.deepEqual(openedArgs, [[parentSessionFile, destination, tempDir]]);
 			assert.equal(first, second);
 			assert.equal(calls, 1);
 		} finally {
@@ -232,7 +246,7 @@ describe("createForkContextResolver", () => {
 			});
 
 			assert.throws(
-				() => resolver.sessionFileForIndex(0),
+				() => resolver.sessionFileForIndex(0, tempDir),
 				/Failed to create forked subagent session: Session manager returned a forked session file that does not exist: .*missing-child\.jsonl/,
 			);
 		} finally {
@@ -255,7 +269,7 @@ describe("createForkContextResolver", () => {
 			});
 
 			assert.throws(
-				() => resolver.sessionFileForIndex(0),
+				() => resolver.sessionFileForIndex(0, tempDir),
 				/Failed to create forked subagent session: Session manager did not return a forked session file\./,
 			);
 		} finally {

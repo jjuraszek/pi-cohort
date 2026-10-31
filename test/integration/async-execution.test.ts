@@ -791,7 +791,8 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		const id = `async-dynamic-chain-${Date.now().toString(36)}`;
 		const originSessionRoot = fs.realpathSync.native(tempDir);
 		const original = path.join(originSessionRoot, "producer.jsonl");
-		fs.writeFileSync(original, "original history\n");
+		const history = '{"type":"message", "id":"original-history", "message":{"role":"user","content":[{"type":"text","text":"prior"}]}}\n';
+		fs.writeFileSync(original, `${JSON.stringify({ type: "session", cwd: tempDir, parentSession: "parent.jsonl" })}\n${history}`);
 		const result = executeAsyncChain(id, {
 			chain: [
 				{ agent: "producer", task: "Produce targets", as: "targets", outputSchema: { type: "object" } },
@@ -824,7 +825,8 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf-8")) as AsyncStatusPayload;
 		assert.equal(payload.success, true);
 		assert.equal(mockPi.callCount(), 4);
-		assert.ok(fs.readFileSync(original, "utf8").startsWith("original history\n"));
+		const bytes = fs.readFileSync(original);
+		assert.ok(bytes.subarray(bytes.indexOf(10) + 1).toString().startsWith(history));
 		assert.equal(readMockPiArgs(mockPi, 0)[readMockPiArgs(mockPi, 0).indexOf("--session") + 1], original);
 		const consumerArgs = readMockPiArgs(mockPi, 3);
 		assert.equal(consumerArgs.includes("--session"), false);

@@ -11,6 +11,7 @@ import { createJitiCliResolver, resolveHostModuleAliases } from "../../src/runs/
 
 import { createMockPi } from "../support/mock-pi.ts";
 import { ASYNC_DIR } from "../../src/shared/types.ts";
+import { runSingleStep } from "../../src/runs/background/subagent-runner.ts";
 import { PiRuntimeLaunchError } from "../../src/runs/shared/pi-spawn.ts";
 import * as piArgs from "../../src/runs/shared/pi-args.ts";
 import { buildPiArgs, cleanupTempDir } from "../../src/runs/shared/pi-args.ts";
@@ -31,6 +32,101 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void
 		await new Promise((resolve) => setTimeout(resolve, 50));
 	}
 }
+
+describe("detached session header cwd", () => {
+	for (const ending of ["LF", "CRLF", "header-only"]) {
+		it(`stamps once before launch and preserves bytes: ${ending}`, async () => {
+			mockPi.reset();
+			const dir = tempDir("stamp-cwd-");
+			const sessionFile = path.join(dir, "fork.jsonl");
+			const header = { type: "session", id: "fork", cwd: "/parent-A", parentSession: "parent.jsonl", version: 3 };
+			const suffix = ending === "header-only" ? "" : `${ending === "CRLF" ? "\r\n" : "\n"}{"type":"message", "id":"history"}\r\n`;
+			fs.writeFileSync(sessionFile, JSON.stringify(header) + suffix);
+			const originalWrite = fs.writeFileSync;
+			let writes = 0;
+			const write = mock.method(fs, "writeFileSync", (file: any, ...args: any[]) => {
+				if (file === sessionFile) writes++;
+				return originalWrite(file, ...args);
+			});
+			syncBuiltinESMExports();
+			try {
+				for (let invocation = 1; invocation <= 2; invocation++) {
+					mockPi.onCall({ output: "done" });
+					const result = await runSingleStep({ agent: "test", task: "test", cwd: dir, sessionFile, completionGuard: false, maxSubagentDepth: 0 }, {
+					cwd: dir, previousOutput: "", placeholder: "{previous}", sessionEnabled: true, runtime,
+					id: "stamp", flatIndex: 0, flatStepCount: 1, outputFile: path.join(dir, "output.log"),
+					onAttemptStart() {
+						assert.equal(writes, invocation);
+						const bytes = fs.readFileSync(sessionFile);
+						const lf = bytes.indexOf(10);
+						assert.deepEqual(JSON.parse(bytes.subarray(0, lf < 0 ? bytes.length : lf).toString()), { ...header, cwd: dir });
+						if (invocation === 1) assert.equal(bytes.toString(), JSON.stringify({ ...header, cwd: dir }) + suffix);
+					},
+					});
+					assert.equal(result.exitCode, 0);
+				}
+				assert.equal(mockPi.callCount(), 2);
+			} finally { write.mock.restore(); syncBuiltinESMExports(); }
+		});
+	}
+	for (const scenario of ["fallback", "fresh"]) {
+		it(`${scenario} launches with one stamp only for a reused session`, async () => {
+			mockPi.reset();
+			const dir = tempDir("stamp-attempts-");
+			const sessionFile = path.join(dir, "fork.jsonl");
+			if (scenario === "fallback") {
+				fs.writeFileSync(sessionFile, JSON.stringify({ type: "session", cwd: "/parent-A", parentSession: "parent.jsonl" }) + "\n");
+				mockPi.onCall({ stderr: "rate limit", exitCode: 1 });
+			}
+			mockPi.onCall({ output: "done" });
+			let writes = 0;
+			const originalWrite = fs.writeFileSync;
+			const write = mock.method(fs, "writeFileSync", (file: any, ...args: any[]) => {
+				if (file === sessionFile) writes++;
+				return originalWrite(file, ...args);
+			});
+			syncBuiltinESMExports();
+			try {
+				const result = await runSingleStep({ agent: "test", task: "test", cwd: dir, ...(scenario === "fallback" ? { sessionFile, modelCandidates: ["first/model", "second/model"] } : {}), completionGuard: false, maxSubagentDepth: 0 }, {
+					cwd: dir, previousOutput: "", placeholder: "{previous}", sessionEnabled: true, sessionDir: path.join(dir, "fresh"), runtime,
+					id: scenario, flatIndex: 0, flatStepCount: 1, outputFile: path.join(dir, "output.log"),
+				});
+				assert.equal(result.exitCode, 0, result.error);
+				assert.equal(writes, scenario === "fallback" ? 1 : 0);
+				assert.equal(mockPi.callCount(), scenario === "fallback" ? 2 : 1);
+				if (scenario === "fresh") {
+					assert.ok(result.sessionFile);
+					assert.equal(JSON.parse(fs.readFileSync(result.sessionFile, "utf8").split("\n")[0]).parentSession, undefined);
+				}
+			} finally { write.mock.restore(); syncBuiltinESMExports(); }
+		});
+	}
+	for (const kind of ["missing", "unreadable", "empty", "malformed", "null", "non-session"]) {
+		it(`rejects ${kind} before launch`, async () => {
+			mockPi.reset();
+			const dir = tempDir("invalid-stamp-");
+			const sessionFile = path.join(dir, "fork.jsonl");
+			if (kind !== "missing") fs.writeFileSync(sessionFile, kind === "empty" ? "" : kind === "malformed" ? "{" : kind === "null" ? "null" : kind === "non-session" ? '{"type":"message"}' : '{"type":"session"}');
+			const originalRead = fs.readFileSync;
+			const read = mock.method(fs, "readFileSync", (file: any, ...args: any[]) => {
+				if (kind === "unreadable" && file === sessionFile) throw Object.assign(new Error("EACCES fixture"), { code: "EACCES" });
+				return originalRead(file, ...args);
+			});
+			syncBuiltinESMExports();
+			try {
+				const result = await runSingleStep({ agent: "test", task: "test", sessionFile, completionGuard: false, maxSubagentDepth: 0 }, {
+					cwd: dir, previousOutput: "", placeholder: "{previous}", sessionEnabled: true, runtime,
+					id: "invalid", flatIndex: 0, flatStepCount: 1, outputFile: path.join(dir, "output.log"),
+				});
+				assert.equal(result.exitCode, 1);
+				assert.match(result.error ?? "", /Failed to stamp session header cwd:/);
+				assert.equal(result.output, result.error);
+				assert.equal(result.sessionFile, sessionFile);
+				assert.equal(mockPi.callCount(), 0);
+			} finally { read.mock.restore(); syncBuiltinESMExports(); }
+		});
+	}
+});
 
 describe("spawnDetachedWithLog", () => {
 	it("captures child stderr in <asyncDir>/runner.log", async () => {
@@ -403,7 +499,8 @@ describe("spawnRunner", () => {
 		it(`preserves reused sessions on ${failure} failure`, async () => {
 			const dir = tempDir("leaf-startup-failure-");
 			const reused = path.join(dir, "reused.jsonl");
-			fs.writeFileSync(reused, "prior conversation\n", { mode: 0o600 });
+			const prior = failure === "selection" ? "prior conversation\n" : `${JSON.stringify({ type: "session", cwd: dir, parentSession: "parent.jsonl" })}\n{"type":"message"}\n`;
+			fs.writeFileSync(reused, prior, { mode: 0o600 });
 			fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "fixture-startup-failure", type: "module", exports: { "./backend": "./backend.mjs" } }));
 			fs.writeFileSync(path.join(dir, "backend.mjs"), `
 				export function createBackend() {
@@ -430,7 +527,7 @@ describe("spawnRunner", () => {
 			assert.equal(status.steps[0].sessionFile, reused);
 			assert.equal(status.sessionFile, reused);
 			assert.equal(result.sessionFile, reused);
-			assert.equal(fs.readFileSync(reused, "utf8"), "prior conversation\n");
+			assert.equal(fs.readFileSync(reused, "utf8"), prior);
 		});
 	}
 
@@ -440,7 +537,8 @@ describe("spawnRunner", () => {
 			const dir = tempDir("leaf-publication-");
 			const sessionDir = path.join(dir, "sessions");
 			const reused = path.join(dir, "reused.jsonl");
-			fs.writeFileSync(reused, "", { mode: 0o600 });
+			const history = '{"type":"message", "id":"history", "parentId":null, "message":{"role":"user","timestamp":0,"content":[{"type":"text","text":"prior"}]}}\n';
+			fs.writeFileSync(reused, `${JSON.stringify({ type: "session", cwd: dir, parentSession: "parent.jsonl" })}\n${history}`, { mode: 0o600 });
 			const leaf = { agent: "test", task: "test", completionGuard: false, maxSubagentDepth: 0 };
 			let steps: any[] = [{ ...leaf, ...(scenario === "reuse" ? { sessionFile: reused } : {}) }];
 			if (scenario === "parallel") steps = [{ parallel: [leaf, leaf] }];
@@ -477,6 +575,10 @@ describe("spawnRunner", () => {
 				assert.equal(entry.sessionFile, expected);
 				assert.equal(status.steps[index].sessionFile, expected);
 				assert.ok(fs.existsSync(expected));
+			}
+			if (scenario.endsWith("reuse")) {
+				const bytes = fs.readFileSync(reused);
+				assert.ok(bytes.subarray(bytes.indexOf(10) + 1).toString().startsWith(history));
 			}
 			assert.equal(status.sessionFile, result.results.at(-1).sessionFile);
 			assert.equal(result.sessionFile, status.sessionFile);
