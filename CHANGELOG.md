@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Forked subagents use their resolved child cwd, including per-task and output-derived cwd in foreground and detached runs, instead of inheriting the parent session directory. (#40)
+
 ## [7.6.5] - 2026-10-29
 
 ### Fixed
