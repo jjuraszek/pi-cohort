@@ -56,7 +56,7 @@ interface SessionManagerStub {
 	getSessionFile(): string | undefined;
 	getSessionName(): string | undefined;
 	getLeafId(): string | null;
-	openSession(sessionFile: string): { createBranchedSession(leafId: string): string | undefined };
+	openSession(sessionFile: string, sessionDir: string | undefined, cwd: string): { createBranchedSession(leafId: string): string | undefined };
 }
 
 function makeSessionManagerRecorder(options: SessionStubOptions = {}) {
@@ -197,20 +197,20 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		const branchedLeafIds: string[] = [];
 		let counter = 0;
 		fs.mkdirSync(path.dirname(options.sessionFile), { recursive: true });
-		fs.writeFileSync(options.sessionFile, '{"type":"session","version":1,"id":"parent","timestamp":"2026-04-16T00:00:00.000Z","cwd":"/tmp"}\n', "utf-8");
+		fs.writeFileSync(options.sessionFile, JSON.stringify({ type: "session", version: 1, id: "parent", timestamp: "2026-04-16T00:00:00.000Z", cwd: tempDir }) + "\n", "utf-8");
 		const manager = {
 			getSessionId: () => "session-123",
 			getSessionName: () => undefined,
 			getSessionFile: () => options.sessionFile,
 			getLeafId: () => options.leafId,
-			openSession: (sessionFile: string, sessionDir: string) => {
+			openSession: (sessionFile: string, sessionDir: string, cwd: string) => {
 				openedPaths.push(sessionFile);
 				return {
 					createBranchedSession: (leafId: string) => {
 						branchedLeafIds.push(leafId);
 						counter++;
 						const childSessionFile = path.join(sessionDir, `fork-${counter}.jsonl`);
-						fs.writeFileSync(childSessionFile, '{"type":"session","version":1,"id":"child","timestamp":"2026-04-16T00:00:00.000Z","cwd":"/tmp"}\n', "utf-8");
+						fs.writeFileSync(childSessionFile, JSON.stringify({ type: "session", version: 1, id: "child", timestamp: "2026-04-16T00:00:00.000Z", cwd, parentSession: sessionFile }) + "\n", "utf-8");
 						return childSessionFile;
 					},
 				};
@@ -263,6 +263,70 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 			sessionManager,
 		};
 	}
+
+	it("mock Pi observes the physical session cwd instead of launch cwd", async () => {
+		const target = path.join(tempDir, "target");
+		const link = path.join(tempDir, "link");
+		fs.mkdirSync(target);
+		fs.symlinkSync(target, link, process.platform === "win32" ? "junction" : "dir");
+		const sessionFile = path.join(tempDir, "session.jsonl");
+		fs.writeFileSync(sessionFile, JSON.stringify({ type: "session", cwd: link }) + "\n");
+		mockPi.reset();
+		mockPi.onCall({ echoCwd: true });
+		const { execFileSync } = await import("node:child_process");
+		const output = execFileSync(mockPi.runtime.nodeExecPath, [mockPi.runtime.piEntryPath, "--session", sessionFile], { cwd: tempDir, env: process.env, encoding: "utf8" });
+		assert.equal(JSON.parse(output.trim()).cwd, fs.realpathSync.native(target));
+	});
+
+	for (const scenario of ["explicit", "inherited", "fresh", "parallel"]) {
+		it(`uses resolved cwd for ${scenario} dispatch`, async () => {
+			const target = path.join(tempDir, "target");
+			fs.mkdirSync(target);
+			const { manager } = makeForkingSessionManagerRecorder({ sessionFile: path.join(tempDir, "parent.jsonl"), leafId: "leaf" });
+			const parentBytes = fs.readFileSync(manager.getSessionFile()!);
+			mockPi.reset();
+			mockPi.onCall({ echoCwd: true });
+			const params = scenario === "parallel"
+				? { context: "fork", tasks: [{ agent: "echo", task: "pwd", cwd: target }] }
+				: { context: scenario === "fresh" ? "fresh" : "fork", agent: "echo", task: "pwd", ...(scenario === "inherited" ? {} : { cwd: target }) };
+			const result = await makeExecutor().execute("id", params, new AbortController().signal, undefined, makeCtx(manager));
+			assert.ok(!result.isError, result.content[0].text);
+			const expected = scenario === "inherited" ? tempDir : target;
+			const sessionFile = readSessionArgsFromCalls()[0];
+			const entries = fs.readFileSync(sessionFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+			assert.equal(entries[0].cwd, scenario === "fresh" ? fs.realpathSync.native(expected) : expected);
+			assert.equal(Boolean(entries[0].parentSession), scenario !== "fresh");
+			const message = entries.at(-1).message.content.find((part) => part.type === "text").text;
+			assert.ok(message.includes(JSON.stringify({ cwd: fs.realpathSync.native(expected) })));
+			assert.deepEqual(fs.readFileSync(manager.getSessionFile()!), parentBytes);
+		});
+	}
+
+	it("forks a top-level parallel child under its worktree cwd", { skip: process.platform === "win32" }, async () => {
+		const { execFileSync } = await import("node:child_process");
+		const git = (...args: string[]) => execFileSync("git", args, { cwd: tempDir, stdio: "pipe" });
+		git("init");
+		git("config", "user.email", "tests@example.com");
+		git("config", "user.name", "Fork Tests");
+		fs.writeFileSync(path.join(tempDir, "input.md"), "input\n");
+		git("add", "input.md");
+		git("commit", "-m", "initial");
+		fs.writeFileSync(path.join(tempDir, ".git", "info", "exclude"), "*\n");
+		const { manager } = makeForkingSessionManagerRecorder({ sessionFile: path.join(tempDir, "parent.jsonl"), leafId: "leaf" });
+		const parentBytes = fs.readFileSync(manager.getSessionFile()!);
+		mockPi.reset();
+		mockPi.onCall({ echoCwd: true });
+		const result = await makeExecutor().execute("id", { context: "fork", tasks: [{ agent: "echo", task: "pwd" }], worktree: true }, new AbortController().signal, undefined, makeCtx(manager));
+		assert.ok(!result.isError, result.content[0].text);
+		const entries = fs.readFileSync(readSessionArgsFromCalls()[0], "utf8").trim().split("\n").map((line) => JSON.parse(line));
+		assert.notEqual(entries[0].cwd, tempDir);
+		assert.match(entries[0].cwd, /pi-worktree/);
+		assert.ok(entries[0].parentSession);
+		const message = entries.at(-1).message.content.find((part) => part.type === "text").text;
+		assert.ok(message.includes(JSON.stringify({ cwd: path.join(fs.realpathSync.native(path.dirname(tempDir)), path.relative(path.dirname(tempDir), entries[0].cwd)) })));
+		assert.equal(fs.existsSync(entries[0].cwd), false);
+		assert.deepEqual(fs.readFileSync(manager.getSessionFile()!), parentBytes);
+	});
 
 	it("runs a single agent when task is omitted", async () => {
 		const { manager } = makeSessionManagerRecorder();

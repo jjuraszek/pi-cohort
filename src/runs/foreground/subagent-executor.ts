@@ -161,8 +161,8 @@ interface ExecutionContextData {
 	shareEnabled: boolean;
 	sessionRoot: string;
 	sessionDirForIndex: (idx?: number) => string;
-	sessionFileForIndex: (idx?: number) => string | undefined;
-	sessionFileHintForIndex: (idx?: number) => string;
+	sessionFileForIndex: (idx: number, cwd: string) => string | undefined;
+	sessionFileHintForIndex: (idx: number, cwd: string) => string;
 	artifactConfig: ArtifactConfig;
 	artifactsDir: string;
 	backgroundRequestedWhileClarifying: boolean;
@@ -1076,7 +1076,7 @@ function runAsyncPath(data: ExecutionContextData, deps: CallExecutorDeps): Agent
 			sessionRoot,
 			chainSkills: [],
 			originSessionRoot: params.context === "fork" ? sessionRoot : undefined,
-			sessionFilesByFlatIndex: params.tasks.map((_, index) => sessionFileForIndex(index)),
+			sessionFilesByFlatIndex: params.tasks.map((_, index) => sessionFileForIndex(index, effectiveCwd)),
 			maxSubagentDepth: currentMaxSubagentDepth,
 			worktreeSetupHook: deps.config.worktreeSetupHook,
 			worktreeSetupHookTimeoutMs: deps.config.worktreeSetupHookTimeoutMs,
@@ -1106,7 +1106,7 @@ function runAsyncPath(data: ExecutionContextData, deps: CallExecutorDeps): Agent
 			sessionRoot,
 			chainSkills,
 			originSessionRoot: params.context === "fork" ? sessionRoot : undefined,
-			sessionFilesByFlatIndex: collectChainSessionFiles(chain, sessionFileForIndex),
+			sessionFilesByFlatIndex: collectChainSessionFiles(chain, (index) => sessionFileForIndex(index, effectiveCwd)),
 			dynamicFanoutMaxItems: deps.config.chain?.dynamicFanout?.maxItems,
 			maxSubagentDepth: currentMaxSubagentDepth,
 			worktreeSetupHook: deps.config.worktreeSetupHook,
@@ -1147,7 +1147,7 @@ function runAsyncPath(data: ExecutionContextData, deps: CallExecutorDeps): Agent
 			shareEnabled,
 			sessionRoot,
 			originSessionRoot: params.context === "fork" ? sessionRoot : undefined,
-			sessionFile: sessionFileForIndex(0),
+			sessionFile: sessionFileForIndex(0, effectiveCwd),
 			skills,
 			output: effectiveOutput,
 			outputMode: effectiveOutputMode,
@@ -1248,7 +1248,7 @@ async function runChainPath(data: ExecutionContextData, deps: CallExecutorDeps):
 			sessionRoot,
 			chainSkills: chainResult.requestedAsync.chainSkills,
 			originSessionRoot: params.context === "fork" ? sessionRoot : undefined,
-			sessionFilesByFlatIndex: collectChainSessionFiles(asyncChain, sessionFileForIndex),
+			sessionFilesByFlatIndex: collectChainSessionFiles(asyncChain, (index) => sessionFileForIndex(index, effectiveCwd)),
 			dynamicFanoutMaxItems: deps.config.chain?.dynamicFanout?.maxItems,
 			maxSubagentDepth: currentMaxSubagentDepth,
 			worktreeSetupHook: deps.config.worktreeSetupHook,
@@ -1279,7 +1279,7 @@ interface ForegroundParallelRunInput {
 	signal: AbortSignal;
 	runId: string;
 	sessionDirForIndex: (idx?: number) => string | undefined;
-	sessionFileForIndex: (idx?: number) => string | undefined;
+	sessionFileForIndex: (idx: number, cwd: string) => string | undefined;
 	shareEnabled: boolean;
 	artifactConfig: ArtifactConfig;
 	artifactsDir: string;
@@ -1490,7 +1490,7 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 			executionBackend: input.resolveConfig(taskCwd).executionBackend,
 			index,
 			sessionDir: input.sessionDirForIndex(index),
-			sessionFile: input.sessionFileForIndex(index),
+			sessionFile: input.sessionFileForIndex(index, taskCwd),
 			share: input.shareEnabled,
 			artifactsDir: input.artifactConfig.enabled ? input.artifactsDir : undefined,
 			artifactConfig: input.artifactConfig,
@@ -1712,7 +1712,7 @@ async function runParallelPath(data: ExecutionContextData, deps: CallExecutorDep
 				sessionRoot,
 				chainSkills: [],
 				originSessionRoot: params.context === "fork" ? sessionRoot : undefined,
-				sessionFilesByFlatIndex: tasks.map((_, index) => sessionFileForIndex(index)),
+				sessionFilesByFlatIndex: tasks.map((_, index) => sessionFileForIndex(index, effectiveCwd)),
 				maxSubagentDepth: currentMaxSubagentDepth,
 				worktreeSetupHook: deps.config.worktreeSetupHook,
 				worktreeSetupHookTimeoutMs: deps.config.worktreeSetupHookTimeoutMs,
@@ -1973,7 +1973,7 @@ async function runSinglePath(data: ExecutionContextData, deps: CallExecutorDeps)
 				shareEnabled,
 				sessionRoot,
 				originSessionRoot: params.context === "fork" ? sessionRoot : undefined,
-				sessionFile: sessionFileForIndex(0),
+				sessionFile: sessionFileForIndex(0, effectiveCwd),
 				skills: skillOverride === false ? [] : skillOverride,
 				output: effectiveOutput,
 				outputMode: effectiveOutputMode,
@@ -2051,7 +2051,7 @@ async function runSinglePath(data: ExecutionContextData, deps: CallExecutorDeps)
 		interruptSignal: interruptController.signal,
 		runId,
 		sessionDir: sessionDirForIndex(0),
-		sessionFile: data.sessionFileHintForIndex(0),
+		sessionFile: data.sessionFileHintForIndex(0, effectiveCwd),
 		share: shareEnabled,
 		artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
 		artifactConfig,
@@ -2369,14 +2369,14 @@ export function createSubagentExecutor(services: ExecutorDeps): {
 		}
 		const sessionDirForIndex = (idx?: number) =>
 			path.join(sessionRoot, `run-${idx ?? 0}`);
-		let sessionFileForIndex: (idx?: number) => string | undefined;
+		let sessionFileForIndex: (idx: number, cwd: string) => string | undefined;
 		try {
 			sessionFileForIndex = createForkContextResolver(ctx.sessionManager, effectiveParams.context, { sessionDirForIndex }).sessionFileForIndex;
 		} catch (error) {
 			return toExecutionErrorResult(effectiveParams, error);
 		}
-		const childSessionFileForIndex = (idx?: number) =>
-			sessionFileForIndex(idx) ?? path.join(sessionDirForIndex(idx), "session.jsonl");
+		const childSessionFileForIndex = (idx: number, cwd: string) =>
+			sessionFileForIndex(idx, cwd) ?? path.join(sessionDirForIndex(idx), "session.jsonl");
 
 		const onUpdateWithContext = onUpdate
 			? (r: AgentToolResult<Details>) => onUpdate(withForkContext(r, effectiveParams.context))
