@@ -1082,7 +1082,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf8")) as AsyncResultPayload;
 		assert.equal(payload.success, true, JSON.stringify(payload));
 		for (const [index, expected] of ["group", "leaf", ""].entries()) {
-			assert.equal(JSON.parse(payload.results[index]!.output!.split("\n").at(-1)!).cwd, fs.realpathSync(path.join(tempDir, expected)));
+			assert.equal(JSON.parse(payload.results[index]!.output!.split("\n").at(-1)!).cwd, fs.realpathSync.native(path.join(tempDir, expected)));
 		}
 	});
 
@@ -1561,7 +1561,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 				const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf8"));
 				assert.deepEqual(payload.results.map((r: any) => r.success), [false, true], JSON.stringify(payload));
 				assert.match(payload.results[0].error, /Execution backend selection failed/);
-				assert.equal(JSON.parse(payload.results[1].output.split("\n").at(-1)).cwd, fs.realpathSync(clean));
+				assert.equal(JSON.parse(payload.results[1].output.split("\n").at(-1)).cwd, fs.realpathSync.native(clean));
 				assert.equal(mockPi.callCount(), 1);
 			} finally { removeTempDir(job); removeTempDir(bad); removeTempDir(clean); }
 		});

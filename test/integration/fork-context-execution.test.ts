@@ -294,7 +294,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 			const expected = scenario === "inherited" ? tempDir : target;
 			const sessionFile = readSessionArgsFromCalls()[0];
 			const entries = fs.readFileSync(sessionFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-			assert.equal(entries[0].cwd, scenario === "fresh" ? fs.realpathSync.native(expected) : expected);
+			if (scenario === "fresh") assert.equal(fs.realpathSync.native(entries[0].cwd), fs.realpathSync.native(expected)); else assert.equal(entries[0].cwd, expected);
 			assert.equal(Boolean(entries[0].parentSession), scenario !== "fresh");
 			const message = entries.at(-1).message.content.find((part) => part.type === "text").text;
 			assert.ok(message.includes(JSON.stringify({ cwd: fs.realpathSync.native(expected) })));

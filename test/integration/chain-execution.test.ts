@@ -1254,7 +1254,7 @@ describe("chain execution — parallel steps", { skip: !available ? "pi packages
 			{ parallel: [{ agent: "reviewer", task: "fallback" }] },
 		], [makeAgent("reviewer")]));
 		assert.ok(!result.isError, result.content[0].text);
-		assert.deepEqual(result.details.results.map((r) => JSON.parse(r.finalOutput!.trim()).cwd), [path.join(tempDir, "group"), path.join(tempDir, "leaf"), tempDir].map((dir) => fs.realpathSync(dir)));
+		assert.deepEqual(result.details.results.map((r) => JSON.parse(r.finalOutput!.trim()).cwd), [path.join(tempDir, "group"), path.join(tempDir, "leaf"), tempDir].map((dir) => fs.realpathSync.native(dir)));
 	});
 
 	for (const ending of ["normal", "stop", "failFast", "throw", "corrupt", "absent", "sequentialAbsent", "dynamic", "attested", "checked"]) {

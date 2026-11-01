@@ -40,7 +40,7 @@ test("mock observes files and cwd inside the child", () => {
 	const text = events(result.stdout)[0].message.content[0].text;
 	assert.equal(text.split("\n")[0], "observed");
 	assert.deepEqual(JSON.parse(text.slice("observed\n".length)), {
-		cwd: fs.realpathSync(cwd), files: { "nested/value.txt": "snapshot\n", "empty.txt": "" },
+		cwd: fs.realpathSync.native(cwd), files: { "nested/value.txt": "snapshot\n", "empty.txt": "" },
 	});
 });
 
