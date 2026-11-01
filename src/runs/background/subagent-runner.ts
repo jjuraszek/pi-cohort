@@ -641,6 +641,20 @@ export interface SingleStepContext {
 	controlConfig?: ResolvedControlConfig;
 }
 
+function stampSessionHeaderCwd(sessionFile: string, cwd: string): void {
+	const bytes = fs.readFileSync(sessionFile);
+	const lf = bytes.indexOf(10);
+	const crlf = lf > 0 && bytes[lf - 1] === 13;
+	const headerEnd = lf < 0 ? bytes.length : crlf ? lf - 1 : lf;
+	const header = JSON.parse(bytes.subarray(0, headerEnd).toString("utf8"));
+	if (header === null || typeof header !== "object" || header.type !== "session") {
+		throw new Error("First line must be a session header.");
+	}
+	header.cwd = cwd;
+	const suffix = lf < 0 ? Buffer.alloc(0) : bytes.subarray(crlf ? lf - 1 : lf);
+	fs.writeFileSync(sessionFile, Buffer.concat([Buffer.from(JSON.stringify(header)), suffix]));
+}
+
 /** Execute one detached-runner leaf. */
 export async function runSingleStep(
 	step: SubagentStep,
@@ -715,6 +729,16 @@ export async function runSingleStep(
 		fs.mkdirSync(ctx.artifactsDir, { recursive: true });
 		if (ctx.artifactConfig?.includeInput !== false) {
 			fs.writeFileSync(artifactPaths.inputPath, `# Task for ${step.agent}\n\n${task}`, "utf-8");
+		}
+	}
+
+	if (step.sessionFile) {
+		try {
+			stampSessionHeaderCwd(step.sessionFile, childCwd);
+		} catch (error) {
+			const cause = error instanceof Error ? error.message : String(error);
+			const message = `Failed to stamp session header cwd: ${cause}`;
+			return { agent: step.agent, output: message, exitCode: 1, error: message, sessionFile: step.sessionFile };
 		}
 	}
 

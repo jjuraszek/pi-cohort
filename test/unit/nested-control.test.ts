@@ -470,7 +470,7 @@ describe("nested control routing", () => {
 			const originalRoot = path.join(root, "async-original");
 			fs.mkdirSync(originalRoot);
 			const sessionFile = path.join(originalRoot, "history.jsonl");
-			fs.writeFileSync(sessionFile, "history\n");
+			fs.writeFileSync(sessionFile, `${JSON.stringify({ type: "session", cwd: root })}\n`);
 			const originId = `repeat-origin-${summaryState}`;
 			const originAsyncDir = path.join(RUN_STATE_ROOT_DIR, "nested-subagent-runs", "root-control", originId);
 			routeRoots.push(originAsyncDir);

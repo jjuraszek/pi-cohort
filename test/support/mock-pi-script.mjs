@@ -142,7 +142,7 @@ function writeSessionFile(args) {
 	return sessionFile;
 }
 
-function sessionWriter(sessionFile) {
+function sessionWriter(sessionFile, cwd) {
 	if (!sessionFile) return () => {};
 	const content = fs.readFileSync(sessionFile, "utf8");
 	let parentId = null;
@@ -155,7 +155,7 @@ function sessionWriter(sessionFile) {
 		}
 	}
 	if (!content) {
-		fs.appendFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: randomUUID(), timestamp: new Date().toISOString(), cwd: process.cwd() })}\n`);
+		fs.appendFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: randomUUID(), timestamp: new Date().toISOString(), cwd })}\n`);
 	} else if (!content.endsWith("\n")) {
 		fs.appendFileSync(sessionFile, "\n");
 	}
@@ -243,9 +243,18 @@ async function main() {
 	if (response.requireAcceptanceStructuredOrder && taskRequestsAcceptance(args) && !taskIncludesOrdering(args)) {
 		fail("Expected report-then-structured-output ordering sentence.");
 	}
+	let selectedCwd = process.cwd();
+	const sessionIndex = args.indexOf("--session");
+	const sessionFile = sessionIndex < 0 ? undefined : args[sessionIndex + 1];
+	if (sessionFile && fs.existsSync(sessionFile)) {
+		try {
+			const header = JSON.parse(fs.readFileSync(sessionFile, "utf8").split("\n")[0]);
+			if (header?.type === "session" && typeof header.cwd === "string" && header.cwd.length > 0) selectedCwd = header.cwd;
+		} catch {}
+	}
 	if (response.echoCwd || response.echoFiles !== undefined) {
 		const observation = {};
-		if (response.echoCwd) observation.cwd = process.cwd();
+		if (response.echoCwd) observation.cwd = fs.realpathSync.native(selectedCwd);
 		if (response.echoFiles !== undefined) {
 			observation.files = Object.fromEntries(response.echoFiles.map((file) => [
 				file, fs.readFileSync(path.resolve(process.cwd(), file), "utf-8"),
@@ -253,7 +262,7 @@ async function main() {
 		}
 		response.output = `${response.output ?? ""}\n${JSON.stringify(observation)}`;
 	}
-	const persistMessage = sessionWriter(writeSessionFile(args));
+	const persistMessage = sessionWriter(writeSessionFile(args), selectedCwd);
 	fs.writeFileSync(
 		path.join(queueDir, `call-${Date.now()}-${process.pid}-${Math.random().toString(16).slice(2)}.json`),
 		JSON.stringify({ args }),

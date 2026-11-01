@@ -14,6 +14,8 @@ import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { createForkContextResolver } from "../../src/shared/fork-context.ts";
 import type { MockPi } from "../support/helpers.ts";
 import {
 	createMockPi,
@@ -1252,7 +1254,7 @@ describe("chain execution — parallel steps", { skip: !available ? "pi packages
 			{ parallel: [{ agent: "reviewer", task: "fallback" }] },
 		], [makeAgent("reviewer")]));
 		assert.ok(!result.isError, result.content[0].text);
-		assert.deepEqual(result.details.results.map((r) => JSON.parse(r.finalOutput!.trim()).cwd), [path.join(tempDir, "group"), path.join(tempDir, "leaf"), tempDir].map((dir) => fs.realpathSync(dir)));
+		assert.deepEqual(result.details.results.map((r) => JSON.parse(r.finalOutput!.trim()).cwd), [path.join(tempDir, "group"), path.join(tempDir, "leaf"), tempDir].map((dir) => fs.realpathSync.native(dir)));
 	});
 
 	for (const ending of ["normal", "stop", "failFast", "throw", "corrupt", "absent", "sequentialAbsent", "dynamic", "attested", "checked"]) {
@@ -1273,7 +1275,7 @@ describe("chain execution — parallel steps", { skip: !available ? "pi packages
 			fs.chmodSync(hook, 0o755);
 			const schema = { type: "object", properties: { verdict: { type: "string" } }, required: ["verdict"] };
 			const report = "```acceptance-report\n" + JSON.stringify({ criteriaSatisfied: [{ id: "criterion-1", status: "satisfied", evidence: "reviewed" }], changedFiles: [], testsAddedOrUpdated: [], commandsRun: [{ command: "review", result: "passed", summary: "reviewed" }], validationOutput: ["reviewed"], residualRisks: [], noStagedFiles: true, notes: "done" }) + "\n```";
-			mockPi.onCall({ output: "implemented", structuredOutput: { items: ["a", "b"] } });
+			mockPi.onCall({ output: "implemented", echoCwd: ending === "normal", structuredOutput: { items: ["a", "b"] } });
 			if (ending === "corrupt") mockPi.onCall({ output: "inspect captured patch" });
 			const acceptance = ending === "attested" || ending === "checked";
 			mockPi.onCall(absent || ending === "corrupt" ? { output: "sibling finished" } : acceptance
@@ -1282,9 +1284,9 @@ describe("chain execution — parallel steps", { skip: !available ? "pi packages
 			mockPi.onCall({ echoCwd: true, structuredOutput: ending === "stop" ? { verdict: "PASS" } : undefined });
 			mockPi.onCall({ echoCwd: true });
 			const treeRef = "{outputs.impl_1.treePath}";
-			const reviewer: TestParallelTask = { agent: "reviewer", task: "Review " + treeRef, as: "review", ...(ending === "stop" || acceptance ? { outputSchema: schema } : {}), ...(acceptance ? { acceptance: { level: ending } } : {}) };
+			const reviewer: TestParallelTask = { agent: "reviewer", task: "Review " + treeRef, cwd: treeRef, as: "review", ...(ending === "stop" || acceptance ? { outputSchema: schema } : {}), ...(acceptance ? { acceptance: { level: ending } } : {}) };
 			let consumers: TestChainStep[] = [
-				{ parallel: [reviewer, { agent: "reviewer", task: "copy", ...(ending === "stop" ? { outputSchema: schema } : {}) }], cwd: treeRef, concurrency: 1, ...(ending === "stop" ? { stopOn: { path: "/verdict", in: ["FAIL"] } } : {}) },
+				{ parallel: [reviewer, { agent: "reviewer", task: "copy", cwd: treeRef, ...(ending === "stop" ? { outputSchema: schema } : {}) }], cwd: treeRef, concurrency: 1, ...(ending === "stop" ? { stopOn: { path: "/verdict", in: ["FAIL"] } } : {}) },
 				{ agent: "reviewer", task: "Reuse " + treeRef, cwd: treeRef },
 			];
 			if (ending === "failFast") consumers = [{ parallel: [reviewer, { agent: "reviewer", task: "bad", cwd: path.join(tempDir, "missing") }, { agent: "reviewer", task: "skipped" }], cwd: treeRef, concurrency: 1, failFast: true }];
@@ -1293,13 +1295,26 @@ describe("chain execution — parallel steps", { skip: !available ? "pi packages
 				: [{ parallel: [{ agent: "reviewer", task: "bad", cwd: treeRef }, { agent: "reviewer", task: "sibling" }], concurrency: 1 }];
 			if (ending === "corrupt") consumers.unshift({ agent: "reviewer", task: "Inspect captured patch" });
 			if (ending === "dynamic") consumers = [{ expand: { from: { output: "impl_1", path: "/items" }, maxItems: 2 }, parallel: { agent: "reviewer", task: "Review {item}", cwd: treeRef }, collect: { as: "reviews" }, concurrency: 1 }];
+			const parent = SessionManager.create(repoDir, path.join(tempDir, "parent-sessions"));
+			parent.appendMessage({ role: "user", content: "parent prompt" });
+			const parentBytes = fs.readFileSync(parent.getSessionFile()!);
+			const resolver = createForkContextResolver(parent, "fork", { sessionDirForIndex: (index) => path.join(tempDir, `fork-${index}`) });
+			const childHeaders: Array<{ cwd: string; parentSession?: string }> = [];
+			const childPhysicalCwds: string[] = [];
 			let observedTree: string | undefined;
+			let observedPhysicalTree: string | undefined;
 			let corrupted = false;
 			const promise = executeChain(makeChainParams([
 				{ parallel: [{ agent: "impl", task: "edit", as: "impl_1", outputSchema: { type: "object" } }], worktree: true },
 				...consumers,
 			], [makeAgent("impl", { completionGuard: false }), makeAgent("reviewer")], {
 				cwd: path.join(repoDir, "nested"), ctx: makeMinimalCtx(repoDir), worktreeSetupHook: hook,
+				sessionFileForIndex: ending === "normal" ? (index: number, cwd: string) => {
+					const file = resolver.sessionFileForIndex(index, cwd)!;
+					childHeaders.push(JSON.parse(fs.readFileSync(file, "utf8").split("\n")[0]));
+					childPhysicalCwds.push(fs.realpathSync.native(cwd));
+					return file;
+				} : undefined,
 				chainDir: path.join(fs.realpathSync(tempDir), "chain"),
 				sessionDirForIndex: (index: number) => {
 					if (ending === "throw" && index === 3) {
@@ -1314,6 +1329,7 @@ describe("chain execution — parallel steps", { skip: !available ? "pi packages
 					if (producer?.treePath) {
 						observedTree = producer.treePath;
 						assert.ok(fs.existsSync(observedTree));
+						observedPhysicalTree = fs.realpathSync.native(observedTree);
 					}
 				},
 			}));
@@ -1356,6 +1372,17 @@ describe("chain execution — parallel steps", { skip: !available ? "pi packages
 					assert.equal(JSON.parse(result.details.results[2].finalOutput!.trim()).cwd, producer.treePath);
 				}
 				if (ending === "normal") {
+					assert.deepEqual(fs.readFileSync(parent.getSessionFile()!), parentBytes);
+					assert.equal(childHeaders.length, 4);
+					const producerObservation = JSON.parse(result.details.results[0].finalOutput!.trim().split("\n").at(-1)!);
+					assert.equal(producerObservation.cwd, childPhysicalCwds[0]);
+					assert.match(childHeaders[0].cwd, /pi-worktree/);
+					assert.notEqual(childHeaders[0].cwd, path.join(repoDir, "nested"));
+					for (const header of childHeaders.slice(1)) {
+						assert.equal(header.cwd, producer.treePath);
+						assert.ok(header.parentSession);
+					}
+					assert.equal(observation.cwd, observedPhysicalTree);
 					assert.ok(!result.isError, result.content[0].text);
 					for (const r of result.details.results.slice(2)) assert.equal(JSON.parse(r.finalOutput!.trim()).cwd, producer.treePath);
 					assert.ok(result.details.results[3].task!.includes(producer.treePath));

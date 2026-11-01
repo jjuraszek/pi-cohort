@@ -19,6 +19,7 @@ import type { MockPi } from "../support/helpers.ts";
 import { getArtifactPaths } from "../../src/shared/artifacts.ts";
 import { formatModelAttemptNote } from "../../src/runs/shared/model-fallback.ts";
 import { DEFAULT_CONTROL_CONFIG } from "../../src/runs/shared/subagent-control.ts";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 
 interface AsyncExecutionResult {
 	content: Array<{ text?: string }>;
@@ -791,7 +792,8 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		const id = `async-dynamic-chain-${Date.now().toString(36)}`;
 		const originSessionRoot = fs.realpathSync.native(tempDir);
 		const original = path.join(originSessionRoot, "producer.jsonl");
-		fs.writeFileSync(original, "original history\n");
+		const history = '{"type":"message", "id":"original-history", "message":{"role":"user","content":[{"type":"text","text":"prior"}]}}\n';
+		fs.writeFileSync(original, `${JSON.stringify({ type: "session", cwd: tempDir, parentSession: "parent.jsonl" })}\n${history}`);
 		const result = executeAsyncChain(id, {
 			chain: [
 				{ agent: "producer", task: "Produce targets", as: "targets", outputSchema: { type: "object" } },
@@ -824,7 +826,8 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf-8")) as AsyncStatusPayload;
 		assert.equal(payload.success, true);
 		assert.equal(mockPi.callCount(), 4);
-		assert.ok(fs.readFileSync(original, "utf8").startsWith("original history\n"));
+		const bytes = fs.readFileSync(original);
+		assert.ok(bytes.subarray(bytes.indexOf(10) + 1).toString().startsWith(history));
 		assert.equal(readMockPiArgs(mockPi, 0)[readMockPiArgs(mockPi, 0).indexOf("--session") + 1], original);
 		const consumerArgs = readMockPiArgs(mockPi, 3);
 		assert.equal(consumerArgs.includes("--session"), false);
@@ -1079,8 +1082,125 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf8")) as AsyncResultPayload;
 		assert.equal(payload.success, true, JSON.stringify(payload));
 		for (const [index, expected] of ["group", "leaf", ""].entries()) {
-			assert.equal(JSON.parse(payload.results[index]!.output!.split("\n").at(-1)!).cwd, fs.realpathSync(path.join(tempDir, expected)));
+			assert.equal(JSON.parse(payload.results[index]!.output!.split("\n").at(-1)!).cwd, fs.realpathSync.native(path.join(tempDir, expected)));
 		}
+	});
+
+	it("detached fork chain replaces provisional cwd with late-resolved tree cwd", { skip: process.platform === "win32" || !isAsyncAvailable() ? "requires shell hooks and jiti" : undefined }, async () => {
+		const repoDir = createRepo("pi-async-fork-tree-");
+		const treeTemplate = "{outputs.impl.treePath}";
+		const originalWrite = defaultFs.writeFileSync;
+		const mockScript = fs.readFileSync(mockPi.runtime.piEntryPath, "utf8");
+		const launchCwds = path.join(tempDir, "launch-cwds.jsonl");
+		let serialized: any;
+		const provisionalHeaders: Array<{ cwd: string; parentSession?: string }> = [];
+		try {
+			// Capture physical paths inside the children before the runner can remove their checkouts.
+			fs.writeFileSync(mockPi.runtime.piEntryPath,
+				`import { appendFileSync as recordLaunchCwd, realpathSync as resolveLaunchCwd } from "node:fs";\nrecordLaunchCwd(${JSON.stringify(launchCwds)}, JSON.stringify(resolveLaunchCwd.native(process.cwd())) + "\\n");\n${mockScript}`);
+			const hookPath = path.join(tempDir, "fork-tree-hook.sh");
+			fs.writeFileSync(hookPath, '#!/bin/sh\ncat >/dev/null\necho patched >> input.md\necho "{}"\n');
+			fs.chmodSync(hookPath, 0o755);
+			const parent = SessionManager.create(repoDir, path.join(tempDir, "parent-sessions"));
+			parent.appendMessage({ role: "user", content: "parent prompt" });
+			const parentBytes = fs.readFileSync(parent.getSessionFile()!);
+			const executor = createSubagentExecutor({
+				pi: { events: createEventBus(), getSessionName: () => undefined },
+				state: { baseCwd: repoDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
+				resolveConfig: () => ({ worktreeSetupHook: hookPath }), tempArtifactsDir: tempDir,
+				getSubagentSessionRoot: () => tempDir, expandTilde: (p: string) => p,
+				discoverAgents: () => ({ agents: [makeAgent("worker", { completionGuard: false }), makeAgent("reviewer")] }),
+				captureRuntime: mockPi.captureRuntime,
+			});
+			mockPi.onCall({ output: "Produced" });
+			mockPi.onCall({ output: "Sequential", echoCwd: true });
+			mockPi.onCall({ output: "Group", echoCwd: true });
+			mockPi.onCall({ output: "Literal override", echoCwd: true });
+			defaultFs.writeFileSync = ((file: any, data: any, ...rest: any[]) => {
+				if (typeof file === "string" && typeof data === "string" && data.startsWith("{")) {
+					const value = JSON.parse(data);
+					if (value.steps?.length === 3 && value.steps[1].cwd === treeTemplate) {
+						serialized = value;
+						for (const step of value.steps.flatMap((step: any) => step.parallel ?? [step])) {
+							provisionalHeaders.push(JSON.parse(fs.readFileSync(step.sessionFile, "utf8").split("\n")[0]));
+						}
+					}
+				}
+				return (originalWrite as any)(file, data, ...rest);
+			}) as typeof originalWrite;
+			let started: AsyncExecutionResult;
+			try {
+				started = await executor.execute("fork-tree", { context: "fork", async: true, clarify: false, chain: [
+					{ parallel: [{ agent: "worker", task: "Produce", as: "impl", output: false, progress: false }], worktree: true },
+					{ agent: "reviewer", task: "Sequential", cwd: treeTemplate, output: false, progress: false },
+					{ parallel: [{ agent: "reviewer", task: "Group", output: false, progress: false }, { agent: "reviewer", task: "Override", cwd: repoDir, output: false, progress: false }], cwd: treeTemplate, concurrency: 1 },
+				], acceptance: { level: "none", reason: "Only observing fork cwd" } }, new AbortController().signal, undefined, { ...makeMinimalCtx(repoDir), sessionManager: parent });
+			} finally {
+				defaultFs.writeFileSync = originalWrite;
+			}
+			const id = started!.details?.asyncId;
+			assert.ok(id, JSON.stringify(started!));
+			assert.equal(serialized.steps[1].cwd, treeTemplate);
+			assert.equal(serialized.steps[2].cwd, treeTemplate);
+			assert.equal(serialized.steps[2].parallel[0].cwd, treeTemplate);
+			assert.equal(serialized.steps[2].parallel[1].cwd, repoDir);
+			assert.equal(provisionalHeaders.length, 4);
+			for (const header of provisionalHeaders) {
+				assert.equal(header.cwd, repoDir);
+				assert.equal(header.parentSession, parent.getSessionFile());
+			}
+			const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf8")) as AsyncResultPayload;
+			assert.equal(payload.success, true, JSON.stringify(payload));
+			const physicalCwds = fs.readFileSync(launchCwds, "utf8").trim().split("\n").map((line) => JSON.parse(line) as string);
+			assert.equal(physicalCwds.length, 4);
+			const physicalTree = physicalCwds[1];
+			const tree = payload.outputs?.impl?.treePath;
+			assert.ok(tree);
+			assert.notEqual(tree, provisionalHeaders[1].cwd);
+			for (const [index, expected] of [tree, tree, repoDir].entries()) {
+				const childArgs = readMockPiArgs(mockPi, index + 1);
+				const header = JSON.parse(fs.readFileSync(childArgs[childArgs.indexOf("--session") + 1], "utf8").split("\n")[0]);
+				assert.equal(header.cwd, expected);
+				assert.equal(header.parentSession, parent.getSessionFile());
+				assert.equal(JSON.parse(payload.results[index + 1]!.output!.split("\n").at(-1)!).cwd, index < 2 ? physicalTree : fs.realpathSync.native(repoDir));
+			}
+			assert.deepEqual(fs.readFileSync(parent.getSessionFile()!), parentBytes);
+			assert.equal(fs.existsSync(tree), false);
+			assert.doesNotMatch(git(repoDir, ["worktree", "list", "--porcelain"]), /worktree-trees/);
+		} finally {
+			defaultFs.writeFileSync = originalWrite;
+			fs.writeFileSync(mockPi.runtime.piEntryPath, mockScript);
+			removeTempDir(repoDir);
+		}
+	});
+
+	it("detached single fork keeps lexical explicit cwd and observes its realpath", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		const target = path.join(tempDir, "target");
+		const childCwd = path.join(tempDir, "child-link");
+		fs.mkdirSync(target);
+		fs.symlinkSync(target, childCwd, process.platform === "win32" ? "junction" : "dir");
+		const parent = SessionManager.create(tempDir, path.join(tempDir, "parent-sessions"));
+		parent.appendMessage({ role: "user", content: "parent prompt" });
+		const parentBytes = fs.readFileSync(parent.getSessionFile()!);
+		const executor = createSubagentExecutor({
+			pi: { events: createEventBus(), getSessionName: () => undefined },
+			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
+			resolveConfig: () => ({}), tempArtifactsDir: tempDir,
+			getSubagentSessionRoot: () => tempDir, expandTilde: (p: string) => p,
+			discoverAgents: () => ({ agents: [makeAgent("reviewer")] }), captureRuntime: mockPi.captureRuntime,
+		});
+		mockPi.onCall({ output: "Inspect", echoCwd: true });
+		const started = await executor.execute("fork-single", { agent: "reviewer", task: "Inspect", context: "fork", cwd: childCwd, async: true, clarify: false, acceptance: { level: "none", reason: "Only observing fork cwd" } }, new AbortController().signal, undefined, { ...makeMinimalCtx(tempDir), sessionManager: parent });
+		const id = started.details?.asyncId;
+		assert.ok(id, JSON.stringify(started));
+		const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf8")) as AsyncResultPayload;
+		assert.equal(payload.success, true, JSON.stringify(payload));
+		const args = readMockPiArgs(mockPi, 0);
+		const header = JSON.parse(fs.readFileSync(args[args.indexOf("--session") + 1], "utf8").split("\n")[0]);
+		assert.equal(header.cwd, childCwd);
+		assert.equal(header.parentSession, parent.getSessionFile());
+		assert.equal(JSON.parse(payload.results[0]!.output!.split("\n").at(-1)!).cwd, fs.realpathSync.native(target));
+		assert.deepEqual(fs.readFileSync(parent.getSessionFile()!), parentBytes);
 	});
 
 	for (const ending of ["normal", "stopOn", "failFast", "checked"] as const) {
@@ -1441,7 +1561,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 				const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf8"));
 				assert.deepEqual(payload.results.map((r: any) => r.success), [false, true], JSON.stringify(payload));
 				assert.match(payload.results[0].error, /Execution backend selection failed/);
-				assert.equal(JSON.parse(payload.results[1].output.split("\n").at(-1)).cwd, fs.realpathSync(clean));
+				assert.equal(JSON.parse(payload.results[1].output.split("\n").at(-1)).cwd, fs.realpathSync.native(clean));
 				assert.equal(mockPi.callCount(), 1);
 			} finally { removeTempDir(job); removeTempDir(bad); removeTempDir(clean); }
 		});
