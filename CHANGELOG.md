@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Forwarded parent flags are derived with pi's exported `parseArgs` instead of a hand-maintained copy of its parser, so a parent launched with `-- "<prompt>"` no longer forwards the prompt and every child flag into subagents as positional messages (which left the child running without its model, system prompt, or tool restriction and the parent waiting on an empty session). Values are re-emitted as `--name=value`; a `--` consumed as a core flag's value (`--name --`) is no longer mistaken for the delimiter; the recognized-flag table and its drift test are gone. (#42, #45)
+
 ## [7.6.6] - 2026-11-01
 
 ### Fixed
