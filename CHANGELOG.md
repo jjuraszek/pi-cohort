@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Parent flag forwarding stops at the `--` delimiter. A parent launched as `pi ... -- "<prompt>"` no longer forwards `--` and the prompt into every child, which turned the child's own flags into positional messages and left the run empty; an `--extension`/`--no-extensions` token inside the queued prompt no longer switches forwarding off. (#42)
+
 ## [7.6.6] - 2026-11-01
 
 ### Fixed
