@@ -43,11 +43,18 @@ function consumesNext(arity: Arity, next: string | undefined): boolean {
 
 export function deriveForwardedFlags(argv: string[], config: ForwardFlagsConfig): string[] {
   if (config.forwardParentFlags === false) return [];
-  if (argv.some((tok) => EXTENSION_CUSTOMIZATION.has(tok))) return [];
-
+  // Everything after a bare `--` is a queued prompt, not flags; pi would re-feed
+  // it to the child as positional messages. A `--` consumed as a value flag's
+  // argument (`--name --`) is a value, so the delimiter is found by the same
+  // scan that consumes values.
+  let end = argv.length;
   const collected: Array<{ name: string; tokens: string[] }> = [];
   for (let i = 2; i < argv.length; i++) {
     const tok = argv[i]!;
+    if (tok === "--") {
+      end = i;
+      break;
+    }
     if (tok.startsWith("@") || !tok.startsWith("-")) continue;
     if (tok.startsWith("-") && !tok.startsWith("--")) {
       const alias = SHORT_ALIASES[tok.slice(1)];
@@ -74,6 +81,8 @@ export function deriveForwardedFlags(argv: string[], config: ForwardFlagsConfig)
       collected.push({ name, tokens: [tok] });
     }
   }
+
+  if (argv.slice(0, end).some((tok) => EXTENSION_CUSTOMIZATION.has(tok))) return [];
 
   // Dedup by name, last value wins; first-occurrence position is preserved.
   const lastByName = new Map<string, string[]>();

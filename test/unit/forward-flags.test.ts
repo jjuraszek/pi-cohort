@@ -32,6 +32,20 @@ describe("deriveForwardedFlags", () => {
     assert.deepEqual(deriveForwardedFlags(argv("--use-theme", "dark", "--no-autofix"), {}), ["--no-autofix"]);
     assert.deepEqual(deriveForwardedFlags(argv("--tui-mode", "fullscreen", "--no-autofix"), {}), ["--no-autofix"]);
   });
+  it("stops at the -- delimiter and never forwards a queued prompt", () => {
+    assert.deepEqual(deriveForwardedFlags(argv("--no-autofix", "--", "hello world"), {}), ["--no-autofix"]);
+    assert.deepEqual(deriveForwardedFlags(argv("--append-system-prompt", "/x", "--", "hello world"), {}), []);
+  });
+  it("ignores extension-customization tokens after the -- delimiter", () => {
+    assert.deepEqual(deriveForwardedFlags(argv("--no-autofix", "--", "--extension"), {}), ["--no-autofix"]);
+    assert.deepEqual(deriveForwardedFlags(argv("--no-autofix", "--", "-ne"), {}), ["--no-autofix"]);
+  });
+  it("treats -- consumed as a core flag's value as a value, not the delimiter", () => {
+    // pi's --name takes its next token unconditionally, so `pi --name -- --no-autofix`
+    // names the session "--" and still has flags to forward.
+    assert.deepEqual(deriveForwardedFlags(argv("--name", "--", "--no-autofix"), {}), ["--no-autofix"]);
+    assert.deepEqual(deriveForwardedFlags(argv("-n", "--", "--no-autofix", "--", "prompt"), {}), ["--no-autofix"]);
+  });
   it("forwards --no-autofix when --tui-mode is malformed (missing value)", () => {
     // Real pi's --tui-mode is value-guarded: it does NOT consume a dash-prefixed
     // next token. So `pi --tui-mode --no-autofix ...` leaves --no-autofix alone.
