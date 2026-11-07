@@ -1,5 +1,6 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { capturePiRuntime, parsePiRuntime, type PiRuntimeIdentity } from "../shared/pi-spawn.ts";
+import type { ProjectTrust } from "../shared/project-trust.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
@@ -147,7 +148,7 @@ interface ExecutorDeps {
 	allowMutatingManagementActions?: boolean;
 }
 
-type CallExecutorDeps = ExecutorDeps & { config: ExtensionConfig; forwardedFlags: string[]; asyncByDefault: boolean };
+type CallExecutorDeps = ExecutorDeps & { config: ExtensionConfig; forwardedFlags: string[]; projectTrust: ProjectTrust; asyncByDefault: boolean };
 
 interface ExecutionContextData {
 	runtime: PiRuntimeIdentity;
@@ -675,6 +676,7 @@ async function resumeAsyncRun(input: {
 		controlConfig: resolveControlConfig(input.deps.config.control, input.params.control),
 		availableModels,
 		forwardedFlags: input.deps.forwardedFlags,
+		projectTrust: input.deps.projectTrust,
 	});
 	if (result.isError) return result;
 
@@ -1085,6 +1087,7 @@ function runAsyncPath(data: ExecutionContextData, deps: CallExecutorDeps): Agent
 			controlConfig,
 			nestedRoute,
 			forwardedFlags: deps.forwardedFlags,
+			projectTrust: deps.projectTrust,
 		});
 	}
 
@@ -1116,6 +1119,7 @@ function runAsyncPath(data: ExecutionContextData, deps: CallExecutorDeps): Agent
 			controlConfig,
 			nestedRoute,
 			forwardedFlags: deps.forwardedFlags,
+			projectTrust: deps.projectTrust,
 		});
 	}
 
@@ -1161,6 +1165,7 @@ function runAsyncPath(data: ExecutionContextData, deps: CallExecutorDeps): Agent
 			nestedRoute,
 			acceptance: params.acceptance,
 			forwardedFlags: deps.forwardedFlags,
+			projectTrust: deps.projectTrust,
 		});
 	}
 
@@ -1221,6 +1226,7 @@ async function runChainPath(data: ExecutionContextData, deps: CallExecutorDeps):
 		worktreeTeardownHook: deps.config.worktreeTeardownHook,
 		worktreeTeardownHookTimeoutMs: deps.config.worktreeTeardownHookTimeoutMs,
 		forwardedFlags: deps.forwardedFlags,
+		projectTrust: deps.projectTrust,
 	});
 
 	if (chainResult.requestedAsync) {
@@ -1258,6 +1264,7 @@ async function runChainPath(data: ExecutionContextData, deps: CallExecutorDeps):
 			controlConfig,
 			nestedRoute: data.nestedRoute,
 			forwardedFlags: deps.forwardedFlags,
+			projectTrust: deps.projectTrust,
 		});
 	}
 
@@ -1300,6 +1307,7 @@ interface ForegroundParallelRunInput {
 	onUpdate?: (r: AgentToolResult<Details>) => void;
 	worktreeSetup?: WorktreeSetup;
 	forwardedFlags?: string[];
+	projectTrust?: ProjectTrust;
 }
 
 function buildParallelModeError(message: string): AgentToolResult<Details> {
@@ -1512,6 +1520,7 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 			acceptance: task.acceptance,
 			acceptanceContext: { mode: "parallel" },
 			forwardedFlags: input.forwardedFlags,
+			projectTrust: input.projectTrust,
 				onUpdate: input.onUpdate
 					? (progressUpdate) => {
 						const stepResults = progressUpdate.details?.results || [];
@@ -1720,6 +1729,7 @@ async function runParallelPath(data: ExecutionContextData, deps: CallExecutorDep
 				worktreeTeardownHookTimeoutMs: deps.config.worktreeTeardownHookTimeoutMs,
 				controlConfig,
 				forwardedFlags: deps.forwardedFlags,
+				projectTrust: deps.projectTrust,
 			});
 		}
 	}
@@ -1815,6 +1825,7 @@ async function runParallelPath(data: ExecutionContextData, deps: CallExecutorDep
 			onUpdate: onUpdateWithCost,
 			worktreeSetup,
 			forwardedFlags: deps.forwardedFlags,
+			projectTrust: deps.projectTrust,
 			resolveConfig: deps.resolveConfig,
 		});
 		if (foregroundControl) updateForegroundNestedProjection(foregroundControl);
@@ -1985,6 +1996,7 @@ async function runSinglePath(data: ExecutionContextData, deps: CallExecutorDeps)
 				worktreeTeardownHookTimeoutMs: deps.config.worktreeTeardownHookTimeoutMs,
 				controlConfig,
 				forwardedFlags: deps.forwardedFlags,
+				projectTrust: deps.projectTrust,
 			});
 		}
 	}
@@ -2075,6 +2087,7 @@ async function runSinglePath(data: ExecutionContextData, deps: CallExecutorDeps)
 		acceptance: params.acceptance,
 		acceptanceContext: { mode: "single" },
 		forwardedFlags: deps.forwardedFlags,
+		projectTrust: deps.projectTrust,
 		executionBackend: deps.config.executionBackend,
 	});
 	if (foregroundControl?.currentIndex === 0) {
@@ -2168,7 +2181,7 @@ export function createSubagentExecutor(services: ExecutorDeps): {
 	): Promise<AgentToolResult<Details>> => {
 		const requestCwd = resolveRequestedCwd(ctx.cwd, params.cwd);
 		const config = services.resolveConfig(requestCwd);
-		const deps: CallExecutorDeps = { ...services, config, forwardedFlags: deriveForwardedFlags(process.argv, config), asyncByDefault: config.asyncByDefault === true };
+		const deps: CallExecutorDeps = { ...services, config, forwardedFlags: deriveForwardedFlags(process.argv, config), projectTrust: { trusted: ctx.isProjectTrusted(), root: ctx.cwd }, asyncByDefault: config.asyncByDefault === true };
 		deps.state.baseCwd = ctx.cwd;
 		deps.state.foregroundRuns ??= new Map();
 		deps.state.foregroundControls ??= new Map();

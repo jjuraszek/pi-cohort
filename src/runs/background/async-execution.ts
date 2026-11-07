@@ -4,6 +4,7 @@
 
 import { spawn } from "node:child_process";
 import { PINNED_AGENT_DIR_OVERRIDE } from "../../shared/agent-dir.ts";
+import type { ProjectTrust } from "../shared/project-trust.ts";
 import fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -89,6 +90,7 @@ interface AsyncChainParams {
 	controlConfig?: ResolvedControlConfig;
 	nestedRoute?: NestedRouteInfo;
 	forwardedFlags?: string[];
+	projectTrust?: ProjectTrust;
 	acceptance?: AcceptanceInput;
 }
 
@@ -126,6 +128,7 @@ interface AsyncSingleParams {
 	controlConfig?: ResolvedControlConfig;
 	nestedRoute?: NestedRouteInfo;
 	forwardedFlags?: string[];
+	projectTrust?: ProjectTrust;
 	acceptance?: AcceptanceInput;
 }
 
@@ -389,6 +392,7 @@ export function executeAsyncChain(
 		controlConfig,
 		nestedRoute,
 		forwardedFlags,
+		projectTrust,
 	} = params;
 	const resultMode = params.resultMode ?? "chain";
 	const chainSkills = params.chainSkills ?? [];
@@ -640,6 +644,7 @@ export function executeAsyncChain(
 				parentSessionId: ctx.parentSessionId,
 				runtime: ctx.runtime,
 				forwardedFlags,
+				projectTrust,
 				worktreeSetupHook,
 				worktreeSetupHookTimeoutMs,
 				worktreeTeardownHook,
@@ -767,6 +772,7 @@ export function executeAsyncSingle(
 		controlConfig,
 		nestedRoute,
 		forwardedFlags,
+		projectTrust,
 	} = params;
 	const task = params.task ?? "";
 	const runnerCwd = resolveChildCwd(ctx.cwd, cwd);
@@ -856,6 +862,7 @@ export function executeAsyncSingle(
 				parentSessionId: ctx.parentSessionId,
 				runtime: ctx.runtime,
 				forwardedFlags,
+				projectTrust,
 				worktreeSetupHook,
 				worktreeSetupHookTimeoutMs,
 				worktreeTeardownHook,

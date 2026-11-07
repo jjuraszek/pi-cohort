@@ -144,6 +144,59 @@ describe("parent flag forwarding", { skip: !available ? "pi packages not availab
 		assert.ok(!readCallArgs().includes("--no-autofix"));
 	});
 
+	it("passes the parent's project trust into the child argv (foreground)", async () => {
+		mockPi.onCall({ output: "ok" });
+		const agents = [makeAgent("restricted", { extensions: [] })];
+
+		const result = await runSync!(tempDir, agents, "restricted", "do it", {
+			runId: "trust-fg",
+			projectTrust: { trusted: true, root: tempDir },
+		});
+
+		assert.equal(result.exitCode, 0);
+		assert.ok(readCallArgs().includes("--approve"));
+	});
+
+	it("leaves trust to a child whose cwd is outside the parent project (foreground)", async () => {
+		mockPi.onCall({ output: "ok" });
+		const agents = makeAgentConfigs(["echo"]);
+		const elsewhere = createTempDir();
+
+		try {
+			const result = await runSync!(tempDir, agents, "echo", "do it", {
+				runId: "trust-foreign",
+				cwd: elsewhere,
+				projectTrust: { trusted: true, root: tempDir },
+			});
+
+			assert.equal(result.exitCode, 0);
+			const args = readCallArgs();
+			assert.ok(!args.includes("--approve"));
+			assert.ok(!args.includes("--no-approve"));
+		} finally {
+			removeTempDir(elsewhere);
+		}
+	});
+
+	it("passes the parent's project trust through the async detached runner into the child argv", { skip: !isAsyncAvailable?.() ? "jiti not available" : undefined }, async () => {
+		mockPi.onCall({ output: "async done" });
+		const id = `trust-async-${Date.now().toString(36)}`;
+
+		executeAsyncSingle!(id, {
+			agent: "worker",
+			task: "Do work",
+			agentConfig: makeAgent("worker"),
+			ctx: { runtime: mockPi.runtime, pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
+			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+			shareEnabled: false,
+			maxSubagentDepth: 2,
+			projectTrust: { trusted: false, root: tempDir },
+		});
+
+		await waitForAsyncResultFile(id, 30_000);
+		assert.ok(readLastMockPiArgs(mockPi).includes("--no-approve"));
+	});
+
 	it("forwards a parent CLI flag through the async detached runner into the child argv", { skip: !isAsyncAvailable?.() ? "jiti not available" : undefined }, async () => {
 		mockPi.onCall({ output: "async done" });
 		const artifactConfig = {

@@ -513,6 +513,47 @@ describe("buildPiArgs forwarded flags", () => {
 	});
 });
 
+describe("buildPiArgs project trust", () => {
+	const root = process.cwd();
+	const base = { baseArgs: ["--mode", "json", "-p"], task: "hi", sessionEnabled: false, inheritProjectContext: false, inheritSkills: false, cwd: root };
+
+	it("passes --approve when the parent project is trusted", () => {
+		const { args } = buildPiArgs({ ...base, projectTrust: { trusted: true, root } });
+		assert.ok(args.includes("--approve"));
+		assert.ok(!args.includes("--no-approve"));
+		assert.ok(args.indexOf("--approve") < args.length - 1, "the task stays last");
+	});
+
+	it("passes --no-approve when the parent project is not trusted", () => {
+		const { args } = buildPiArgs({ ...base, projectTrust: { trusted: false, root } });
+		assert.ok(args.includes("--no-approve"));
+		assert.ok(!args.includes("--approve"));
+	});
+
+	it("leaves the decision to the child when trust is unknown", () => {
+		const { args } = buildPiArgs({ ...base });
+		assert.ok(!args.includes("--approve"));
+		assert.ok(!args.includes("--no-approve"));
+	});
+
+	it("keeps the trust flag when the agent restricts extensions", () => {
+		const { args } = buildPiArgs({ ...base, projectTrust: { trusted: true, root }, extensions: [] });
+		assert.ok(args.includes("--approve"));
+		assert.ok(args.includes("--no-extensions"));
+	});
+
+	it("leaves the decision to a child whose cwd is a different project", () => {
+		const { args } = buildPiArgs({ ...base, projectTrust: { trusted: true, root }, cwd: os.tmpdir() });
+		assert.ok(!args.includes("--approve"));
+		assert.ok(!args.includes("--no-approve"));
+	});
+
+	it("applies the decision to a child in a subdirectory of the project", () => {
+		const { args } = buildPiArgs({ ...base, projectTrust: { trusted: false, root }, cwd: path.join(root, "src") });
+		assert.ok(args.includes("--no-approve"));
+	});
+});
+
 describe("buildPiArgs child session name", () => {
 	const base = { baseArgs: [], task: "hi", sessionEnabled: true, inheritProjectContext: false, inheritSkills: false };
 	const runId = "a1b2c3d4-0000-4000-8000-000000000000";
