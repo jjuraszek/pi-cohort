@@ -1,0 +1,18 @@
+skill: gatekeep-pr
+session: 01a1b7fd-ecd5-739f-86bd-be0c4804ac66
+ts: 2026-11-07T21:51:08Z
+repo: jjuraszek/pi-cohort
+items: []
+author:
+  name: Jacek Juraszek
+  email: jacek.juraszek@gmail.com
+gauntlet_version: 8.4.2
+models:
+  - anthropic-fable/claude-fable-5-1
+  - anthropic-fable/claude-fable-5-1:high
+tokens:
+  input: 304
+  output: 95504
+  cache_read: 9530836
+  cache_write: 710848
+cost: 21.377909
