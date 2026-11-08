@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- Register both parent and child-safe fanout `subagent` tools as `model-only`: direct calls preserve per-child progress and the transcript record, codemode scripts cannot dispatch children, and the active tool stays declared in codemode `only` mode. Pi refuses `ctx.executeTool("subagent", ...)` for every caller; pi-cohort has no in-repo caller. Upstream verification for pi-gauntlet#135 is the [exposure spec](doc/specs/2026-11-08-gh-49-subagent-model-only-exposure.md) and [offline integration test](test/integration/subagent-model-only.test.ts); its floor is the released pi-cohort version that carries this entry. (#49)
+
 ## [7.6.9] - 2026-11-08
 
 ### Fixed
@@ -8,7 +13,6 @@
 ## [7.6.8] - 2026-11-08
 
 ### Changed
-- Register both parent and child-safe fanout `subagent` tools as `model-only`: direct calls preserve per-child progress and the transcript record, codemode scripts cannot dispatch children, and the active tool stays declared in codemode `only` mode. Pi refuses `ctx.executeTool("subagent", ...)` for every caller; pi-cohort has no in-repo caller. Upstream verification for pi-gauntlet#135 is the [exposure spec](doc/specs/2026-11-08-gh-49-subagent-model-only-exposure.md) and [offline integration test](test/integration/subagent-model-only.test.ts); its floor is the released pi-cohort version that carries this entry. (#49)
 - The Pi floor is 1.5.0: `peerDependencies["@earendil-works/pi-coding-agent"]` is `>=1.5.0` and the compiled-against pi packages move to `^1.5.0` (`typebox` to `^1.4.6`). Pi 1.5.0 validates tool arguments through `@earendil-works/pi-schema`, so a structured-output rejection now reads `value.ok: expected boolean, got string` instead of `value.ok: must be boolean` and a missing argument reads `value: missing`; the recorded diagnostics follow that wording.
 
 ### Fixed
