@@ -175,7 +175,7 @@ describe("parent flag forwarding", { skip: !available ? "pi packages not availab
 		mockPi.onCall({ output: "ok" });
 		const agents = makeAgentConfigs(["echo"]);
 		const derived = deriveForwardedFlags(["/node", "/pi", "--no-autofix", "--model", "x/y"], {});
-		assert.deepEqual(derived, ["--no-autofix"]);
+		assert.deepEqual(derived, ["--no-autofix=true"]);
 
 		const result = await runSync!(tempDir, agents, "echo", "do it", {
 			runId: "fwd-derive",
@@ -184,7 +184,7 @@ describe("parent flag forwarding", { skip: !available ? "pi packages not availab
 
 		assert.equal(result.exitCode, 0);
 		const args = readCallArgs();
-		assert.ok(args.includes("--no-autofix"));
+		assert.ok(args.includes("--no-autofix=true"));
 		assert.ok(!args.includes("--model"));
 	});
 
