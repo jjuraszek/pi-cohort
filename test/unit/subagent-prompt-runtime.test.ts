@@ -55,6 +55,13 @@ afterEach(() => {
 });
 
 describe("subagent prompt runtime", () => {
+	it("registered structured_output tool is declared model-only", async () => {
+		await withStructuredRuntime(({ tool }) => {
+			assert.equal(tool.name, "structured_output");
+			assert.equal(tool.exposure, "model-only");
+		});
+	});
+
 	it("registered structured_output tool accepts valid schema output and writes the capture file", async () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-structured-runtime-"));
 		try {
