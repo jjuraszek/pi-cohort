@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [7.7.0] - 2026-11-08
 
 ### Changed
 - Register both parent and child-safe fanout `subagent` tools as `model-only`: direct calls preserve per-child progress and the transcript record, codemode scripts cannot dispatch children, and the active tool stays declared in codemode `only` mode. Pi refuses `ctx.executeTool("subagent", ...)` for every caller; pi-cohort has no in-repo caller. Upstream verification for pi-gauntlet#135 is the [exposure spec](doc/specs/2026-11-08-gh-49-subagent-model-only-exposure.md) and [offline integration test](test/integration/subagent-model-only.test.ts); its floor is the released pi-cohort version that carries this entry. (#49)
