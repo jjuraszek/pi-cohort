@@ -5,6 +5,11 @@
 ### Fixed
 - Forwarded parent flags are derived with pi's exported `parseArgs` instead of a transcribed flag table. Every forwarded flag is re-emitted as `--name=value` (booleans as `--name=true`) so it cannot consume the child's own `--session <path>`. `--model=x` is now forwarded because pi reports it as unknown. The `RECOGNIZED_PI_FLAGS` and `SHORT_ALIASES` tables and the drift tripwire test are gone. (#45)
 
+## [7.6.7] - 2026-11-07
+
+### Fixed
+- Parent flag forwarding stops at the `--` delimiter. A parent launched as `pi ... -- "<prompt>"` no longer forwards `--` and the prompt into every child, which turned the child's own flags into positional messages and left the run empty; an `--extension`/`--no-extensions` token inside the queued prompt no longer switches forwarding off. (#42)
+
 ## [7.6.6] - 2026-11-01
 
 ### Fixed
