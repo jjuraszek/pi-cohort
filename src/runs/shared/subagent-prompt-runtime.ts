@@ -133,15 +133,27 @@ function isParentOnlySubagentMessage(message: unknown): boolean {
 		&& PARENT_ONLY_CUSTOM_MESSAGE_TYPES.has(m.customType);
 }
 
+function resultDispatchedSubagent(message: unknown): boolean {
+	const m = message as { toolName?: string; nestedCalls?: { calls?: unknown; complete?: unknown }; details?: { calls?: unknown } };
+	const nested = m?.nestedCalls;
+	if (!nested || typeof nested !== "object" || !Array.isArray(nested.calls)) return false;
+	const isSubagentCall = (call: unknown) => call !== null && typeof call === "object" && (call as { name?: unknown }).name === "subagent";
+	if (nested.calls.some(isSubagentCall)) return true;
+	// Only codemode defines details.calls as an uncapped invocation history.
+	return m.toolName === "codemode" && nested.complete === false
+		&& m.details !== null && typeof m.details === "object"
+		&& Array.isArray(m.details.calls) && m.details.calls.some(isSubagentCall);
+}
+
 function isSubagentToolResultMessage(message: unknown, inheritedToolCallIds: ReadonlySet<string>): boolean {
-	const m = message as { role?: string; toolName?: string; toolCallId?: string };
-	if (m?.role !== "toolResult" || m.toolName !== "subagent") return false;
+	const m = message as { role?: string; toolCallId?: string };
+	if (m?.role !== "toolResult") return false;
 	return typeof m.toolCallId === "string" && inheritedToolCallIds.has(m.toolCallId);
 }
 
 function isInheritedSubagentToolCallBlock(block: unknown, inheritedToolCallIds: ReadonlySet<string>): boolean {
-	const b = block as { type?: string; name?: string; id?: string };
-	if (b?.type !== "toolCall" || b.name !== "subagent") return false;
+	const b = block as { type?: string; id?: string };
+	if (b?.type !== "toolCall") return false;
 	return typeof b.id === "string" && inheritedToolCallIds.has(b.id);
 }
 
@@ -184,9 +196,14 @@ export function stripParentOnlySubagentMessages(messages: unknown[], inheritedTo
 function collectSubagentToolCallIds(entries: readonly unknown[]): Set<string> {
 	const ids = new Set<string>();
 	for (const entry of entries) {
-		const e = entry as { type?: string; message?: { role?: string; content?: unknown } };
-		if (e?.type !== "message" || e.message?.role !== "assistant" || !Array.isArray(e.message.content)) continue;
-		for (const block of e.message.content) {
+		const e = entry as { type?: string; message?: { role?: string; content?: unknown; toolCallId?: unknown } };
+		if (e?.type !== "message") continue;
+		const message = e.message;
+		if (message?.role === "toolResult" && typeof message.toolCallId === "string" && resultDispatchedSubagent(message)) {
+			ids.add(message.toolCallId);
+		}
+		if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
+		for (const block of message.content) {
 			const b = block as { type?: string; name?: string; id?: string };
 			if (b?.type === "toolCall" && b.name === "subagent" && typeof b.id === "string") ids.add(b.id);
 		}
