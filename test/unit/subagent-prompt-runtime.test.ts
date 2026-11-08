@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { validateToolArguments } from "@earendil-works/pi-ai";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { SUBAGENT_FANOUT_CHILD_ENV } from "../../src/runs/shared/pi-args.ts";
 import { readStructuredOutput, STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV } from "../../src/runs/shared/structured-output.ts";
 import registerSubagentPromptRuntime, {
@@ -470,7 +471,7 @@ async function withStructuredRuntime(run: (runtime: any) => Promise<void> | void
 		const handlers = new Map<string, (event: any) => any>();
 		let tool: any;
 		const { default: register } = await import(`../../src/runs/shared/subagent-prompt-runtime.ts?reask=${++runtimeImportId}`);
-		register({ registerTool(value: any) { tool = value; }, on(name: string, handler: any) { handlers.set(name, handler); } });
+		register({ registerTool(value: ToolDefinition) { tool = value; }, on(name: string, handler: any) { handlers.set(name, handler); } });
 		const event = {
 			outcome: "completed",
 			entries: [{ type: "custom_message", customType: "report", content: "Report first", display: true }],

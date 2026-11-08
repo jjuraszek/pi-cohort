@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Schema-bound children call `structured_output` directly: the tool is `model-only` and absent from a codemode script's `tools` namespace, where nested results lose `terminate`. (#48)
+
 ## [7.6.8] - 2026-11-08
 
 ### Changed
