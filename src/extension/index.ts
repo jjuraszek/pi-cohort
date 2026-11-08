@@ -403,6 +403,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 
 	const tool: ToolDefinition<typeof SubagentParams, Details> = {
 		name: "subagent",
+		exposure: "model-only",
 		label: "Subagent",
 		description: `Delegate to subagents or manage agent definitions.
 

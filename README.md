@@ -156,6 +156,8 @@ Review and delivery workflows live in pi-gauntlet; pi-cohort ships delegation pr
 
 ## Architecture
 
+`subagent` is a direct-call tool (`exposure: "model-only"`), not reachable from codemode scripts or `ctx.executeTool`, and stays declared in codemode `only` mode.
+
 `subagent()` supports four dispatch shapes, all through the same tool:
 
 | Mode | Use it for |

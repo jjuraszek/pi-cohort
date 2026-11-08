@@ -138,6 +138,7 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 
 	const tool: ToolDefinition<typeof SubagentParams, Details> = {
 		name: "subagent",
+		exposure: "model-only",
 		label: "Subagent",
 		description: [
 			"Delegate to subagents from child-safe fanout mode.",
