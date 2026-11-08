@@ -474,7 +474,7 @@ describe("structured output settlement", () => {
 				assert.ok(envelope.message.length > 0);
 				assert.ok(!envelope.message.includes("Received arguments:"));
 				assert.deepEqual(read(), { error: validation === "parameters"
-					? "Structured output validation failed: - value.ok: must be boolean"
+					? "Structured output validation failed: - value.ok: expected boolean, got string"
 					: "Structured output validation failed: ok: must be boolean" });
 				if (process.platform !== "win32") assert.equal(fs.statSync(outputPath).mode & 0o777, 0o600);
 				assert.equal(settle(), undefined);
@@ -496,7 +496,7 @@ describe("structured output settlement", () => {
 				return diagnostic.startsWith('Validation failed for tool "structured_output":');
 			});
 			handlers.get("tool_execution_end")({ toolName: tool.name, isError: true, result: { content: [{ type: "text", text: diagnostic }] } });
-			assert.deepEqual(read(), { error: "Structured output validation failed: - value: must have required properties value" });
+			assert.deepEqual(read(), { error: "Structured output validation failed: - value: missing" });
 			assert.equal(settle(), undefined);
 			await tool.execute("valid-null", { value: null });
 			assert.deepEqual(JSON.parse(fs.readFileSync(outputPath, "utf-8")), { status: "success", value: null });

@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- The Pi floor is 1.5.0: `peerDependencies["@earendil-works/pi-coding-agent"]` is `>=1.5.0` and the compiled-against pi packages move to `^1.5.0` (`typebox` to `^1.4.6`). Pi 1.5.0 validates tool arguments through `@earendil-works/pi-schema`, so a structured-output rejection now reads `value.ok: expected boolean, got string` instead of `value.ok: must be boolean` and a missing argument reads `value: missing`; the recorded diagnostics follow that wording.
+
 ### Fixed
 - Forwarded parent flags are derived with pi's exported `parseArgs` instead of a transcribed flag table. Every forwarded flag is re-emitted as `--name=value` (booleans as `--name=true`) so it cannot consume the child's own `--session <path>`. `--model=x` is now forwarded because pi reports it as unknown. The `RECOGNIZED_PI_FLAGS` and `SHORT_ALIASES` tables and the drift tripwire test are gone. (#45)
 
