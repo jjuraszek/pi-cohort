@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [7.6.8] - 2026-11-08
 
 ### Changed
 - The Pi floor is 1.5.0: `peerDependencies["@earendil-works/pi-coding-agent"]` is `>=1.5.0` and the compiled-against pi packages move to `^1.5.0` (`typebox` to `^1.4.6`). Pi 1.5.0 validates tool arguments through `@earendil-works/pi-schema`, so a structured-output rejection now reads `value.ok: expected boolean, got string` instead of `value.ok: must be boolean` and a missing argument reads `value: missing`; the recorded diagnostics follow that wording.
