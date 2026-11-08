@@ -282,6 +282,91 @@ describe("subagent prompt runtime", () => {
 		assert.equal(contextHandler?.({ messages: [ownCall, ownResult] }), undefined);
 	});
 
+	const nestedSubagent = { id: "nested-1", name: "subagent", status: "ok" };
+	const nestedRead = { id: "nested-1", name: "read", status: "ok" };
+	const dispatchDetails = { calls: [{ ...nestedSubagent, args: "{}" }] };
+	const scriptedCases: {
+		name: string;
+		nestedCalls?: unknown;
+		details?: unknown;
+		toolName?: string;
+		strip: boolean;
+		mixed?: boolean;
+		own?: boolean;
+		dangling?: boolean;
+	}[] = [
+		{ name: "strips an inherited codemode call whose nested calls include subagent", nestedCalls: { complete: true, calls: [nestedSubagent] }, strip: true },
+		{ name: "strips an incomplete nested record when codemode details name subagent", nestedCalls: { complete: false, calls: [nestedRead] }, details: dispatchDetails, strip: true },
+		{ name: "keeps an incomplete nested record whose details name no subagent", nestedCalls: { complete: false, calls: [nestedRead] }, details: { calls: [{ ...nestedRead, args: "{}" }] }, strip: false },
+		{ name: "strips when the subagent record survived an incomplete snapshot", nestedCalls: { complete: false, calls: [nestedSubagent] }, strip: true },
+		{ name: "strips any inherited tool call whose nested calls include subagent", toolName: "custom", nestedCalls: { complete: true, calls: [nestedSubagent] }, strip: true },
+		{ name: "keeps a non-codemode incomplete record whose details name subagent", toolName: "custom", nestedCalls: { complete: false, calls: [nestedRead] }, details: dispatchDetails, strip: false },
+		{ name: "keeps an inherited codemode call whose result has no nested-call metadata", strip: false },
+		{ name: "keeps the child's own scripted dispatch", nestedCalls: { complete: true, calls: [nestedSubagent] }, own: true, strip: false },
+		{ name: "keeps a dangling scripted dispatch", dangling: true, strip: false },
+		{ name: "strips only the scripted dispatch block from a mixed assistant message", nestedCalls: { complete: true, calls: [nestedSubagent] }, mixed: true, strip: true },
+		{ name: "ignores details when the nested record is complete", nestedCalls: { complete: true, calls: [nestedRead] }, details: dispatchDetails, strip: false },
+		{ name: "ignores details when there is no nested record", details: dispatchDetails, strip: false },
+		...[
+			{ nestedCalls: "x" },
+			{ nestedCalls: null },
+			{ nestedCalls: { complete: false, calls: 1 }, details: dispatchDetails },
+			{ nestedCalls: { complete: false }, details: dispatchDetails },
+			{ nestedCalls: { complete: true, calls: [null, "subagent", {}] } },
+			{ nestedCalls: { complete: false, calls: [] } },
+			{ nestedCalls: { complete: false, calls: [] }, details: null },
+			{ nestedCalls: { complete: false, calls: [] }, details: "x" },
+			{ nestedCalls: { complete: false, calls: [] }, details: { calls: 1 } },
+			{ nestedCalls: { complete: false, calls: [] }, details: { calls: [null, "subagent", {}] } },
+		].map((metadata, index) => ({ name: `tolerates malformed nested-call metadata ${index + 1}`, ...metadata, strip: false })),
+	];
+	for (const scenario of scriptedCases) it(scenario.name, () => {
+		let sessionStart: ((event: unknown, ctx: { sessionManager: { getBranch(): unknown[] } }) => void) | undefined;
+		let contextHandler: ((event: { messages: unknown[] }) => { messages: unknown[] } | undefined) | undefined;
+		registerSubagentPromptRuntime({
+			on(event: string, handler: (payload: unknown, ctx?: unknown) => unknown) {
+				if (event === "session_start") sessionStart = handler as typeof sessionStart;
+				if (event === "context") contextHandler = handler as typeof contextHandler;
+			},
+		} as { on(event: string, handler: (payload: unknown, ctx?: unknown) => unknown): void });
+
+		assert.ok(sessionStart, "expected a session_start handler");
+		assert.ok(contextHandler, "expected a context handler");
+		const user = { role: "user", content: "Task" };
+		const toolName = scenario.toolName ?? "codemode";
+		const siblings = scenario.mixed ? [
+			{ type: "text", text: "Ordinary parent prose" },
+			{ type: "toolCall", id: "other-call", name: "read", arguments: { path: "README.md" } },
+		] : [];
+		const call = {
+			role: "assistant",
+			content: [...siblings, { type: "toolCall", id: "parent-script", name: toolName, arguments: {
+				code: scenario.strip ? 'await tools["subagent"]({ agent: "worker", task: "Inspect" })' : '// tools.subagent is only a comment',
+			} }],
+		};
+		const result = {
+			role: "toolResult",
+			toolCallId: "parent-script",
+			toolName,
+			content: [{ type: "text", text: "Sibling report and unrelated script output" }],
+			...(scenario.nestedCalls === undefined ? {} : { nestedCalls: scenario.nestedCalls }),
+			...(scenario.details === undefined ? {} : { details: scenario.details }),
+			isError: false,
+			timestamp: 1,
+		};
+		const messages = [user, call, ...(scenario.dangling ? [] : [result])];
+		const branch = (scenario.own ? [user] : messages).map((message) => ({ type: "message", message }));
+		sessionStart({ type: "session_start", reason: "fork" }, {
+			sessionManager: { getBranch: () => branch },
+		});
+		if (scenario.own) branch.push({ type: "message", message: call }, { type: "message", message: result });
+
+		const expected = scenario.strip ? { messages: [user, ...(scenario.mixed ? [{ ...call, content: siblings }] : [])] } : undefined;
+		assert.deepEqual(contextHandler({ messages }), expected);
+		assert.deepEqual(contextHandler({ messages }), expected, "the capture boundary stays fixed across turns");
+		assert.equal(messages[1], call, "filtering must not mutate the input");
+	});
+
 	it("rewrites the final child-visible prompt through before_agent_start", async () => {
 		let beforeAgentStart: ((event: { systemPrompt: string }) => Promise<{ systemPrompt: string } | undefined>) | undefined;
 		registerSubagentPromptRuntime({
