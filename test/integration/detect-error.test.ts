@@ -22,13 +22,14 @@ try {
 /**
  * Helper to create a tool result message (success or error).
  */
-function toolResult(toolName: string, text: string, isError = false): Record<string, unknown> {
+function toolResult(toolName: string, text: string, isError = false, details?: unknown): Record<string, unknown> {
 	return {
 		role: "toolResult",
 		toolCallId: `call-${Math.random().toString(36).slice(2, 8)}`,
 		toolName,
 		content: [{ type: "text", text }],
 		isError,
+		details,
 	};
 }
 
@@ -224,6 +225,15 @@ describe("detectSubagentError", { skip: !available ? "utils not importable" : un
 
 	const validationError = () => toolResult("structured_output", "Structured output validation failed: root: Expected string", true);
 	const structuredSuccess = () => toolResult("structured_output", "Structured output captured");
+	const scriptDiagnostic = "Script error:\nTypeError: tools.structured_output does not exist.\n\nNo tool calls were made.";
+	const scriptRejection = {
+		...toolResult("codemode", "Script failed\n", true, { calls: [] }),
+		content: [{ type: "text", text: "Script failed\n" }, { type: "text", text: scriptDiagnostic }],
+	};
+	const withDiagnostic = (text: string) => ({
+		...scriptRejection,
+		content: [scriptRejection.content[0], { type: "text", text }],
+	});
 	const correctionCases = [
 		{ name: "schema rejection then success", messages: [validationError(), structuredSuccess()], errorType: undefined },
 		{ name: "parameter rejection then success", messages: [toolResult("structured_output", 'Validation failed for tool "structured_output": value: Required', true), structuredSuccess()], errorType: undefined },
@@ -240,6 +250,73 @@ describe("detectSubagentError", { skip: !available ? "utils not importable" : un
 		{ name: "arbitrary failure is not validation", messages: [toolResult("structured_output", "Failed to write capture", true), structuredSuccess()], errorType: "structured_output" },
 		{ name: "another tool's validation is not superseded", messages: [toolResult("read", "Structured output validation failed: root: Expected string", true), structuredSuccess()], errorType: "read" },
 	];
+	correctionCases.push(
+		{ name: "script rejection then direct success", messages: [scriptRejection, structuredSuccess()], errorType: undefined },
+		{ name: "repeated script rejections then success", messages: [scriptRejection, scriptRejection, structuredSuccess()], errorType: undefined },
+		{ name: "script and validation rejections then success", messages: [scriptRejection, validationError(), structuredSuccess()], errorType: undefined },
+		{ name: "script rejection without success", messages: [scriptRejection], errorType: "codemode" },
+		{ name: "script rejection after success", messages: [structuredSuccess(), scriptRejection], errorType: "codemode" },
+		{ name: "script rejection then assistant call only", messages: [scriptRejection, assistantToolCall("structured_output")], errorType: "codemode" },
+		{ name: "script rejection then unrelated success", messages: [scriptRejection, toolResult("read", "ok")], errorType: "codemode" },
+		{ name: "another tool's namespace rejection", messages: [{ ...scriptRejection, toolName: "read" }, structuredSuccess()], errorType: "read" },
+		{ name: "script rejection before text boundary", messages: [scriptRejection, assistantMsg("Recovered")], errorType: undefined },
+		{ name: "success before text boundary does not recover later rejection", messages: [structuredSuccess(), assistantMsg("Continuing"), scriptRejection], errorType: "codemode" },
+	);
+	for (const [name, diagnostic] of [
+		["no optional hints", "Script error:\nTypeError: tools.structured_output does not exist"],
+		["optional hints", `${scriptDiagnostic}\nDid you mean another tool?\nAvailable tools: read`],
+		["last diagnostic qualifies", `Script error:\nError: printed text\n${scriptDiagnostic}`],
+	]) {
+		correctionCases.push({ name, messages: [withDiagnostic(diagnostic), structuredSuccess()], errorType: undefined });
+	}
+	for (const [name, diagnostic] of [
+		["unrelated codemode error", "Script error:\nTypeError: tools.read does not exist"],
+		["printed phrase without marker", "TypeError: tools.structured_output does not exist"],
+		["printed phrase before different terminal error", `${scriptDiagnostic}\nScript error:\nError: boom`],
+		["phrase not at exception head", "Script error:\nError: TypeError: tools.structured_output does not exist"],
+		["phrase on later diagnostic line", "Script error:\nError: boom\nTypeError: tools.structured_output does not exist"],
+		["incomplete diagnostic", "Script error:\nTypeError: tools.structured_output does not"],
+		["missing exception head", "Script error:\n"],
+		["unfamiliar exception format", "Script error:\nReferenceError: tools.structured_output does not exist"],
+		["unfamiliar marker format", "Script error: TypeError: tools.structured_output does not exist"],
+		["truncation warning with intact tail", `Warning: truncated output\n${scriptDiagnostic}`],
+	]) {
+		correctionCases.push({ name, messages: [withDiagnostic(diagnostic), structuredSuccess()], errorType: "codemode" });
+	}
+	for (const [name, details] of [
+		["missing metadata", undefined],
+		["null metadata", null],
+		["missing calls", {}],
+		["null calls", { calls: null }],
+		["string calls", { calls: "[]" }],
+		["array-like calls", { calls: { length: 0 } }],
+		["nested work before rejection", { calls: [{ toolName: "read", isError: false }] }],
+	] as const) {
+		correctionCases.push({ name, messages: [{ ...scriptRejection, details }, structuredSuccess()], errorType: "codemode" });
+	}
+	for (const fullOutputPath of [undefined, "/tmp/full-output.txt"]) {
+		correctionCases.push({
+			name: `truncation warning in separate text block with fullOutputPath ${fullOutputPath}`,
+			messages: [{ ...scriptRejection, details: { calls: [], fullOutputPath }, content: [
+				...scriptRejection.content, { type: "text", text: "Warning: truncated output" },
+			] }, structuredSuccess()],
+			errorType: "codemode",
+		});
+	}
+	for (const failure of [
+		toolResult("read", "read failed", true),
+		toolResult("bash", "process exited with code 2"),
+		toolResult("structured_output", "Failed to write capture", true),
+		withDiagnostic("Script error:\nError: unrelated failure"),
+	]) {
+		for (const [position, messages] of [
+			["before rejection", [failure, scriptRejection, structuredSuccess()]],
+			["between rejection and success", [scriptRejection, failure, structuredSuccess()]],
+			["after submission", [scriptRejection, structuredSuccess(), failure]],
+		] as const) {
+			correctionCases.push({ name: `${failure.toolName} failure ${position}`, messages: [...messages], errorType: failure.toolName as string });
+		}
+	}
 	for (const { name, messages, errorType } of correctionCases) {
 		it(`structured-output correction: ${name}`, () => {
 			const result = detectSubagentError(messages);

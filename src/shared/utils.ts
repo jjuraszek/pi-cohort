@@ -313,6 +313,15 @@ export function detectSubagentError(messages: Message[]): ErrorInfo {
 			const details = text && "text" in text ? text.text : undefined;
 			if (toolName === STRUCTURED_OUTPUT_TOOL_NAME && hasLaterStructuredOutputSuccess
 				&& getStructuredOutputValidationDiagnostic(details) !== undefined) continue;
+			if (toolName === "codemode" && hasLaterStructuredOutputSuccess
+				&& typeof msg.details === "object" && msg.details !== null
+				&& "calls" in msg.details && Array.isArray(msg.details.calls) && msg.details.calls.length === 0) {
+				const output = msg.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n");
+				const marker = "Script error:\n";
+				const diagnosticIndex = output.lastIndexOf(marker);
+				if (!output.includes("Warning: truncated output") && diagnosticIndex !== -1
+					&& output.slice(diagnosticIndex + marker.length).startsWith("TypeError: tools.structured_output does not exist")) continue;
+			}
 			const exitMatch = details?.match(/exit(?:ed)?\s*(?:with\s*)?(?:code|status)?\s*[:\s]?\s*(\d+)/i);
 			return {
 				hasError: true,

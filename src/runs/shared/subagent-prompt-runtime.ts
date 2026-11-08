@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ToolExposure } from "@earendil-works/pi-coding-agent";
 import { SUBAGENT_FANOUT_CHILD_ENV } from "./pi-args.ts";
 import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV, STRUCTURED_OUTPUT_TOOL_NAME, getStructuredOutputValidationDiagnostic, validateStructuredOutputValue } from "./structured-output.ts";
 import type { JsonSchemaObject } from "../../shared/types.ts";
@@ -229,6 +229,7 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI): void {
 		const registerTool = pi.registerTool as unknown as (tool: {
 			name: string;
 			label: string;
+			exposure?: ToolExposure;
 			description: string;
 			parameters: unknown;
 			execute: (_id: string, params: { value: unknown }) => Promise<unknown>;
@@ -236,6 +237,7 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI): void {
 		registerTool({
 			name: STRUCTURED_OUTPUT_TOOL_NAME,
 			label: "Structured Output",
+			exposure: "model-only",
 			description: "Submit the required final structured output for this subagent step. This terminates the step.",
 			parameters: parameters as never,
 			async execute(_id: string, params: { value: unknown }) {
