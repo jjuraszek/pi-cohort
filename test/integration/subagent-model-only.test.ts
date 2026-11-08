@@ -34,7 +34,7 @@ if (!caseMode) {
 		for (const mode of ["on", "only"] as const) {
 			it(`preserves direct dispatch in codemode ${mode} mode`, () => {
 				execFileSync(process.execPath, [
-					"--import", fileURLToPath(new URL("../support/register-loader.mjs", import.meta.url)),
+					"--import", new URL("../support/register-loader.mjs", import.meta.url).href,
 					fileURLToPath(import.meta.url), mode,
 				], { env: { ...process.env, PI_OFFLINE: "1" }, stdio: "pipe" });
 			});
