@@ -282,6 +282,40 @@ describe("subagent prompt runtime", () => {
 		assert.equal(contextHandler?.({ messages: [ownCall, ownResult] }), undefined);
 	});
 
+	it("strips an inherited codemode call whose nested calls include subagent", () => {
+		let sessionStart: ((event: unknown, ctx: { sessionManager: { getBranch(): unknown[] } }) => void) | undefined;
+		let contextHandler: ((event: { messages: unknown[] }) => { messages: unknown[] } | undefined) | undefined;
+		registerSubagentPromptRuntime({
+			on(event: string, handler: (payload: unknown, ctx?: unknown) => unknown) {
+				if (event === "session_start") sessionStart = handler as typeof sessionStart;
+				if (event === "context") contextHandler = handler as typeof contextHandler;
+			},
+		} as { on(event: string, handler: (payload: unknown, ctx?: unknown) => unknown): void });
+
+		assert.ok(sessionStart, "expected a session_start handler");
+		assert.ok(contextHandler, "expected a context handler");
+		const user = { role: "user", content: "Task" };
+		const call = {
+			role: "assistant",
+			content: [{ type: "toolCall", id: "parent-script", name: "codemode", arguments: { code: 'await tools.subagent({ agent: "worker", task: "Inspect" })' } }],
+		};
+		const result = {
+			role: "toolResult",
+			toolCallId: "parent-script",
+			toolName: "codemode",
+			content: [{ type: "text", text: "Sibling report" }],
+			nestedCalls: { complete: true, calls: [{ id: "nested-1", name: "subagent", status: "ok" }] },
+			isError: false,
+			timestamp: 1,
+		};
+		const messages = [user, call, result];
+		sessionStart({ type: "session_start", reason: "fork" }, {
+			sessionManager: { getBranch: () => messages.map((message) => ({ type: "message", message })) },
+		});
+
+		assert.deepEqual(contextHandler({ messages }), { messages: [user] });
+	});
+
 	it("rewrites the final child-visible prompt through before_agent_start", async () => {
 		let beforeAgentStart: ((event: { systemPrompt: string }) => Promise<{ systemPrompt: string } | undefined>) | undefined;
 		registerSubagentPromptRuntime({
