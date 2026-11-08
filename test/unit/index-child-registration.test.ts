@@ -107,6 +107,7 @@ describe("subagent extension child mode", () => {
 			const clarifyChain = registeredTool.renderCall({ chain: [{ agent: "worker" }, { agent: "reviewer" }], async: true, clarify: true }, theme).text;
 			if (!asyncChain.includes("[async]")) throw new Error("expected async chain badge, got " + asyncChain);
 			if (clarifyChain.includes("[async]")) throw new Error("unexpected clarify async badge: " + clarifyChain);
+			if (registeredTool.exposure !== "model-only") throw new Error("parent subagent exposure: expected model-only, got " + registeredTool.exposure);
 		`;
 
 		execFileSync(
@@ -219,6 +220,7 @@ describe("subagent extension child mode", () => {
 			if (!create.isError) throw new Error("create should be blocked");
 			const text = create.content?.[0]?.text ?? "";
 			if (!text.includes("not available from child-safe subagent fanout mode")) throw new Error("unexpected create error: " + text);
+			if (registeredTool.exposure !== "model-only") throw new Error("fanout subagent exposure: expected model-only, got " + registeredTool.exposure);
 		`;
 
 		execFileSync(
