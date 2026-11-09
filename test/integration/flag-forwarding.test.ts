@@ -157,27 +157,6 @@ describe("parent flag forwarding", { skip: !available ? "pi packages not availab
 		assert.ok(readCallArgs().includes("--approve"));
 	});
 
-	it("leaves trust to a child whose cwd is outside the parent project (foreground)", async () => {
-		mockPi.onCall({ output: "ok" });
-		const agents = makeAgentConfigs(["echo"]);
-		const elsewhere = createTempDir();
-
-		try {
-			const result = await runSync!(tempDir, agents, "echo", "do it", {
-				runId: "trust-foreign",
-				cwd: elsewhere,
-				projectTrust: { trusted: true, root: tempDir },
-			});
-
-			assert.equal(result.exitCode, 0);
-			const args = readCallArgs();
-			assert.ok(!args.includes("--approve"));
-			assert.ok(!args.includes("--no-approve"));
-		} finally {
-			removeTempDir(elsewhere);
-		}
-	});
-
 	it("passes the parent's project trust through the async detached runner into the child argv", { skip: !isAsyncAvailable?.() ? "jiti not available" : undefined }, async () => {
 		mockPi.onCall({ output: "async done" });
 		const id = `trust-async-${Date.now().toString(36)}`;

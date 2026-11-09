@@ -517,24 +517,17 @@ describe("buildPiArgs project trust", () => {
 	const root = process.cwd();
 	const base = { baseArgs: ["--mode", "json", "-p"], task: "hi", sessionEnabled: false, inheritProjectContext: false, inheritSkills: false, cwd: root };
 
-	it("passes --approve when the parent project is trusted", () => {
-		const { args } = buildPiArgs({ ...base, projectTrust: { trusted: true, root } });
-		assert.ok(args.includes("--approve"));
-		assert.ok(!args.includes("--no-approve"));
-		assert.ok(args.indexOf("--approve") < args.length - 1, "the task stays last");
-	});
-
-	it("passes --no-approve when the parent project is not trusted", () => {
-		const { args } = buildPiArgs({ ...base, projectTrust: { trusted: false, root } });
-		assert.ok(args.includes("--no-approve"));
-		assert.ok(!args.includes("--approve"));
-	});
-
-	it("leaves the decision to the child when trust is unknown", () => {
-		const { args } = buildPiArgs({ ...base });
-		assert.ok(!args.includes("--approve"));
-		assert.ok(!args.includes("--no-approve"));
-	});
+	for (const [label, projectTrust, flag] of [
+		["trusted", { trusted: true, root }, "--approve"],
+		["untrusted", { trusted: false, root }, "--no-approve"],
+		["unknown", undefined, undefined],
+	] as const) {
+		it(`passes ${flag ?? "no trust flag"} when the parent's trust is ${label}`, () => {
+			const { args } = buildPiArgs({ ...base, projectTrust });
+			assert.deepEqual(args.filter((arg) => arg === "--approve" || arg === "--no-approve"), flag ? [flag] : []);
+			assert.equal(args.at(-1), "Task: hi", "the task stays last");
+		});
+	}
 
 	it("keeps the trust flag when the agent restricts extensions", () => {
 		const { args } = buildPiArgs({ ...base, projectTrust: { trusted: true, root }, extensions: [] });
@@ -548,9 +541,10 @@ describe("buildPiArgs project trust", () => {
 		assert.ok(!args.includes("--no-approve"));
 	});
 
-	it("applies the decision to a child in a subdirectory of the project", () => {
-		const { args } = buildPiArgs({ ...base, projectTrust: { trusted: false, root }, cwd: path.join(root, "src") });
-		assert.ok(args.includes("--no-approve"));
+	it("leaves the decision to a child in a subdirectory, which may hold a saved decision of its own", () => {
+		const { args } = buildPiArgs({ ...base, projectTrust: { trusted: true, root }, cwd: path.join(root, "src") });
+		assert.ok(!args.includes("--approve"));
+		assert.ok(!args.includes("--no-approve"));
 	});
 });
 
