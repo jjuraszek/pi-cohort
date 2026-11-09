@@ -266,6 +266,12 @@ describe("detectSubagentError", { skip: !available ? "utils not importable" : un
 		["no optional hints", "Script error:\nTypeError: tools.structured_output does not exist"],
 		["optional hints", `${scriptDiagnostic}\nDid you mean another tool?\nAvailable tools: read`],
 		["last diagnostic qualifies", `Script error:\nError: printed text\n${scriptDiagnostic}`],
+		["recovers alternate verb", "Script error:\nTypeError: tools.structured_output is not available"],
+		["recovers without an error class", "Script error:\ntools.structured_output does not exist"],
+		["recovers same-line suggestion", "Script error:\nTypeError: tools.output does not exist. Did you mean tools.structured_output?"],
+		["phrase not at exception head", "Script error:\nError: TypeError: tools.structured_output does not exist"],
+		["incomplete diagnostic", "Script error:\nTypeError: tools.structured_output does not"],
+		["unfamiliar exception format", "Script error:\nReferenceError: tools.structured_output does not exist"],
 	]) {
 		correctionCases.push({ name, messages: [withDiagnostic(diagnostic), structuredSuccess()], errorType: undefined });
 	}
@@ -273,11 +279,10 @@ describe("detectSubagentError", { skip: !available ? "utils not importable" : un
 		["unrelated codemode error", "Script error:\nTypeError: tools.read does not exist"],
 		["printed phrase without marker", "TypeError: tools.structured_output does not exist"],
 		["printed phrase before different terminal error", `${scriptDiagnostic}\nScript error:\nError: boom`],
-		["phrase not at exception head", "Script error:\nError: TypeError: tools.structured_output does not exist"],
 		["phrase on later diagnostic line", "Script error:\nError: boom\nTypeError: tools.structured_output does not exist"],
-		["incomplete diagnostic", "Script error:\nTypeError: tools.structured_output does not"],
 		["missing exception head", "Script error:\n"],
-		["unfamiliar exception format", "Script error:\nReferenceError: tools.structured_output does not exist"],
+		["bounded token suffix", "Script error:\nTypeError: tools.structured_outputs does not exist"],
+		["bounded token prefix", "Script error:\nTypeError: mytools.structured_output does not exist"],
 		["unfamiliar marker format", "Script error: TypeError: tools.structured_output does not exist"],
 		["truncation warning with intact tail", `Warning: truncated output\n${scriptDiagnostic}`],
 	]) {
