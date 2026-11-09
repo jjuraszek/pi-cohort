@@ -211,6 +211,26 @@ describe("runExternalSingleAttempt", () => {
 		assert.ok(extensionArgs.some((arg) => arg.endsWith(REPORTING_EXTENSION_SUFFIX)));
 	});
 
+	it("carries the parent's project trust into the backend launch argv", async () => {
+		const { owner, calls } = makeOwner(() => baseAttemptResult());
+		const tempDir = createTempDir();
+		try {
+			await runExternalSingleAttempt({
+				owner,
+				attemptId: "a1",
+				runtimeCwd: tempDir,
+				agent: makeAgent("worker"),
+				model: undefined,
+				task: "Task",
+				options: { runId: "run-1", sessionFile: SESSION_FILE, cwd: tempDir, projectTrust: { trusted: true, root: tempDir } },
+				shared: { sessionEnabled: true, systemPrompt: "", attemptNotes: [] },
+			});
+			assert.ok(calls[0].args.includes("--approve"));
+		} finally {
+			removeTempDir(tempDir);
+		}
+	});
+
 	it("keeps the API key/token sentinel out of argv, error, and result metadata while still passing it through env", async () => {
 		const { owner, calls } = makeOwner((request) => {
 			assert.equal(request.environment.SUPER_SECRET_TOKEN, SECRET_SENTINEL);

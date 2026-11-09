@@ -49,6 +49,23 @@ describe("sharesProject", () => {
 		assert.ok(!sharesProject(repo, elsewhere));
 	});
 
+	it("is false for a separately initialized repository nested under the root", () => {
+		const nested = path.join(repo, "vendor", "foreign");
+		fs.mkdirSync(nested, { recursive: true });
+		try {
+			git(nested, "init", "-q");
+			assert.ok(!sharesProject(nested, repo));
+		} finally {
+			fs.rmSync(path.join(repo, "vendor"), { recursive: true, force: true });
+		}
+	});
+
+	it("is true outside git for a child whose name starts with two dots", () => {
+		const child = path.join(elsewhere, "..cache");
+		fs.mkdirSync(child);
+		assert.ok(sharesProject(child, elsewhere));
+	});
+
 	it("is false for a sibling whose name merely starts with the root", () => {
 		const sibling = repo + "-other";
 		fs.mkdirSync(sibling);

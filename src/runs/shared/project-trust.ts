@@ -24,12 +24,14 @@ function gitCommonDir(cwd: string): string | undefined {
 	return common ? realpathOrResolve(path.resolve(cwd, common)) : undefined;
 }
 
-/** Whether a child cwd runs the same project as root: inside its tree, or a git worktree of the same repository. */
+/** Whether a child cwd runs the same project as root: the same git repository (any of its worktrees), or, outside git, inside root's tree. */
 export function sharesProject(childCwd: string, root: string): boolean {
 	const child = realpathOrResolve(childCwd);
 	const base = realpathOrResolve(root);
-	const relative = path.relative(base, child);
-	if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) return true;
+	// A repository initialized inside root's tree is a separate project.
 	const childRepo = gitCommonDir(child);
-	return childRepo !== undefined && childRepo === gitCommonDir(base);
+	if (childRepo !== gitCommonDir(base)) return false;
+	if (childRepo !== undefined) return true;
+	const relative = path.relative(base, child);
+	return relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative);
 }

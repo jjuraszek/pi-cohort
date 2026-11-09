@@ -601,6 +601,29 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 		);
 	});
 
+	it("sequential, parallel, and dynamic fanout chain steps carry the parent's project trust into the child argv", async () => {
+		mockPi.onCall({ output: "targets", structuredOutput: { items: [{ path: "src/a.ts" }] } });
+		mockPi.onCall({ output: "Parallel ran" });
+		mockPi.onCall({ output: "Fanout ran" });
+		const agents = [makeAgent("scout"), makeAgent("pa"), makeAgent("reviewer")];
+
+		const result = await executeChain(
+			makeChainParams(
+				[
+					{ agent: "scout", task: "Return targets", as: "targets", outputSchema: { type: "object" } },
+					{ parallel: [{ agent: "pa", task: "a" }] },
+					{ expand: { from: { output: "targets", path: "/items" }, key: "/path", maxItems: 1 }, parallel: { agent: "reviewer", task: "Review {item.path}" }, collect: { as: "reviews" } },
+				],
+				agents,
+				{ projectTrust: { trusted: true, root: tempDir } },
+			),
+		);
+
+		assert.ok(!result.isError, `chain should succeed: ${JSON.stringify(result.content)}`);
+		assert.equal(mockPi.callCount(), 3);
+		for (const index of [0, 1, 2]) assert.ok(readCallArgs(index).includes("--approve"), `call ${index} lacks --approve`);
+	});
+
 	it("suppresses progress for {task} chain templates when the top-level task is review-only", async () => {
 		mockPi.onCall({ output: "Review done" });
 		const agents = [makeAgent("reviewer", { defaultProgress: true })];

@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
-- Children in the parent's project (its directory tree or a git worktree of the same repository) inherit the parent's project trust (`--approve` / `--no-approve`), so a child in a fresh worktree no longer blocks on the trust prompt under an external execution backend or silently drops project settings, packages, and skills under the native one. A child pointed at another project still decides for itself. ([doc/configuration.md](doc/configuration.md#project-trust))
+- Children in the parent's project (the same git repository, including its worktrees, or outside git the parent's directory tree) inherit the parent's project trust (`--approve` / `--no-approve`), so a child in a fresh worktree no longer blocks on the trust prompt under an external execution backend or silently drops project settings, packages, and skills under the native one. A child pointed at another project, including a repository initialized inside the parent's tree, still decides for itself. ([doc/configuration.md](doc/configuration.md#project-trust))
 
 ## [7.7.1] - 2026-11-09
 
