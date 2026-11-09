@@ -277,6 +277,10 @@ export function compactForegroundDetails(details: Details): Details {
 	};
 }
 
+const structuredOutputToolToken = new RegExp(
+	`(?:^|[^A-Za-z0-9_$])tools\\.${STRUCTURED_OUTPUT_TOOL_NAME.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9_$])`,
+);
+
 /**
  * Detect errors in subagent execution from messages (only errors with no subsequent success)
  */
@@ -320,7 +324,7 @@ export function detectSubagentError(messages: Message[]): ErrorInfo {
 				const marker = "Script error:\n";
 				const diagnosticIndex = output.lastIndexOf(marker);
 				if (!output.includes("Warning: truncated output") && diagnosticIndex !== -1
-					&& output.slice(diagnosticIndex + marker.length).startsWith("TypeError: tools.structured_output does not exist")) continue;
+					&& structuredOutputToolToken.test(output.slice(diagnosticIndex + marker.length).split("\n", 1)[0])) continue;
 			}
 			const exitMatch = details?.match(/exit(?:ed)?\s*(?:with\s*)?(?:code|status)?\s*[:\s]?\s*(\d+)/i);
 			return {

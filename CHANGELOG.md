@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Recovery of a rejected scripted `structured_output` call now keys on the tool name in the first line of the script's terminal diagnostic rather than pi's exact `TypeError: ... does not exist` text. Codemode errors whose first diagnostic line lacks that token still fail. (#53)
+
 ## [7.7.0] - 2026-11-08
 
 ### Changed
