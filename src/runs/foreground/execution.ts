@@ -101,8 +101,9 @@ function failedResult(agent: string, task: string, error: string): SingleResult 
 	return { agent, task, exitCode: 1, messages: [], usage: emptyUsage(), error };
 }
 
-function safeExternalFailure(phase: "startup" | "attempt" | "finish" | "cleanup"): string {
-	return `External execution ${phase} failed`;
+function safeExternalFailure(phase: "startup" | "attempt" | "finish" | "cleanup", error?: unknown): string {
+	const code = externalExecutionDiagnosticCode(error);
+	return `External execution ${phase} failed${code ? ` (${code})` : ""}`;
 }
 
 function sumUsage(target: Usage, source: Usage): void {
@@ -818,7 +819,7 @@ export async function runSync(
 						interrupted: true,
 					};
 				} else {
-					result = failedResult(agentName, task, runtimeFailure ? (error as Error).message : safeExternalFailure("attempt"));
+					result = failedResult(agentName, task, runtimeFailure ? (error as Error).message : safeExternalFailure("attempt", error));
 				}
 			}
 		} else {

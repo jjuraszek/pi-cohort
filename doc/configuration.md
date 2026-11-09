@@ -160,7 +160,7 @@ Accepts:
 - `"native"`: always select native execution, bypassing all registered backends.
 - A registered backend name (e.g. `"cmux"`, `"tmux"`): select that specific backend; fail loudly if unavailable or if detection throws.
 
-The nearest defined `subagents.executionBackend` wins through the settings ladder; when unset, the consumer uses `auto`. Blank, whitespace-only, and invalid-type values fail loudly. Unknown backend names fail at selection time. Diagnostics never echo adapter-provided error text or detection reasons.
+The nearest defined `subagents.executionBackend` wins through the settings ladder; when unset, the consumer uses `auto`. Blank, whitespace-only, and invalid-type values fail loudly. Unknown backend names fail at selection time. Diagnostics never echo adapter-provided error text or detection reasons; an external failure reads `External execution <phase> failed`, with a short code appended when pi-cohort itself detected the cause: `result_missing` (the child exited without a durable result) or `session_file_untrusted` (the child's session file is a symlink, not a regular file, or readable by group/other; forked session files are set owner-only before launch).
 
 **Inspiration:** backend selection adapts vim-dispatch's ordered first-match handler pattern ([`plugin/dispatch.vim#L84-L97`](https://github.com/tpope/vim-dispatch/blob/a2ff28abdb2d89725192db5b8562977d392a4d3f/plugin/dispatch.vim#L84-L97) defines ordered handlers; [`autoload/dispatch.vim#L408-L421`](https://github.com/tpope/vim-dispatch/blob/a2ff28abdb2d89725192db5b8562977d392a4d3f/autoload/dispatch.vim#L408-L421) iterates first-match-wins) without editor-specific lifecycle coupling.
 
