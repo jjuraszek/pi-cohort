@@ -1788,7 +1788,8 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			fs.chmodSync(hook, 0o755);
 			fs.mkdirSync(path.join(repo, ".pi"));
 			fs.writeFileSync(path.join(repo, ".pi/settings.json"), JSON.stringify({ subagents: {
-				worktreeTeardownHook: mode === "empty" ? "" : "./teardown.cjs", worktreeTeardownHookTimeoutMs: mode === "timeout" ? 500 : 5000,
+				worktreeTeardownHook: mode === "empty" ? "" : "./teardown.cjs", // 500ms lost the race to node startup under full-suite load; 2s still proves the kill path
+				worktreeTeardownHookTimeoutMs: mode === "timeout" ? 2000 : 5000,
 			} }));
 			git(repo, ["add", "."]);
 			git(repo, ["commit", "-m", "Configure project hooks"]);
