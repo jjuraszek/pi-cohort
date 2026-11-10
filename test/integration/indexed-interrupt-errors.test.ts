@@ -178,3 +178,23 @@ it("a foreground control without a callback owns the indexed error instead of fa
 		assert.equal(fs.existsSync(path.join(cwd, "interrupt-request-0.json")), false);
 	} finally { removeTempDir(cwd); }
 });
+
+for (const settled of ["complete", "paused"] as const) {
+	it(`interrupt with index on a ${settled} async run names the index and sends nothing`, async (t) => {
+		const { cwd, state, execute } = fixture();
+		try {
+			const id = `settled-async-${settled}`;
+			state.asyncJobs.set(id, { asyncId: id, asyncDir: cwd, status: settled });
+			fs.writeFileSync(path.join(cwd, "status.json"), JSON.stringify({ state: settled, pid: process.pid, steps: [{ status: settled }] }));
+			const kill = t.mock.method(process, "kill", () => true);
+			const result = await execute({ action: "interrupt", id, index: 0 });
+			assert.equal(result.isError, true);
+			assert.equal(result.content[0].text, `Async run ${id} has no running child at index 0.`);
+			assert.equal(kill.mock.callCount(), 0);
+			assert.equal(fs.readdirSync(cwd).some((name) => name.startsWith("interrupt-request-")), false);
+			const whole = await execute({ action: "interrupt", id });
+			assert.equal(whole.content[0].text, `No running async run with an interrupt-capable pid was found for '${id}'.`);
+			assert.equal(kill.mock.callCount(), 0);
+		} finally { removeTempDir(cwd); }
+	});
+}

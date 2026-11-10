@@ -421,16 +421,17 @@ function interruptAsyncRun(state: SubagentState, runId: string | undefined, inde
 		};
 	}
 	const status = readStatus(target.asyncDir);
-	if (!status || status.state !== "running" || typeof status.pid !== "number") {
+	const interruptable = status?.state === "running" && typeof status.pid === "number";
+	if (index !== undefined && (!interruptable || status.steps[index]?.status !== "running")) {
 		return {
-			content: [{ type: "text", text: `No running async run with an interrupt-capable pid was found for '${runId ?? "current"}'.` }],
+			content: [{ type: "text", text: `Async run ${target.asyncId} has no running child at index ${index}.` }],
 			isError: true,
 			details: { mode: "management", results: [] },
 		};
 	}
-	if (index !== undefined && status.steps[index]?.status !== "running") {
+	if (!status || status.state !== "running" || typeof status.pid !== "number") {
 		return {
-			content: [{ type: "text", text: `Async run ${target.asyncId} has no running child at index ${index}.` }],
+			content: [{ type: "text", text: `No running async run with an interrupt-capable pid was found for '${runId ?? "current"}'.` }],
 			isError: true,
 			details: { mode: "management", results: [] },
 		};
