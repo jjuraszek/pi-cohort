@@ -126,6 +126,29 @@ for (const nestedState of ["running", "complete", "failed", "paused"] as const) 
 	});
 }
 
+it("a completed foreground run owns the indexed error without signaling an unrelated async job", async (t) => {
+	const { mock, cwd, state, execute } = fixture();
+	mock.install();
+	try {
+		mock.onCall({ output: "Completed foreground child" });
+		await execute({ agent: "echo", task: "Finish foreground", async: false, clarify: false });
+		const [id] = state.foregroundRuns.keys();
+		assert.ok(id);
+		assert.equal(state.foregroundControls.has(id), false);
+		state.asyncJobs.set("other-async", { asyncId: "other-async", asyncDir: cwd, status: "running" });
+		fs.writeFileSync(path.join(cwd, "status.json"), JSON.stringify({ state: "running", pid: process.pid, steps: [{ status: "running" }] }));
+		const kill = t.mock.method(process, "kill", () => true);
+		const result = await execute({ action: "interrupt", id, index: 0 });
+		assert.equal(kill.mock.callCount(), 0, "completed foreground requests must not signal another run");
+		assert.equal(fs.existsSync(path.join(cwd, "interrupt-request-0.json")), false);
+		assert.equal(result.isError, true);
+		assert.equal(result.content[0].text, `Foreground run ${id} has no running child at index 0.`);
+	} finally {
+		mock.uninstall();
+		removeTempDir(cwd);
+	}
+});
+
 it("a foreground control without a callback owns the indexed error instead of falling through to async", async (t) => {
 	const { cwd, state, execute } = fixture();
 	try {

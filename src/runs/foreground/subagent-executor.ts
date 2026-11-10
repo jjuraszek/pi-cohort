@@ -2268,7 +2268,14 @@ export function createSubagentExecutor(services: ExecutorDeps): {
 					return interruptNestedRun(resolved);
 				}
 				const foreground = getForegroundControl(deps.state, resolved?.kind === "foreground" ? resolved.id : targetRunId);
-				if (foreground && (params.index !== undefined || foreground.interrupt)) {
+				if (params.index !== undefined && !foreground && targetRunId && deps.state.foregroundRuns?.has(targetRunId)) {
+					return {
+						content: [{ type: "text", text: `Foreground run ${targetRunId} has no running child at index ${params.index}.` }],
+						isError: true,
+						details: { mode: "management", results: [] },
+					};
+				}
+				if (foreground && (params.index !== undefined || (foreground.lastAssigned !== undefined && foreground.interrupt))) {
 					const interrupted = foreground.interrupt?.(params.index);
 					if (interrupted) {
 						foreground.updatedAt = Date.now();

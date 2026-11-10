@@ -15,7 +15,7 @@ async function waitFor(predicate: () => boolean, message: string, timeout = 75_0
 	}
 }
 
-for (const scenario of ["parallel", "static", "dynamic", "single", "early", "fallback", "overlap", "mixed", "later-target", "later-whole", "empty", "last-settled", "whole"]) {
+for (const scenario of ["parallel", "static", "dynamic", "single", "early", "fallback", "overlap", "mixed", "later-target", "later-whole", "empty", "last-settled", "whole", "structured-static", "structured-dynamic", "mutation", "hidden-error"]) {
 it(`async stop by index pauses only that child (${scenario})`, async () => {
 	const mock = createMockPi();
 	const cwd = createTempDir();
@@ -24,7 +24,10 @@ it(`async stop by index pauses only that child (${scenario})`, async () => {
 	let pid: number | undefined;
 	try {
 		const single = scenario === "single";
-		const offset = scenario === "dynamic" ? 1 : 0;
+		const validation = ["structured-static", "structured-dynamic", "mutation", "hidden-error"].includes(scenario);
+		const structured = scenario.startsWith("structured-");
+		const staticChain = scenario === "static" || (validation && scenario !== "structured-dynamic");
+		const offset = scenario === "dynamic" || scenario === "structured-dynamic" ? 1 : 0;
 		const target = single ? 0 : offset + 1;
 		const whole = ["mixed", "later-whole", "last-settled", "whole"].includes(scenario);
 		const stopped = scenario === "empty" || scenario === "last-settled" ? []
@@ -34,9 +37,10 @@ it(`async stop by index pauses only that child (${scenario})`, async () => {
 		if (offset) mock.onCall({ taskIncludes: "Seed items", output: "Seed", structuredOutput: { items: [0, 1, 2] } });
 		if (scenario === "fallback") mock.onCall({ taskIncludes: "Child task 1", delay: 150, output: "primary failed", stderr: "rate limit exceeded", exitCode: 1 });
 		for (const index of single ? [0] : [0, 1, 2]) mock.onCall({ taskIncludes: `Child task ${index}`, steps: [
-			{ jsonl: [events.messageStart()] },
+			{ jsonl: [events.messageStart(), ...(scenario === "hidden-error" && index === 1 ? [events.toolResult("read", "rate limit exceeded", true)] : [])] },
 			{ delay: stopped.includes(index + offset) ? 60_000 : scenario === "last-settled" && index === 2 ? 100 : 1_500,
-				jsonl: [events.assistantMessage(`Completed child ${index}`)] },
+				jsonl: [events.assistantMessage(`Completed child ${index}`)],
+				...(structured && index !== 1 ? { structuredOutput: { done: true } } : {}) },
 		] });
 		const state = { baseCwd: cwd, currentSessionId: null, asyncJobs: new Map(),
 			grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() },
@@ -45,19 +49,22 @@ it(`async stop by index pauses only that child (${scenario})`, async () => {
 			pi: { events: createEventBus(), getSessionName: () => undefined }, state,
 			resolveConfig: () => ({ control: { enabled: false } }), tempArtifactsDir: cwd,
 			getSubagentSessionRoot: () => cwd, expandTilde: (p: string) => p,
-			discoverAgents: () => ({ agents: [makeAgent("echo", { completionGuard: false,
-				...(scenario === "fallback" ? { model: "openai/gpt-5-mini", fallbackModels: ["anthropic/claude-sonnet-4"] } : {}),
+			discoverAgents: () => ({ agents: [makeAgent("echo", { completionGuard: scenario === "mutation",
+				...(scenario === "fallback" || scenario === "hidden-error" ? { model: "openai/gpt-5-mini", fallbackModels: ["anthropic/claude-sonnet-4"] } : {}),
 			})] }),
 		});
 		const ctx = makeMinimalCtx(cwd);
-		const tasks = [0, 1, 2].map((index) => ({ agent: "echo", task: `Child task ${index}` }));
+		const tasks = [0, 1, 2].map((index) => ({ agent: "echo", task: `${scenario === "mutation" && index === 1 ? "Implement code for " : ""}Child task ${index}`,
+			...(structured ? { outputSchema: { type: "object" } } : {}),
+		}));
 		const chain = offset ? [
 			{ agent: "echo", task: "Seed items", as: "seed", outputSchema: { type: "object" } },
-			{ expand: { from: { output: "seed", path: "/items" }, maxItems: 3 }, parallel: { agent: "echo", task: "Child task {item}" }, collect: { as: "collected" } },
-		] : [{ parallel: tasks, failFast: true }];
+			{ expand: { from: { output: "seed", path: "/items" }, maxItems: 3 }, parallel: { agent: "echo", task: "Child task {item}", ...(structured ? { outputSchema: { type: "object" } } : {}) }, collect: { as: "collected" },
+				...(validation ? { concurrency: 2, failFast: true } : {}) },
+		] : [{ parallel: tasks, failFast: true, ...(validation ? { concurrency: 2 } : {}) }];
 		const started = await executor.execute("async-index", { async: true, clarify: false,
 			acceptance: { level: "none", reason: "Observe interrupt routing and sibling lifecycle" },
-			...(single ? tasks[0] : scenario === "static" || offset ? { chain: [...chain, { agent: "echo", task: "Must not run" }] } : { tasks }),
+			...(single ? tasks[0] : staticChain || offset ? { chain: [...chain, { agent: "echo", task: "Must not run" }] } : { tasks }),
 		}, undefined, undefined, ctx);
 		assert.ok(started.details.asyncId, JSON.stringify(started));
 		const id = started.details.asyncId;
@@ -65,8 +72,8 @@ it(`async stop by index pauses only that child (${scenario})`, async () => {
 		state.asyncJobs.set(id, { asyncId: id, asyncDir: dir, status: "running" });
 		resultPath = path.join(RESULTS_DIR, `${id}.json`);
 		const status = () => JSON.parse(fs.readFileSync(path.join(dir, "status.json"), "utf8"));
-		await waitFor(() => status().steps.slice(offset, offset + (single ? 1 : 3)).every((step) => step.status === "running")
-			&& (scenario === "early" || mock.callCount() >= (single ? 1 : 3 + offset)), "children running");
+		await waitFor(() => status().steps.slice(offset, offset + (single ? 1 : validation ? 2 : 3)).every((step) => step.status === "running")
+			&& (scenario === "early" || mock.callCount() >= (single ? 1 : (validation ? 2 : 3) + offset)), "children running");
 		pid = status().pid;
 		const signal = () => process.kill(pid!, process.platform === "win32" ? "SIGBREAK" : "SIGUSR2");
 		const request = (index: number | "all") => writeAtomicJson(path.join(dir, `interrupt-request-${index}.json`), { requestedAt: Date.now() });
@@ -74,6 +81,7 @@ it(`async stop by index pauses only that child (${scenario})`, async () => {
 			const response = await executor.execute("stop", { action: "interrupt", id, index }, undefined, undefined, ctx);
 			assert.match(response.content[0].text, new RegExp(index === undefined ? "Interrupt requested for async run" : `Interrupt requested for child ${index} of async run`));
 		};
+		if (scenario === "hidden-error") await waitFor(() => fs.readFileSync(path.join(dir, "events.jsonl"), "utf8").includes("rate limit exceeded"), "retryable hidden error observed");
 		if (scenario === "fallback") {
 			await waitFor(() => status().steps[target].model === "anthropic/claude-sonnet-4", "first attempt failed and fallback selected");
 			assert.ok(fs.readFileSync(path.join(dir, "events.jsonl"), "utf8").includes("primary failed"));
@@ -118,13 +126,20 @@ it(`async stop by index pauses only that child (${scenario})`, async () => {
 		const result = JSON.parse(fs.readFileSync(resultPath, "utf8"));
 		assert.equal(result.state, scenario === "empty" ? "complete" : "paused");
 		if (scenario !== "empty") assert.equal(result.summary, "Paused after interrupt. Waiting for explicit next action.");
-		if (scenario === "static" || offset) {
+		if (staticChain || offset) {
 			assert.equal(mock.callCount(), 3 + offset, "later chain steps must not run");
 			assert.equal(status().steps.at(-1).status, "pending");
 		}
 		for (const index of single ? [0] : [offset, offset + 1, offset + 2]) {
 			assert.equal(status().steps[index].status, stopped.includes(index) ? "paused" : "complete");
-			if (stopped.includes(index)) assert.equal(result.results[index].interrupted, true);
+			if (stopped.includes(index)) {
+				assert.equal(result.results[index].interrupted, true);
+				assert.equal(result.results[index].modelAttempts.at(-1).exitCode, 0);
+				if (validation) {
+					assert.equal(result.results[index].error, undefined);
+					assert.equal(result.results[index].modelAttempts.length, 1, "interrupted attempts must not select model fallback");
+				}
+			}
 			else {
 				assert.equal(result.results[index].output, `Completed child ${index - offset}`);
 				assert.notEqual(result.results[index].interrupted, true);

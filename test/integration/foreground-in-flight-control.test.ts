@@ -209,6 +209,56 @@ describe("foreground in-flight turn control", { skip: !available ? "pi packages 
 		});
 	}
 
+	it("whole-run interrupt after the last-started child settles falls through to async without stopping an older sibling", async (t) => {
+		for (const index of [0, 1]) mockPi.onCall({ taskIncludes: `Child task ${index}`, steps: [
+			{ jsonl: [events.messageStart()] },
+			{ delay: index === 0 ? 1_500 : 100, jsonl: [events.assistantMessage(`Completed child ${index}`)] },
+		] });
+		const state = {
+			baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(),
+			grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() },
+			foregroundControls: new Map(), lastForegroundControlId: null,
+		};
+		const executor = executorModule.createSubagentExecutor({
+			captureRuntime: mockPi.captureRuntime,
+			pi: { events: createEventBus(), getSessionName: () => undefined }, state,
+			resolveConfig: () => ({ control: { enabled: false } }), tempArtifactsDir: tempDir,
+			getSubagentSessionRoot: () => tempDir, expandTilde: (value: string) => value,
+			discoverAgents: () => ({ agents: [makeAgent("echo", { completionGuard: false })] }),
+		});
+		const ctx = makeMinimalCtx(tempDir);
+		const controller = new AbortController();
+		const pending = executor.execute("last-settled", { async: false, clarify: false,
+			tasks: [0, 1].map((index) => ({ agent: "echo", task: `Child task ${index}` })),
+		}, controller.signal, undefined, ctx);
+		try {
+			const deadline = Date.now() + 5_000;
+			while ((mockPi.callCount() < 2 || [...state.foregroundControls.values()][0]?.childInterrupts.has(1)) && Date.now() < deadline) {
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			}
+			const [id, control] = [...state.foregroundControls.entries()][0];
+			assert.equal(control.lastAssigned, undefined);
+			assert.equal(control.childInterrupts.has(0), true);
+			state.asyncJobs.set("other-async", { asyncId: "other-async", asyncDir: tempDir, status: "running" });
+			fs.writeFileSync(path.join(tempDir, "status.json"), JSON.stringify({ state: "running", pid: process.pid, steps: [{ status: "running" }] }));
+			const kill = t.mock.method(process, "kill", () => true);
+			const response = await executor.execute("fallback-stop", { action: "interrupt", id }, undefined, undefined, ctx);
+			assert.equal(response.content[0].text, "Interrupt requested for async run other-async.");
+			assert.equal(kill.mock.callCount(), 1);
+			assert.equal(kill.mock.calls[0].arguments[0], process.pid);
+			assert.equal(fs.existsSync(path.join(tempDir, "interrupt-request-all.json")), true);
+			const result = await pending;
+			for (const [index, child] of result.details.results.entries()) {
+				assert.notEqual(child.interrupted, true);
+				assert.equal(child.finalOutput, `Completed child ${index}`);
+			}
+		} finally {
+			t.mock.restoreAll();
+			controller.abort();
+			await pending;
+		}
+	});
+
 	it("interrupt with an index naming no running child errors", async () => {
 		mockPi.onCall({
 			steps: [

@@ -1003,6 +1003,19 @@ export async function runSingleStep(
 			cleanupTempDir(tempDir); // F1: ensure no prompt-dir leak on throw
 		}
 
+		if (run.interrupted) {
+			finalResult = { ...run, model: candidate ?? run.model };
+			finalOutputSnapshot = outputSnapshot;
+			modelAttempts.push({
+				model: candidate ?? run.model ?? step.model ?? "default",
+				success: true,
+				exitCode: run.exitCode,
+				usage: run.usage,
+			});
+			if (candidate) attemptedModels.push(candidate);
+			break;
+		}
+
 		const hiddenError = run.exitCode === 0 && !run.error ? detectSubagentError(run.messages) : null;
 		const blockedOutput = stripAcceptanceReport(getFinalOutput(run.messages));
 		const blockedError = run.exitCode === 0 && !run.interrupted && !run.error && !hiddenError?.hasError && blockedLine(blockedOutput)
@@ -2093,7 +2106,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					ts: taskEndTime, runId: id, stepIndex: fi, agent: task.agent,
 					exitCode: singleResult.exitCode, durationMs: taskEndTime - taskStartTime,
 				}));
-				if (singleResult.exitCode !== 0 && failFast) aborted = true;
+				if (singleResult.exitCode !== 0 && !singleResult.interrupted && failFast) aborted = true;
 				return { ...singleResult, skipped: false };
 			});
 
@@ -2404,7 +2417,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 							appendControlEvent(event);
 						}
 
-						if (singleResult.exitCode !== 0 && failFast) aborted = true;
+						if (singleResult.exitCode !== 0 && !singleResult.interrupted && failFast) aborted = true;
 						return { ...singleResult, skipped: false };
 					},
 				);
