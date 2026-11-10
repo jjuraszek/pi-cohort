@@ -138,11 +138,25 @@ it("a completed foreground run owns the indexed error without signaling an unrel
 		state.asyncJobs.set("other-async", { asyncId: "other-async", asyncDir: cwd, status: "running" });
 		fs.writeFileSync(path.join(cwd, "status.json"), JSON.stringify({ state: "running", pid: process.pid, steps: [{ status: "running" }] }));
 		const kill = t.mock.method(process, "kill", () => true);
-		const result = await execute({ action: "interrupt", id, index: 0 });
-		assert.equal(kill.mock.callCount(), 0, "completed foreground requests must not signal another run");
-		assert.equal(fs.existsSync(path.join(cwd, "interrupt-request-0.json")), false);
-		assert.equal(result.isError, true);
-		assert.equal(result.content[0].text, `Foreground run ${id} has no running child at index 0.`);
+		for (const row of [
+			{ name: "retained exact id", target: id, retained: true, label: "Foreground run" },
+			{ name: "completed run prefix", target: id.slice(0, -1), retained: true, label: "Run" },
+			{ name: "id removed from retained history", target: id, retained: false, label: "Run" },
+		]) {
+			await t.test(row.name, async () => {
+				if (!row.retained) state.foregroundRuns.delete(id);
+				const before = kill.mock.callCount();
+				try {
+					const result = await execute({ action: "interrupt", id: row.target, index: 0 });
+					assert.equal(kill.mock.callCount(), before, "completed foreground requests must not signal another run");
+					assert.equal(fs.existsSync(path.join(cwd, "interrupt-request-0.json")), false);
+					assert.equal(result.isError, true);
+					assert.equal(result.content[0].text, `${row.label} ${row.target} has no running child at index 0.`);
+				} finally {
+					fs.rmSync(path.join(cwd, "interrupt-request-0.json"), { force: true });
+				}
+			});
+		}
 	} finally {
 		mock.uninstall();
 		removeTempDir(cwd);

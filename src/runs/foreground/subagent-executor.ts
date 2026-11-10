@@ -411,8 +411,15 @@ function emitControlNotification(input: {
 }
 
 function interruptAsyncRun(state: SubagentState, runId: string | undefined, index?: number): AgentToolResult<Details> | null {
-	const target = getAsyncInterruptTarget(state, runId);
-	if (!target) return null;
+	const target = index !== undefined && runId ? state.asyncJobs.get(runId) : getAsyncInterruptTarget(state, runId);
+	if (!target) {
+		if (index === undefined || !runId) return null;
+		return {
+			content: [{ type: "text", text: `Run ${runId} has no running child at index ${index}.` }],
+			isError: true,
+			details: { mode: "management", results: [] },
+		};
+	}
 	const status = readStatus(target.asyncDir);
 	if (!status || status.state !== "running" || typeof status.pid !== "number") {
 		return {
