@@ -439,6 +439,9 @@ Finish with a fenced JSON block tagged \`acceptance-report\` in this shape:
 
 	it("validates invalid disable and verify shapes", () => {
 		assert.deepEqual(validateAcceptanceInput({ level: "none" }), ["acceptance.reason is required when level is none."]);
+		for (const pathLabel of ["acceptance", "tasks[0].acceptance"]) {
+			assert.deepEqual(validateAcceptanceInput("none", pathLabel), [`${pathLabel}.reason is required when level is none.`]);
+		}
 		assert.deepEqual(validateAcceptanceInput({ verify: [{ id: "missing-command" }] }), ["acceptance.verify[0].command is required."]);
 	});
 
