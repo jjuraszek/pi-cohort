@@ -8,10 +8,16 @@
 
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { execFileSync } from "node:child_process";
 import type { MockPi } from "../support/helpers.ts";
 import {
+	createEventBus,
 	createMockPi,
 	createTempDir,
+	makeAgent,
+	makeMinimalCtx,
 	removeTempDir,
 	makeAgentConfigs,
 	events,
@@ -35,6 +41,7 @@ interface ExecutionModule {
 	): Promise<RunSyncResult>;
 }
 
+const executorModule = await import("../../src/runs/foreground/subagent-executor.ts");
 const execution = await tryImport<ExecutionModule>("./src/runs/foreground/execution.ts");
 const available = !!execution;
 const runSync = execution?.runSync;
@@ -60,6 +67,250 @@ describe("foreground in-flight turn control", { skip: !available ? "pi packages 
 
 	afterEach(() => {
 		removeTempDir(tempDir);
+	});
+
+	for (const mode of ["parallel", "parallel mixed", "static", "static stopOn", "static stopOn matched", "dynamic", "failFast", "mixed", "single", "sequential"]) {
+		it(`interrupt with index stops only that parallel child (${mode})`, { skip: mode.startsWith("static") && process.platform === "win32" ? "worktree setup hook is a shebang script, which Windows cannot spawn" : undefined }, async () => {
+			const dynamic = mode === "dynamic";
+			const single = mode === "single" || mode === "sequential";
+			const worktree = mode.startsWith("static");
+			const offset = dynamic ? 1 : 0;
+			const target = single ? 0 : offset + 1;
+			let cwd = tempDir;
+			let hook: string | undefined;
+			if (worktree) {
+				cwd = path.join(tempDir, "repo");
+				fs.mkdirSync(cwd);
+				const git = (...args: string[]) => execFileSync("git", args, { cwd, timeout: 5_000, stdio: "pipe" });
+				git("init");
+				git("config", "user.name", "Tests");
+				git("config", "user.email", "tests@example.com");
+				fs.writeFileSync(path.join(cwd, "changed.txt"), "before\n");
+				git("add", ".");
+				git("-c", "commit.gpgsign=false", "commit", "-m", "initial");
+				hook = path.join(tempDir, "setup.cjs");
+				fs.writeFileSync(hook, `#!${process.execPath}\nconst fs = require('node:fs'); fs.appendFileSync('changed.txt', 'partial patch\\n'); console.log('{}');\n`);
+				fs.chmodSync(hook, 0o755);
+			}
+			if (dynamic) mockPi.onCall({ taskIncludes: "Seed items", output: "Seed", structuredOutput: { items: [0, 1, 2] } });
+			for (const index of single ? [0] : [0, 1, 2]) {
+				mockPi.onCall({
+					taskIncludes: `Child task ${index}`,
+					steps: [
+						{ jsonl: [events.messageStart()] },
+						{ delay: single || index === 1 ? 60_000 : 1_500, jsonl: [events.assistantMessage(`Completed child ${index}`)] },
+					],
+					structuredOutput: mode.includes("stopOn") ? { verdict: "PASS" } : undefined,
+				});
+			}
+			const state = {
+				baseCwd: cwd, currentSessionId: null, asyncJobs: new Map(),
+				grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() },
+				foregroundControls: new Map(), lastForegroundControlId: null,
+			};
+			const executor = executorModule.createSubagentExecutor({
+				captureRuntime: mockPi.captureRuntime,
+				pi: { events: createEventBus(), getSessionName: () => undefined }, state,
+				resolveConfig: () => ({ control: { enabled: false }, worktreeSetupHook: hook }),
+				tempArtifactsDir: tempDir, getSubagentSessionRoot: () => tempDir,
+				expandTilde: (value: string) => value,
+				discoverAgents: () => ({ agents: [makeAgent("echo", { completionGuard: false })] }),
+			});
+			const tasks = [0, 1, 2].map((index) => ({ agent: "echo", task: `Child task ${index}`, as: `child_${index}`,
+				...(mode.includes("stopOn") ? { outputSchema: { type: "object", properties: { verdict: { type: "string" } }, required: ["verdict"] } } : {}),
+			}));
+			const chain = dynamic ? [
+				{ agent: "echo", task: "Seed items", as: "seed", outputSchema: { type: "object" } },
+				{ expand: { from: { output: "seed", path: "/items" }, maxItems: 3 }, parallel: { agent: "echo", task: "Child task {item}" }, collect: { as: "collected" } },
+			] : single ? [tasks[0]] : [{ parallel: tasks, worktree, failFast: mode === "failFast", concurrency: mode === "failFast" ? 2 : 3,
+				...(mode.includes("stopOn") ? { stopOn: { path: "/verdict", in: [mode.endsWith("matched") ? "PASS" : "FAIL"] } } : {}),
+			}];
+			const controller = new AbortController();
+			const ctx = makeMinimalCtx(cwd);
+			const pending = executor.execute(`targeted-${mode}`, {
+				...(mode.startsWith("parallel") ? { tasks } : mode === "single" ? tasks[0] : { chain: [...chain, { agent: "echo", task: "Must not run" }] }),
+				async: false,
+			}, controller.signal, () => {}, ctx);
+			try {
+				const initialCount = single ? 1 : mode === "failFast" ? 2 : 3 + offset;
+				const deadline = Date.now() + 5_000;
+				while (mockPi.callCount() < initialCount && Date.now() < deadline) {
+					await new Promise((resolve) => setTimeout(resolve, 10));
+				}
+				assert.equal(mockPi.callCount(), initialCount);
+				const [runId, control] = [...state.foregroundControls.entries()][0];
+				const response = await executor.execute("targeted-stop", { action: "interrupt", id: runId, index: target }, undefined, undefined, ctx);
+				assert.match(response.content[0].text, new RegExp(`Interrupt requested for child ${target} of foreground run`));
+				assert.equal(control.childInterrupts.has(target), false);
+				if (!single) for (const index of mode === "failFast" ? [offset] : [offset, offset + 2]) assert.equal(control.childInterrupts.has(index), true);
+				const repeated = await executor.execute("repeat-stop", { action: "interrupt", id: runId, index: target }, undefined, undefined, ctx);
+				assert.equal(repeated.isError, true);
+				assert.equal(control.stoppedByIndex.has(target), true);
+				if (mode.includes("mixed")) {
+					const whole = await executor.execute("whole-stop", { action: "interrupt", id: runId }, undefined, undefined, ctx);
+					assert.notEqual(whole.isError, true);
+					const alreadyAborted = await executor.execute("already-aborted", { action: "interrupt", id: runId, index: offset + 2 }, undefined, undefined, ctx);
+					assert.equal(alreadyAborted.isError, true);
+					assert.equal(control.stoppedByIndex.has(offset + 2), false);
+				}
+				const result = await pending;
+				assert.equal(controller.signal.aborted, false, "the waiting call must not be cancelled");
+				assert.equal(result.details.results.length, single ? 1 : 3 + offset, "later chain steps must not run");
+				assert.equal(result.details.results[target].interrupted, true);
+				assert.equal(result.details.results[target].exitCode, 0);
+				assert.equal(control.childInterrupts.size, 0);
+				assert.equal(control.lastAssigned, undefined);
+				if (single || mode.includes("mixed")) {
+					assert.match(result.content[0].text, /paused after interrupt|Interrupted\. Waiting/);
+					assert.notEqual(result.isError, true);
+					return;
+				}
+				for (const index of [0, 2]) {
+					const child = result.details.results[offset + index];
+					assert.notEqual(child.interrupted, true);
+					assert.equal(child.exitCode, 0);
+					assert.equal(child.finalOutput, `Completed child ${index}`);
+					assert.match(result.content[0].text, new RegExp(`Completed child ${index}`));
+				}
+				if (mode === "parallel") {
+					assert.match(result.content[0].text, /2\/3 succeeded/);
+					assert.match(result.content[0].text, /=== Task 2: echo ===\nINTERRUPTED/);
+					assert.notEqual(result.isError, true);
+				} else {
+					assert.equal(result.isError, true);
+					assert.match(result.content[0].text, /## Outputs/);
+					assert.match(result.content[0].text, /#### Task 2 \(echo(?:, as child_1)?\) - interrupted/);
+					if (mode.endsWith("matched")) {
+						assert.equal(result.details.stop.matches.length, 2);
+						assert.match(result.content[0].text, /## Stop/);
+					} else assert.equal(result.details.stop, undefined);
+					if (dynamic) {
+						assert.match(result.content[0].text, /Dynamic step 2 failed:\n- Item 2 \(echo, key 1\): interrupted/);
+						assert.equal(result.details.outputs.collected.structured.length, 3);
+						assert.equal(result.details.workflowGraph.nodes[1].status, "failed");
+					} else {
+						assert.match(result.content[0].text, /Parallel step 1 failed:\n- Task 2 \(echo\): interrupted/);
+						assert.equal(result.details.outputs.child_1, undefined);
+						if (worktree) {
+							for (const index of [0, 2]) {
+								const patch = result.details.outputs[`child_${index}`].patchPath;
+								assert.ok(result.content[0].text.includes(`Full patches: ${path.dirname(patch)}`));
+								assert.match(fs.readFileSync(patch, "utf8"), /partial patch/);
+							}
+							const stoppedPatch = path.join(path.dirname(result.details.outputs.child_0.patchPath), "task-1-echo.patch");
+							assert.match(fs.readFileSync(stoppedPatch, "utf8"), /partial patch/);
+						}
+					}
+				}
+			} finally {
+				controller.abort();
+				await pending;
+			}
+		});
+	}
+
+	it("whole-run interrupt after the last-started child settles falls through to async without stopping an older sibling", async (t) => {
+		for (const index of [0, 1]) mockPi.onCall({ taskIncludes: `Child task ${index}`, steps: [
+			{ jsonl: [events.messageStart()] },
+			{ delay: index === 0 ? 1_500 : 100, jsonl: [events.assistantMessage(`Completed child ${index}`)] },
+		] });
+		const state = {
+			baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(),
+			grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() },
+			foregroundControls: new Map(), lastForegroundControlId: null,
+		};
+		const executor = executorModule.createSubagentExecutor({
+			captureRuntime: mockPi.captureRuntime,
+			pi: { events: createEventBus(), getSessionName: () => undefined }, state,
+			resolveConfig: () => ({ control: { enabled: false } }), tempArtifactsDir: tempDir,
+			getSubagentSessionRoot: () => tempDir, expandTilde: (value: string) => value,
+			discoverAgents: () => ({ agents: [makeAgent("echo", { completionGuard: false })] }),
+		});
+		const ctx = makeMinimalCtx(tempDir);
+		const controller = new AbortController();
+		const pending = executor.execute("last-settled", { async: false, clarify: false,
+			tasks: [0, 1].map((index) => ({ agent: "echo", task: `Child task ${index}` })),
+		}, controller.signal, undefined, ctx);
+		try {
+			const deadline = Date.now() + 5_000;
+			while ((mockPi.callCount() < 2 || [...state.foregroundControls.values()][0]?.childInterrupts.has(1)) && Date.now() < deadline) {
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			}
+			const [id, control] = [...state.foregroundControls.entries()][0];
+			assert.equal(control.lastAssigned, undefined);
+			assert.equal(control.childInterrupts.has(0), true);
+			state.asyncJobs.set("other-async", { asyncId: "other-async", asyncDir: tempDir, status: "running" });
+			fs.writeFileSync(path.join(tempDir, "status.json"), JSON.stringify({ state: "running", pid: process.pid, steps: [{ status: "running" }] }));
+			const kill = t.mock.method(process, "kill", () => true);
+			const response = await executor.execute("fallback-stop", { action: "interrupt", id }, undefined, undefined, ctx);
+			assert.equal(response.content[0].text, "Interrupt requested for async run other-async.");
+			assert.equal(kill.mock.callCount(), 1);
+			assert.equal(kill.mock.calls[0].arguments[0], process.pid);
+			assert.equal(fs.existsSync(path.join(tempDir, "interrupt-request-all.json")), true);
+			const result = await pending;
+			for (const [index, child] of result.details.results.entries()) {
+				assert.notEqual(child.interrupted, true);
+				assert.equal(child.finalOutput, `Completed child ${index}`);
+			}
+		} finally {
+			t.mock.restoreAll();
+			controller.abort();
+			await pending;
+		}
+	});
+
+	it("interrupt with an index naming no running child errors", async () => {
+		mockPi.onCall({
+			steps: [
+				{ jsonl: [events.messageStart()] },
+				{ delay: 2_000, jsonl: [events.assistantMessage("Sibling completed")] },
+			],
+		});
+		const state = {
+			baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(),
+			grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() },
+			foregroundControls: new Map(), lastForegroundControlId: null,
+		};
+		const executor = executorModule.createSubagentExecutor({
+			captureRuntime: mockPi.captureRuntime,
+			pi: { events: createEventBus(), getSessionName: () => undefined },
+			state,
+			resolveConfig: () => ({ control: { enabled: false } }),
+			tempArtifactsDir: tempDir,
+			getSubagentSessionRoot: () => tempDir,
+			expandTilde: (value: string) => value,
+			discoverAgents: () => ({ agents: [makeAgent("echo")] }),
+		});
+		const controller = new AbortController();
+		const ctx = makeMinimalCtx(tempDir);
+		const pending = executor.execute("invalid-child-index", {
+			tasks: [0, 1, 2].map((index) => ({ agent: "echo", task: `Task ${index}` })),
+			async: false,
+		}, controller.signal, undefined, ctx);
+		try {
+			const deadline = Date.now() + 5_000;
+			while (mockPi.callCount() < 3 && Date.now() < deadline) {
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			}
+			assert.equal(mockPi.callCount(), 3, "all three children must start before the request");
+			const [runId] = state.foregroundControls.keys();
+			assert.ok(runId, "the foreground run must still be in flight");
+			const response = await executor.execute("invalid-stop", {
+				action: "interrupt", id: runId, index: 3,
+			}, undefined, undefined, ctx);
+			const result = await pending;
+			assert.equal(response.isError, true, "index 3 names no running child and must return an error");
+			assert.match(response.content[0].text, /no running child at index 3/);
+			assert.equal(result.details.results.length, 3);
+			for (const child of result.details.results) {
+				assert.equal(child.exitCode, 0);
+				assert.notEqual(child.interrupted, true, "an invalid index must stop no child");
+				assert.equal(child.finalOutput, "Sibling completed");
+			}
+		} finally {
+			controller.abort();
+			await pending;
+		}
 	});
 
 	it("treats a silent in-flight turn under the ceiling as active_long_running, not needs_attention", async () => {

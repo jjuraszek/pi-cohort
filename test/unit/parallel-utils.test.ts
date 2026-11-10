@@ -164,6 +164,22 @@ describe("aggregateParallelOutputs", () => {
 		assert.ok(result.includes("Needs fixes"));
 	});
 
+	it("labels an interrupted child ahead of other statuses", () => {
+		for (const fields of [
+			{ exitCode: 0, output: "partial output" },
+			{ exitCode: -1, output: "" },
+			{ exitCode: 1, output: "partial output", error: "failure" },
+			{ exitCode: null, output: "", error: "cleanup uncertain" },
+			{ exitCode: 0, output: "", outputTargetPath: "missing.md", outputTargetExists: false },
+			{ exitCode: 0, output: "" },
+		]) {
+			const result = aggregateParallelOutputs([
+				{ agent: "echo", interrupted: true, ...fields },
+			]);
+			assert.equal(result, `=== Parallel Task 1 (echo) ===\nINTERRUPTED${fields.output ? `\n${fields.output}` : ""}`);
+		}
+	});
+
 	it("marks failed tasks", () => {
 		const result = aggregateParallelOutputs([
 			{ agent: "agent-a", output: "partial output", exitCode: 1 },

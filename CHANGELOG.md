@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- `/interrupt-child <index> [run-id]` stops one running child while the calling agent is blocked, with running-child completions and notifications instead of conversation messages. (#58)
+
+### Fixed
+- `interrupt` with a child `index` stops only that child in foreground and background runs. Foreground results include sibling outputs with an interrupted marker; background siblings retain their own statuses and outputs while the run settles as paused. Foreground parallel and dynamic chain steps fail without losing sibling outputs; static worktree steps retain patch locations. (#58)
+
 ## [7.7.2] - 2026-11-10
 
 ### Fixed

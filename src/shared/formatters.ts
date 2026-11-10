@@ -68,6 +68,7 @@ export interface ChainSummaryOptions {
 function renderTaskHeading(entry: ChainTaskOutputEntry): string {
 	const asPart = entry.as ? `, as ${entry.as}` : "";
 	const base = `#### Task ${entry.taskIndex + 1} (${entry.agent}${asPart})`;
+	if (entry.interrupted) return `${base} - interrupted`;
 	if (entry.exitCode === -1) return `${base} - skipped (fail-fast)`;
 	if (entry.exitCode !== 0) return `${base} - failed`;
 	return base;
@@ -83,6 +84,10 @@ export function buildChainOutputsSection(entries: ChainTaskOutputEntry[]): strin
 			lines.push(`### Step ${currentStep + 1}`);
 		}
 		lines.push(renderTaskHeading(entry));
+		if (entry.interrupted) {
+			if (entry.error) lines.push(entry.error);
+			continue;
+		}
 		if (entry.exitCode === -1) continue;
 		if (entry.exitCode !== 0) {
 			lines.push(entry.error || "failed");

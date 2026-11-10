@@ -133,6 +133,34 @@ Agent definitions are not loaded into context by default. Management actions let
 
 `create` uses `config.scope`, not `agentScope`. `config.name` is the local frontmatter name; optional `config.package` registers the runtime name as `{package}.{name}` and is saved as separate `name` and `package` frontmatter. `update` and `delete` use the runtime name and `agentScope` only when the same runtime name exists in multiple scopes. To clear optional string fields, including `package`, set them to `false` or `""`.
 
+### Foreground stop by index
+
+To stop one child of a running foreground parallel run without cancelling its siblings:
+
+```ts
+subagent({ action: "interrupt", id: "<run-id>", index: 1 })
+```
+
+`index` is the zero-based flat child index, also used by `resume`: a task's index in a top-level parallel run, or its position across all children of a chain, including earlier steps. A non-running index returns an error naming the index and stops nothing. Stopping one child does not trigger `failFast`; the siblings finish before the waiting call returns.
+
+When every interrupted child was stopped by index, the foreground result is:
+
+| Run shape | Returned result |
+|---|---|
+| Top-level parallel | The text includes sibling outputs and `INTERRUPTED` for the stopped child, for example `2/3 succeeded`. `details.results` retains every child; the stopped entry has `exitCode: 0` and `interrupted: true` and does not count as a success. The tool does not set `isError`. |
+| Static parallel chain step | The chain returns `isError: true` with `Parallel step N failed:` and an `interrupted` failure line. `## Outputs` contains sibling outputs and a `- interrupted` heading for the stopped task, whether or not a `stopOn` condition matched. No later step runs. Only successful, non-interrupted tasks register named outputs. With `worktree: true`, all partial diffs are captured, including the stopped child's, and patch locations appear in the failure text. |
+| Dynamic chain step | The chain returns `isError: true` with `Dynamic step N failed:`, an `interrupted` item line, sibling outputs, and an interrupted heading. The group status is `failed`; no later step runs. The collection in `details.outputs` retains the stopped item's partial text. Dynamic steps do not support `worktree`. |
+
+Task headings and cleanup diagnostics use one-based numbers, not the zero-based request index. Interrupted output headings include the child's error when present; cleanup diagnostics remain visible in the aggregate or chain failure text. A single run or sequential chain step stopped by index still returns its pause notice. Interrupting without `index`, or mixing whole-run and indexed stops in the same step, keeps the existing pause notice instead of the aggregate above.
+
+### Background stop by index
+
+The same `interrupt` request with `index` targets one child of a running async run, including static parallel and materialized dynamic children. Use the zero-based flat index from status. A non-running index returns an error naming the index and sends no signal. Siblings finish with their own statuses and outputs; the stopped child remains `paused` with `interrupted: true`. The run settles as `paused` with `Paused after interrupt. Waiting for explicit next action.`, and later chain steps do not run. Sibling outputs remain in the async result's `results[]` and are accessible through per-child output paths in `status`, not in the paused summary text. Background results do not use the foreground chain-failure wrapper.
+
+The executor atomically writes `interrupt-request-<index>.json` in the run's async directory before signaling the runner. An omitted index writes `interrupt-request-all.json`; direct nested async interrupts use that same whole-run marker. The runner consumes and deletes all pending request files on each signal, handling indexed stops before a whole-run stop. The filenames carry the target; the body is diagnostic metadata. An empty signal is a no-op, not an implicit whole-run request.
+
+Indexed requests address per-child callbacks. A request received while its running child has no callback waits for that child's next registration, including a model fallback attempt. If the child settles first, the request is discarded without stopping a sibling. A later indexed or whole-run request remains valid after an earlier indexed stop. Whole-run requests retain the legacy last-registered callback: they do not latch across a registration gap or select a different sibling after that slot clears. Repeated whole-run requests are ignored.
+
 ## Parameter reference
 
 | Param | Type | Default | Description |

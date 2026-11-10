@@ -1348,6 +1348,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 						assert.ok(Date.now() < deadline, "Timed out waiting for tree child");
 						await new Promise((resolve) => setTimeout(resolve, 25));
 					}
+					fs.writeFileSync(path.join(ASYNC_DIR, id, "interrupt-request-all.json"), JSON.stringify({ requestedAt: Date.now() }));
 					process.kill(runnerPid!, "SIGUSR2");
 					while (true) {
 						const status = JSON.parse(fs.readFileSync(statusPath, "utf8"));
@@ -1381,6 +1382,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 				}
 			} finally {
 				if (runnerPid) {
+					if (runId) fs.writeFileSync(path.join(ASYNC_DIR, runId, "interrupt-request-all.json"), JSON.stringify({ requestedAt: Date.now() }));
 					try { process.kill(runnerPid, "SIGUSR2"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
 					if (runId) await waitForAsyncResultFile(runId);
 				}
@@ -3047,6 +3049,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 					await new Promise((resolve) => setTimeout(resolve, 25));
 				}
 				const status = JSON.parse(fs.readFileSync(path.join(runRoot, "status.json"), "utf8"));
+				fs.writeFileSync(path.join(runRoot, "interrupt-request-all.json"), JSON.stringify({ requestedAt: Date.now() }));
 				process.kill(status.pid, "SIGUSR2");
 			}
 			const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id, 6000), "utf8")) as AsyncResultPayload;

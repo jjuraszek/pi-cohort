@@ -855,7 +855,7 @@ import { registerExecutionBackend } from ${JSON.stringify(pathToFileURL(path.res
 ${cleanupHosts.toString()}
 ${makeBackend.toString()}
 const hosts = [], requests = [], lifecycle = { releases: 0, closes: 0, suppressExitEvidence: ${mode !== "user-abort"} };
-${mode === "user-abort" ? 'const interruptTimer = setInterval(() => { if (fs.existsSync("abort-ready")) { clearInterval(interruptTimer); process.kill(process.pid, "SIGUSR2"); } }, 10);' : ''}
+${mode === "user-abort" ? 'const interruptTimer = setInterval(() => { if (fs.existsSync("abort-ready")) { clearInterval(interruptTimer); fs.writeFileSync("interrupt-request-all.json", JSON.stringify({ requestedAt: Date.now() })); process.kill(process.pid, "SIGUSR2"); } }, 10);' : ''}
 registerExecutionBackend(makeBackend(${JSON.stringify(backendName)}, "", requests, hosts, lifecycle));
 const rename = fs.renameSync;
 let checkedPause = false;
@@ -900,7 +900,7 @@ await import(${JSON.stringify(pathToFileURL(runnerPath).href)});
 				assert.equal(paused.executionSurface.retained, true);
 				assert.equal(paused.modelAttempts.length, 1);
 				assert.equal(paused.modelAttempts[0].success, true);
-				assert.equal(status.steps[pausedIndex].status, "complete");
+				assert.equal(status.steps[pausedIndex].status, "paused");
 				assert.equal(status.steps[pausedIndex].interrupted, undefined);
 				assert.equal(status.steps[pausedIndex].error, paused.error);
 			}
