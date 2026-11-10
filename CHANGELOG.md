@@ -5,6 +5,9 @@
 ### Added
 - `/interrupt-child <index> [run-id]` stops one running child while the calling agent is blocked, with running-child completions and notifications instead of conversation messages. (#58)
 
+### Changed
+- Acceptance now refuses the bare string `"none"` before dispatch; disabling gates requires `{ level: "none", reason: "..." }` (deprecated `false` still works). Explicit levels run as given instead of being raised by inference, which applies only to `auto` or an unset level. Two inputs that passed on 7.7.2 now fail: a saved `*.chain.json` carrying bare `"none"` no longer loads, with the reason-required message under `Chain diagnostics:` in `subagent` `action: "list"` and only `Unknown chain: <name>` from `/run-chain <name>`; explicit `verified` without `verify` commands that was raised to `reviewed` is now rejected with `Acceptance rejected: verified acceptance requires runtime verify commands.` (#55)
+
 ### Fixed
 - `interrupt` with a child `index` stops only that child in foreground and background runs. Foreground results include sibling outputs with an interrupted marker; background siblings retain their own statuses and outputs while the run settles as paused. Foreground parallel and dynamic chain steps fail without losing sibling outputs; static worktree steps retain patch locations. (#58)
 

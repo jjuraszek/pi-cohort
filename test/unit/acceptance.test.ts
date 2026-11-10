@@ -58,6 +58,64 @@ describe("acceptance gates", () => {
 		assert.equal(resolved.verify[0]?.id, "ok");
 	});
 
+	it("an explicit level below the inferred level is the level that runs", async () => {
+		const acceptance = resolveEffectiveAcceptance({
+			agentName: "delegate",
+			task: "read-only startup smoke update",
+			async: true,
+			explicit: "attested",
+		});
+		assert.equal(acceptance.level, "attested");
+		assert.equal(acceptance.explicit, true);
+		assert.deepEqual(acceptance.inferredReason, ["async write-capable or risky run"]);
+		assert.equal(acceptance.review, undefined);
+		assert.deepEqual(acceptance.evidence, ["manual-notes", "residual-risks"]);
+		assert.doesNotMatch(formatAcceptancePrompt(acceptance), /Review gate/);
+		const ledger = await evaluateAcceptance({ acceptance, output: report({ validationOutput: undefined }), cwd: process.cwd() });
+		assert.equal(ledger.status, "attested");
+		assert.equal(acceptanceFailureMessage(ledger), undefined);
+	});
+
+	it("keeps explicit levels and infers only auto or unset levels", () => {
+		for (const explicit of [undefined, "auto", {}, { level: "auto" }] as const) {
+			const acceptance = resolveEffectiveAcceptance({ agentName: "delegate", task: "read-only startup smoke update", async: true, explicit });
+			assert.equal(acceptance.level, "reviewed");
+			assert.equal(acceptance.explicit, explicit !== undefined);
+			assert.deepEqual(acceptance.review, { agent: "reviewer", required: true });
+		}
+		for (const level of ["none", "attested", "checked", "verified", "reviewed"] as const) {
+			for (const explicit of [level, { level }] as const) {
+				const acceptance = resolveEffectiveAcceptance({ agentName: "reviewer", task: "security review of the diff", explicit });
+				assert.equal(acceptance.level, level);
+				assert.deepEqual(acceptance.review, level === "reviewed" ? { agent: "reviewer", required: true } : undefined);
+			}
+		}
+		const acceptance = resolveEffectiveAcceptance({
+			agentName: "worker", dynamic: true,
+			explicit: { level: "attested", review: { agent: "custom", required: false }, evidence: ["diff-summary"], criteria: ["custom criterion"], stopRules: ["stop on red"] },
+		});
+		assert.deepEqual(acceptance.review, { agent: "custom", required: false });
+		assert.deepEqual(acceptance.evidence, ["manual-notes", "residual-risks", "diff-summary"]);
+		assert.deepEqual(acceptance.criteria.map(criterion => criterion.must), ["custom criterion"]);
+		assert.deepEqual(acceptance.stopRules, ["stop on red"]);
+	});
+
+	it("explicit verified below inferred reviewed rejects missing runtime verify commands", async () => {
+		const cwd = tempRepo();
+		try {
+			const acceptance = resolveEffectiveAcceptance({ agentName: "delegate", task: "read-only startup smoke update", async: true, explicit: "verified" });
+			assert.equal(acceptance.level, "verified");
+			const ledger = await evaluateAcceptance({ acceptance, cwd, output: report({ criteriaSatisfied: [
+				{ id: "criterion-1", status: "satisfied", evidence: "implemented" },
+				{ id: "criterion-2", status: "satisfied", evidence: "evidence returned" },
+			] }) });
+			assert.equal(ledger.status, "rejected");
+			assert.equal(acceptanceFailureMessage(ledger), "Acceptance rejected: verified acceptance requires runtime verify commands.");
+		} finally {
+			fs.rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
 	it("formats a standardized child prompt section", () => {
 		const resolved = resolveEffectiveAcceptance({
 			agentName: "worker",
@@ -156,6 +214,19 @@ Finish with a fenced JSON block tagged \`acceptance-report\` in this shape:
 		assert.equal(formatAcceptancePrompt(acceptance, { structuredOutput: true }), "");
 	});
 
+	it("deprecated false validates and resolves to none", () => {
+		assert.deepEqual(validateAcceptanceInput(false), []);
+		const acceptance = resolveEffectiveAcceptance({
+			explicit: false,
+			agentName: "delegate",
+			task: "read-only startup smoke update",
+			async: true,
+		});
+		assert.equal(acceptance.level, "none");
+		assert.equal(acceptance.reason, "disabled by deprecated false shorthand");
+		assert.equal(acceptance.review, undefined);
+	});
+
 	it("checked mode rejects missing required evidence", async () => {
 		const cwd = tempRepo();
 		try {
@@ -172,6 +243,26 @@ Finish with a fenced JSON block tagged \`acceptance-report\` in this shape:
 
 			assert.equal(ledger.status, "rejected");
 			assert.match(acceptanceFailureMessage(ledger) ?? "", /tests-added evidence missing/);
+		} finally {
+			fs.rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("a rejected gate reports only the failed check at an explicit or inferred level", async () => {
+		const cwd = tempRepo();
+		try {
+			for (const explicit of [{ level: "checked" }, undefined] as const) {
+				const acceptance = resolveEffectiveAcceptance({ agentName: "delegate", task: "read-only startup smoke update", async: true, explicit });
+				const ledger = await evaluateAcceptance({ acceptance, cwd, output: report({
+					criteriaSatisfied: [
+						{ id: "criterion-1", status: "satisfied", evidence: "implemented" },
+						{ id: "criterion-2", status: "satisfied", evidence: "evidence returned" },
+					],
+					testsAddedOrUpdated: undefined,
+				}) });
+				assert.equal(ledger.status, "rejected");
+				assert.equal(acceptanceFailureMessage(ledger), "Acceptance rejected: tests-added evidence missing from child report.");
+			}
 		} finally {
 			fs.rmSync(cwd, { recursive: true, force: true });
 		}
@@ -370,7 +461,7 @@ Finish with a fenced JSON block tagged \`acceptance-report\` in this shape:
 		}
 	});
 
-	it("does not make explicit checked acceptance an explicit reviewed blocker when inference recommends review", async () => {
+	it("explicit checked on a dynamic step runs at checked with no review gate", async () => {
 		const cwd = tempRepo();
 		try {
 			const acceptance = resolveEffectiveAcceptance({
@@ -380,14 +471,14 @@ Finish with a fenced JSON block tagged \`acceptance-report\` in this shape:
 				explicit: { level: "checked" },
 			});
 
-			assert.equal(acceptance.level, "reviewed");
-			assert.equal(acceptance.review && acceptance.review !== false ? acceptance.review.required : undefined, false);
+			assert.equal(acceptance.level, "checked");
+			assert.equal(acceptance.review, undefined);
 			const ledger = await evaluateAcceptance({ acceptance, output: report({ criteriaSatisfied: [
 				{ id: "criterion-1", status: "satisfied", evidence: "implemented" },
 				{ id: "criterion-2", status: "satisfied", evidence: "evidence returned" },
 			] }), cwd });
 			assert.equal(ledger.status, "checked");
-			assert.equal(ledger.reviewResult?.status, "needs-parent-decision");
+			assert.equal(ledger.reviewResult, undefined);
 		} finally {
 			fs.rmSync(cwd, { recursive: true, force: true });
 		}
@@ -439,7 +530,13 @@ Finish with a fenced JSON block tagged \`acceptance-report\` in this shape:
 
 	it("validates invalid disable and verify shapes", () => {
 		assert.deepEqual(validateAcceptanceInput({ level: "none" }), ["acceptance.reason is required when level is none."]);
+		for (const pathLabel of ["acceptance", "tasks[0].acceptance"]) {
+			assert.deepEqual(validateAcceptanceInput("none", pathLabel), [`${pathLabel}.reason is required when level is none.`]);
+		}
 		assert.deepEqual(validateAcceptanceInput({ verify: [{ id: "missing-command" }] }), ["acceptance.verify[0].command is required."]);
+		for (const input of ["attested", { level: "none", reason: "probe" }]) {
+			assert.deepEqual(validateAcceptanceInput(input), []);
+		}
 	});
 
 	it("rejects unrecognized acceptance fields", () => {

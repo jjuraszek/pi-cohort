@@ -119,7 +119,7 @@ const AcceptanceOverride = Type.Unsafe({
 			additionalProperties: false,
 		},
 	],
-	description: "Acceptance: auto if omitted; verified needs cmds.",
+	description: 'Acceptance: auto if omitted; none needs object form {level:"none",reason}; verified needs cmds.',
 });
 
 // Nested acceptance sites carry a compact stub instead of the full AcceptanceOverride:

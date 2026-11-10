@@ -189,7 +189,7 @@ Indexed requests address per-child callbacks. A request received while its runni
 | `includeProgress` | boolean | false | Include full progress in result. |
 | `share` | boolean | false | Upload session export to GitHub Gist. |
 | `sessionDir` | string | derived | Override session log directory. |
-| `acceptance` | string/object/false | inferred | Override the run's inferred acceptance gates. Use `"auto"`, `"attested"`, `"checked"`, `"verified"`, `"reviewed"`, or `{ level: "none", reason: "..." }`. See [orchestration-patterns.md](orchestration-patterns.md#acceptance-gates). |
+| `acceptance` | string/object/false | inferred | An explicit level runs as given; `"auto"` or an unset level uses inference. Use `"attested"`, `"checked"`, `"verified"`, or `"reviewed"`; `none` requires the object form with a `reason`: `{ level: "none", reason: "..." }`. See [orchestration-patterns.md](orchestration-patterns.md#acceptance-gates). |
 | `control` | object | config defaults | Override per-run control thresholds. Supports `needsAttentionAfterMs`, `activeNoticeAfterMs`, `inFlightSilenceCeilingMs`, `inFlightSilenceKillMs`, and `notifyOn`. |
 
 `context: "fork"` fails fast when the parent session is not persisted, the current leaf is missing, or the branched child session cannot be created. It never silently downgrades to `fresh`. In multi-agent runs, if any requested agent has `defaultContext: fork` and the launch omits `context`, the whole invocation uses forked context; pass `context: "fresh"` when you intentionally want a fresh run.

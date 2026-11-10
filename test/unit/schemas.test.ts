@@ -55,6 +55,7 @@ interface SubagentParamsSchema {
 				notifyChannels?: { items?: { enum?: string[] } };
 			};
 		};
+		acceptance?: JsonSchemaNode;
 		skill?: JsonSchemaNode;
 		output?: JsonSchemaNode;
 		config?: JsonSchemaNode;
@@ -118,6 +119,13 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		assert.match(description, /fresh/);
 		assert.match(description, /fork/);
 		assert.match(description, /whole invocation/);
+	});
+
+	it("top-level acceptance description names the object form for none", () => {
+		const acceptance = SubagentParams?.properties?.acceptance;
+		assert.ok(acceptance, "acceptance schema should exist");
+		assert.match(String(acceptance.description), /none needs object form/);
+		assert.match(String(acceptance.description), /reason/);
 	});
 
 	it("includes count and concurrency on top-level parallel mode", () => {

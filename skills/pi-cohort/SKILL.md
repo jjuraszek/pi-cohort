@@ -39,11 +39,11 @@ A fork is a branch of the persisted parent session: full history, no filtering. 
 
 ## Acceptance levels
 
-`acceptance.level` unset means `auto`: read-only agents and read-only task wording infer `attested` with `review-findings` + `residual-risks`; other non-write tasks infer `attested` with `manual-notes` + `residual-risks`; write tasks infer `checked`; async write tasks, dynamic fanout, and risky wording (release, migration, security, destructive) infer `reviewed` with a required `reviewer` gate.
+`acceptance.level` unset means `auto`: read-only agents and read-only task wording infer `attested` with `review-findings` + `residual-risks`; other non-write tasks infer `attested` with `manual-notes` + `residual-risks`; write tasks infer `checked`; async write tasks, dynamic fanout, and risky wording (release, migration, security, destructive) infer `reviewed` with a required `reviewer` gate. Set an explicit level to run it as given; use `auto` or leave the level unset for inference.
 
 | Level | Required evidence | Use when |
 |---|---|---|
-| `none` | - | throwaway probe |
+| `none` | - | throwaway probe; requires `{ level: "none", reason: "..." }` |
 | `attested` | `manual-notes`, `residual-risks` (explicit); auto read-only: `review-findings`, `residual-risks` | read-only findings |
 | `checked` | `changed-files`, `tests-added`, `commands-run`, `residual-risks`, `no-staged-files` | ordinary write task |
 | `verified` | `checked` + `validation-output` | runtime must run `verify` commands |
