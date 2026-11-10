@@ -344,6 +344,7 @@ describe("detached external orchestration through serialized runner config", () 
 		const fixture = launchRun("interrupt", [step("worker", "WAIT-FOR-INTERRUPT")]);
 		await waitFor(() => fixture.trace().some(event => event.type === "ready"), fixture, "scripted Pi ready marker");
 		await new Promise(resolve => setTimeout(resolve, 100));
+		fs.writeFileSync(path.join(fixture.asyncDir, "interrupt-request-all.json"), JSON.stringify({ requestedAt: Date.now() }));
 		process.kill(fixture.child.pid!, "SIGUSR2");
 		const result = await waitForResult(fixture);
 		assert.equal(result.success, false);

@@ -153,6 +153,14 @@ When every interrupted child was stopped by index, the foreground result is:
 
 Task headings and cleanup diagnostics use one-based numbers, not the zero-based request index. Interrupted output headings include the child's error when present; cleanup diagnostics remain visible in the aggregate or chain failure text. A single run or sequential chain step stopped by index still returns its pause notice. Interrupting without `index`, or mixing whole-run and indexed stops in the same step, keeps the existing pause notice instead of the aggregate above.
 
+### Background stop by index
+
+The same `interrupt` request with `index` targets one child of a running async run, including static parallel and materialized dynamic children. Use the zero-based flat index from status. A non-running index returns an error naming the index and sends no signal. Siblings finish with their own statuses and outputs; the stopped child remains `paused` with `interrupted: true`. The run settles as `paused` with `Paused after interrupt. Waiting for explicit next action.`, and later chain steps do not run. Background results do not use the foreground chain-failure wrapper.
+
+The executor atomically writes `interrupt-request-<index>.json` in the run's async directory before signaling the runner. An omitted index writes `interrupt-request-all.json`; direct nested async interrupts use that same whole-run marker. The runner consumes and deletes all pending request files on each signal, handling indexed stops before a whole-run stop. The filenames carry the target; the body is diagnostic metadata. An empty signal is a no-op, not an implicit whole-run request.
+
+Indexed requests address per-child callbacks. A request received while its running child has no callback waits for that child's next registration, including a model fallback attempt. If the child settles first, the request is discarded without stopping a sibling. A later indexed or whole-run request remains valid after an earlier indexed stop. Whole-run requests retain the legacy last-registered callback: they do not latch across a registration gap or select a different sibling after that slot clears. Repeated whole-run requests are ignored.
+
 ## Parameter reference
 
 | Param | Type | Default | Description |

@@ -1,4 +1,5 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
+import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { capturePiRuntime, parsePiRuntime, type PiRuntimeIdentity } from "../shared/pi-spawn.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -409,7 +410,7 @@ function emitControlNotification(input: {
 	}
 }
 
-function interruptAsyncRun(state: SubagentState, runId: string | undefined): AgentToolResult<Details> | null {
+function interruptAsyncRun(state: SubagentState, runId: string | undefined, index?: number): AgentToolResult<Details> | null {
 	const target = getAsyncInterruptTarget(state, runId);
 	if (!target) return null;
 	const status = readStatus(target.asyncDir);
@@ -420,7 +421,15 @@ function interruptAsyncRun(state: SubagentState, runId: string | undefined): Age
 			details: { mode: "management", results: [] },
 		};
 	}
+	if (index !== undefined && status.steps[index]?.status !== "running") {
+		return {
+			content: [{ type: "text", text: `Async run ${target.asyncId} has no running child at index ${index}.` }],
+			isError: true,
+			details: { mode: "management", results: [] },
+		};
+	}
 	try {
+		writeAtomicJson(path.join(target.asyncDir, `interrupt-request-${index ?? "all"}.json`), { index, requestedAt: Date.now() });
 		process.kill(status.pid, ASYNC_INTERRUPT_SIGNAL);
 		const tracked = state.asyncJobs.get(target.asyncId);
 		if (tracked) {
@@ -428,7 +437,7 @@ function interruptAsyncRun(state: SubagentState, runId: string | undefined): Age
 			tracked.updatedAt = Date.now();
 		}
 		return {
-			content: [{ type: "text", text: `Interrupt requested for async run ${target.asyncId}.` }],
+			content: [{ type: "text", text: index === undefined ? `Interrupt requested for async run ${target.asyncId}.` : `Interrupt requested for child ${index} of async run ${target.asyncId}.` }],
 			details: { mode: "management", results: [] },
 		};
 	} catch (error) {
@@ -546,6 +555,7 @@ function directNestedAsyncInterrupt(target: ResolvedSubagentRunId & { kind: "nes
 	const pid = typeof status?.pid === "number" && status.pid > 0 ? status.pid : run.pid;
 	if (!status || status.state !== "running" || typeof pid !== "number" || pid <= 0) return undefined;
 	try {
+		writeAtomicJson(path.join(asyncDir, "interrupt-request-all.json"), { requestedAt: Date.now() });
 		process.kill(pid, ASYNC_INTERRUPT_SIGNAL);
 		return { content: [{ type: "text", text: `Interrupt requested for nested async run ${run.id}.` }], details: { mode: "management", results: [] } };
 	} catch (error) {
@@ -2267,7 +2277,7 @@ export function createSubagentExecutor(services: ExecutorDeps): {
 						details: { mode: "management", results: [] },
 					};
 				}
-				const asyncInterruptResult = interruptAsyncRun(deps.state, resolved?.kind === "async" ? resolved.id : targetRunId);
+				const asyncInterruptResult = interruptAsyncRun(deps.state, resolved?.kind === "async" ? resolved.id : targetRunId, params.index);
 				if (asyncInterruptResult) return asyncInterruptResult;
 				return {
 					content: [{ type: "text", text: "No interrupt-capable run found in this session." }],

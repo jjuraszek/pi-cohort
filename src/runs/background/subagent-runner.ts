@@ -1389,6 +1389,9 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	const logPath = path.join(asyncDir, `subagent-log-${id}.md`);
 	const controlConfig = config.controlConfig ?? DEFAULT_CONTROL_CONFIG;
 	let activeChildInterrupt: (() => void) | undefined;
+	const childInterrupts = new Map<number, () => void>();
+	const pendingStops = new Set<number>();
+	let wholeRunInterruptRequested = false;
 	let interrupted = false;
 	let currentActivityState: ActivityState | undefined;
 	let activityTimer: NodeJS.Timeout | undefined;
@@ -1792,24 +1795,66 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		activityTimer.unref?.();
 	}
 
-	const interruptRunner = () => {
-		if (interrupted || statusPayload.state !== "running") return;
-		interrupted = true;
+	const pauseStep = (index: number) => {
+		const step = statusPayload.steps[index];
 		const now = Date.now();
-		currentActivityState = undefined;
-		statusPayload.activityState = undefined;
+		step.status = "paused";
+		step.activityState = undefined;
+		step.endedAt = now;
+		step.durationMs = step.startedAt ? now - step.startedAt : undefined;
+		step.lastActivityAt = now;
 		statusPayload.lastUpdate = now;
-		for (const step of statusPayload.steps) {
-			if (step.status === "running") {
-				step.status = "paused";
-				step.activityState = undefined;
-				step.endedAt = now;
-				step.durationMs = step.startedAt ? now - step.startedAt : undefined;
-				step.lastActivityAt = now;
+	};
+	const registerChildInterrupt = (index: number, interrupt: (() => void) | undefined) => {
+		activeChildInterrupt = interrupt;
+		if (!interrupt) {
+			childInterrupts.delete(index);
+			return;
+		}
+		if (pendingStops.delete(index)) {
+			pauseStep(index);
+			writeStatusPayload();
+			interrupt();
+		} else {
+			childInterrupts.set(index, interrupt);
+		}
+	};
+	const interruptRunner = () => {
+		if (statusPayload.state !== "running") return;
+		const requests = fs.readdirSync(asyncDir).filter((name) => /^interrupt-request-(\d+|all)\.json$/.test(name));
+		let changed = false;
+		let wholeRun = false;
+		for (const name of requests) {
+			fs.readFileSync(path.join(asyncDir, name), "utf8");
+			fs.unlinkSync(path.join(asyncDir, name));
+			if (name === "interrupt-request-all.json") {
+				wholeRun = true;
+				continue;
+			}
+			const index = Number(name.slice("interrupt-request-".length, -".json".length));
+			const interrupt = childInterrupts.get(index);
+			if (interrupt) {
+				pauseStep(index);
+				childInterrupts.delete(index);
+				interrupt();
+				changed = true;
+			} else if (statusPayload.steps[index]?.status === "running") {
+				pendingStops.add(index);
 			}
 		}
-		writeStatusPayload();
-		activeChildInterrupt?.();
+		if (wholeRun && !wholeRunInterruptRequested) {
+			wholeRunInterruptRequested = true;
+			interrupted = true;
+			currentActivityState = undefined;
+			statusPayload.activityState = undefined;
+			statusPayload.lastUpdate = Date.now();
+			for (let index = 0; index < statusPayload.steps.length; index++) {
+				if (statusPayload.steps[index].status === "running") pauseStep(index);
+			}
+			activeChildInterrupt?.();
+			changed = true;
+		}
+		if (changed) writeStatusPayload();
 	};
 	process.on(ASYNC_INTERRUPT_SIGNAL, interruptRunner);
 	appendJsonl(
@@ -2020,15 +2065,14 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					executionBackendCoordinator,
 					executionBackendConfig,
 					nestedRoute: config.nestedRoute,
-					registerInterrupt: (interrupt) => {
-						activeChildInterrupt = interrupt;
-					},
+					registerInterrupt: (interrupt) => registerChildInterrupt(fi, interrupt),
 					onAttemptStart: (attempt) => updateStepModel(fi, attempt.model, attempt.thinking),
 					onChildEvent: (event) => updateStepFromChildEvent(fi, event),
 				});
 				const taskEndTime = Date.now();
 				if (singleResult.interrupted) interrupted = true;
-				statusPayload.steps[fi].status = singleResult.exitCode === 0 ? "complete" : "failed";
+				pendingStops.delete(fi);
+				statusPayload.steps[fi].status = singleResult.interrupted ? "paused" : singleResult.exitCode === 0 ? "complete" : "failed";
 				statusPayload.steps[fi].endedAt = taskEndTime;
 				statusPayload.steps[fi].durationMs = taskEndTime - taskStartTime;
 				statusPayload.steps[fi].exitCode = singleResult.exitCode;
@@ -2314,9 +2358,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 							executionBackendCoordinator,
 							executionBackendConfig,
 							nestedRoute: config.nestedRoute,
-							registerInterrupt: (interrupt) => {
-								activeChildInterrupt = interrupt;
-							},
+							registerInterrupt: (interrupt) => registerChildInterrupt(fi, interrupt),
 							onAttemptStart: (attempt) => updateStepModel(fi, attempt.model, attempt.thinking),
 							onChildEvent: (event) => updateStepFromChildEvent(fi, event),
 						});
@@ -2325,7 +2367,8 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 						const taskDuration = taskEndTime - taskStartTime;
 
 						if (singleResult.interrupted) interrupted = true;
-						statusPayload.steps[fi].status = singleResult.exitCode === 0 ? "complete" : "failed";
+						pendingStops.delete(fi);
+						statusPayload.steps[fi].status = singleResult.interrupted ? "paused" : singleResult.exitCode === 0 ? "complete" : "failed";
 						statusPayload.steps[fi].endedAt = taskEndTime;
 						statusPayload.steps[fi].durationMs = taskDuration;
 						statusPayload.steps[fi].exitCode = singleResult.exitCode;
@@ -2498,9 +2541,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				executionBackendCoordinator,
 				executionBackendConfig,
 				nestedRoute: config.nestedRoute,
-				registerInterrupt: (interrupt) => {
-					activeChildInterrupt = interrupt;
-				},
+				registerInterrupt: (interrupt) => registerChildInterrupt(flatIndex, interrupt),
 				onAttemptStart: (attempt) => updateStepModel(flatIndex, attempt.model, attempt.thinking),
 				onChildEvent: (event) => updateStepFromChildEvent(flatIndex, event),
 			});
@@ -2546,7 +2587,8 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 
 			const stepEndTime = Date.now();
 			if (singleResult.interrupted) interrupted = true;
-			statusPayload.steps[flatIndex].status = singleResult.exitCode === 0 ? "complete" : "failed";
+			pendingStops.delete(flatIndex);
+			statusPayload.steps[flatIndex].status = singleResult.interrupted ? "paused" : singleResult.exitCode === 0 ? "complete" : "failed";
 			statusPayload.steps[flatIndex].endedAt = stepEndTime;
 			statusPayload.steps[flatIndex].durationMs = stepEndTime - stepStartTime;
 			statusPayload.steps[flatIndex].exitCode = singleResult.exitCode;

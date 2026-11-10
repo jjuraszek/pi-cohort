@@ -177,9 +177,9 @@ Each child session is named `<agent> <run id prefix>[/<index>] from <parent>`, s
 | Third task (index 2) of the same parallel run | `scout 3f9a2c1e/2 from billing reports` |
 | `scout` from an unnamed session | `scout 3f9a2c1e from <parent session id>` |
 
-The run id prefix works as the `id` for `subagent` status, interrupt, and resume; the index is the child `index` for resume or a foreground interrupt. A nested child names its parent child: `worker 7b41d0aa from scout 3f9a2c1e from billing reports`.
+The run id prefix works as the `id` for `subagent` status, interrupt, and resume; the index is the child `index` for resume or interrupt. A nested child names its parent child: `worker 7b41d0aa from scout 3f9a2c1e from billing reports`.
 
-`subagent({ action: "interrupt", id: "3f9a2c1e", index: 1 })` stops only child 1 of a foreground parallel run. The siblings finish and the waiting call returns their outputs with the stopped child marked `INTERRUPTED`. A chain parallel or dynamic step fails without running later steps, retaining sibling outputs and static worktree patches. See the [indexed result contract](doc/programmatic-api.md#foreground-stop-by-index).
+`subagent({ action: "interrupt", id: "3f9a2c1e", index: 1 })` stops only child 1 of a foreground or background parallel run. In the foreground, the waiting call returns sibling outputs with the stopped child marked `INTERRUPTED`; a chain parallel or dynamic step fails without running later steps, retaining sibling outputs and static worktree patches. In the background, siblings finish and retain their statuses and outputs; the stopped child and overall run settle as `paused`, with the existing pause summary. See the [foreground result contract](doc/programmatic-api.md#foreground-stop-by-index) and [background transport](doc/programmatic-api.md#background-stop-by-index).
 
 Every child process also gets these environment variables, stable inputs for other extensions (for example, a session roster linking each child to its parent):
 
