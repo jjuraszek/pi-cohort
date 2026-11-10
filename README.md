@@ -181,6 +181,8 @@ The run id prefix works as the `id` for `subagent` status, interrupt, and resume
 
 `subagent({ action: "interrupt", id: "3f9a2c1e", index: 1 })` stops only child 1 of a foreground or background parallel run. In the foreground, the waiting call returns sibling outputs with the stopped child marked `INTERRUPTED`; a chain parallel or dynamic step fails without running later steps, retaining sibling outputs and static worktree patches. In the background, siblings finish and retain their statuses and outputs; the stopped child and overall run settle as `paused`, with the existing pause summary. See the [foreground result contract](doc/programmatic-api.md#foreground-stop-by-index) and [background transport](doc/programmatic-api.md#background-stop-by-index).
 
+While the calling agent is blocked, type `/interrupt-child 1` to stop child 1 without cancelling the call or steering the agent. With several foreground runs, supply a run id or prefix as the second argument; omitting it lists the run ids instead of stopping a child. Tab completion lists running foreground children. With no foreground run, the command uses the tool's normal run resolution, including background runs. See [command syntax](doc/commands.md#direct-commands).
+
 Every child process also gets these environment variables, stable inputs for other extensions (for example, a session roster linking each child to its parent):
 
 | Variable | Value | Set |

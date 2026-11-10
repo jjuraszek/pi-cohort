@@ -557,6 +557,42 @@ export function registerSlashCommands(
 		},
 	});
 
+	pi.registerCommand("interrupt-child", {
+		description: "Stop one running child: /interrupt-child <index> [run-id]",
+		getArgumentCompletions: (prefix) => {
+			const runs = [...state.foregroundControls.entries()];
+			return runs.flatMap(([id, control]) => [...control.childInterrupts.keys()].map((index) => {
+				const value = runs.length > 1 ? `${index} ${id}` : String(index);
+				return { value, label: value };
+			})).filter(({ value }) => value.startsWith(prefix));
+		},
+		handler: async (args, ctx) => {
+			const [rawIndex, requestedId, ...extra] = args.trim().split(/\s+/);
+			if (!/^\d+$/.test(rawIndex) || extra.length > 0) {
+				ctx.ui.notify("Usage: /interrupt-child <index> [run-id]", "error");
+				return;
+			}
+			let id = requestedId;
+			if (!id) {
+				const ids = [...state.foregroundControls.keys()];
+				if (ids.length > 1) {
+					ctx.ui.notify(`Choose a foreground run: ${ids.join(", ")}. Use /interrupt-child <index> <run-id>.`, "error");
+					return;
+				}
+				id = ids[0];
+			}
+			try {
+				const response = await requestSlashRun(pi, ctx, randomUUID(), {
+					action: "interrupt", index: Number(rawIndex), ...(id ? { id } : {}),
+				});
+				ctx.ui.notify(extractSlashMessageText(response.result.content), response.isError ? "error" : "info");
+			} catch (error) {
+				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+			} finally {
+				if (ctx.hasUI) ctx.ui.setStatus("subagent-slash", undefined);
+			}
+		},
+	});
 
 	pi.registerCommand("cohort-doctor", {
 		description: "Show pi-cohort diagnostics",

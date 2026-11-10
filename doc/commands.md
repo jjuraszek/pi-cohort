@@ -13,8 +13,13 @@ Back to [README](../README.md).
 | `/parallel agent1 "task1" -> agent2 "task2"` | Run agents in parallel |
 | `/run-chain <chainName> -- <task>` | Launch a saved `.chain.md` or `.chain.json` workflow |
 | `/cohort-doctor` | Show read-only setup diagnostics |
+| `/interrupt-child <index> [run-id]` | Stop one running child without cancelling the waiting call |
 
-Commands validate agent names locally, support tab completion, and send results back into the conversation.
+Launch commands validate agent names locally, support tab completion, and send results back into the conversation.
+
+`/interrupt-child` takes a zero-based nonnegative integer index and an optional run id or prefix. With one foreground run, `/interrupt-child 1` targets that run; with several, omitting the id lists their ids and stops nothing. With no foreground run, the tool's normal run resolution applies, including background runs. Tab completion lists only running foreground children and includes the run id when several runs exist.
+
+The command reports the tool's response as a notification, including errors for indices with no running child. It does not send a conversation message or steer the calling agent. Foreground parallel siblings finish and their outputs return with the stopped child marked `INTERRUPTED`; see the [foreground](programmatic-api.md#foreground-stop-by-index) and [background](programmatic-api.md#background-stop-by-index) result contracts.
 
 ### Per-step tasks
 

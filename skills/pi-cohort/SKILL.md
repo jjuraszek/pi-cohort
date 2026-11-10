@@ -72,7 +72,7 @@ A child saying "done" is evidence, not verification. `reviewed` means a reviewer
 Lifecycle (`queued`, `running`, `paused`, `complete`, `failed`) is separate from attention. `needs_attention` means no activity past the threshold; it is not a failure.
 
 - `status` (optionally `id`): active runs and their children.
-- `interrupt` (optionally `id`, including a nested run id): cancels the current child turn and leaves the run `paused`. Bare `interrupt` does not reach hidden nested descendants. Then decide: `resume` with clearer instructions, replace the task, ask the user, or stop.
+- Use `interrupt` with optional `id` and zero-based `index` to stop one running child and let its siblings finish; read the [result contracts](../../doc/programmatic-api.md#foreground-stop-by-index) for foreground and background outcomes. Omit `index` for the whole-run pause behavior; use a nested run id only without `index`. Treat bare `interrupt` as excluding hidden nested descendants. Then choose: `resume` with clearer instructions, replace the task, ask the user, or stop.
 - `resume` (`id`, `message`, `index` for multi-child runs): revives a finished, failed, or paused child from its persisted session file as a new child process. A running child cannot be resumed; a child with no `.jsonl` session fails with that reason.
 - Thresholds: `control: { needsAttentionAfterMs, inFlightSilenceCeilingMs, inFlightSilenceKillMs, notifyOn }` beside `tasks`; the kill is `max(inFlightSilenceKillMs, inFlightSilenceCeilingMs + needsAttentionAfterMs)`.
 - Long-running async job: its task must instruct it to emit observable progress (log lines, counts, phase names). A silent long job is a defect. Pair it with a monitor, giving it the `Async dir:` from the start message:
