@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Foreground `interrupt` with a child `index` stops only that child and returns sibling outputs with an interrupted marker. Parallel and dynamic chain steps fail without losing sibling outputs; static worktree steps retain patch locations. (#58)
+
 ## [7.7.2] - 2026-11-10
 
 ### Fixed
