@@ -31,7 +31,7 @@ function fixture() {
 }
 
 for (const async of [false, true]) {
-	it(`interrupt rejects absent, pending, finished and repeated indices without stopping siblings (async=${async})`, async (t) => {
+	it(`interrupt rejects absent, pending, finished and repeated indices without stopping siblings (async=${async})`, { skip: async && process.platform === "win32" ? "requires POSIX signals" : undefined }, async (t) => {
 		const { mock, cwd, state, execute } = fixture();
 		const signals = t.mock.method(process, "kill");
 		mock.install();

@@ -70,7 +70,7 @@ describe("foreground in-flight turn control", { skip: !available ? "pi packages 
 	});
 
 	for (const mode of ["parallel", "parallel mixed", "static", "static stopOn", "static stopOn matched", "dynamic", "failFast", "mixed", "single", "sequential"]) {
-		it(`interrupt with index stops only that parallel child (${mode})`, async () => {
+		it(`interrupt with index stops only that parallel child (${mode})`, { skip: mode.startsWith("static") && process.platform === "win32" ? "worktree setup hook is a shebang script, which Windows cannot spawn" : undefined }, async () => {
 			const dynamic = mode === "dynamic";
 			const single = mode === "single" || mode === "sequential";
 			const worktree = mode.startsWith("static");

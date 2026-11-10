@@ -16,7 +16,7 @@ async function waitFor(predicate: () => boolean, message: string, timeout = 75_0
 }
 
 for (const scenario of ["parallel", "static", "dynamic", "single", "early", "fallback", "overlap", "mixed", "later-target", "later-whole", "empty", "last-settled", "whole", "structured-static", "structured-dynamic", "mutation", "hidden-error"]) {
-it(`async stop by index pauses only that child (${scenario})`, async () => {
+it(`async stop by index pauses only that child (${scenario})`, { skip: process.platform === "win32" ? "requires POSIX signals" : undefined }, async () => {
 	const mock = createMockPi();
 	const cwd = createTempDir();
 	mock.install();
