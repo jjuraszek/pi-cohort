@@ -10,8 +10,11 @@ import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import type { MockPi } from "../support/helpers.ts";
 import {
+	createEventBus,
 	createMockPi,
 	createTempDir,
+	makeAgent,
+	makeMinimalCtx,
 	removeTempDir,
 	makeAgentConfigs,
 	events,
@@ -35,6 +38,7 @@ interface ExecutionModule {
 	): Promise<RunSyncResult>;
 }
 
+const executorModule = await import("../../src/runs/foreground/subagent-executor.ts");
 const execution = await tryImport<ExecutionModule>("./src/runs/foreground/execution.ts");
 const available = !!execution;
 const runSync = execution?.runSync;
@@ -60,6 +64,60 @@ describe("foreground in-flight turn control", { skip: !available ? "pi packages 
 
 	afterEach(() => {
 		removeTempDir(tempDir);
+	});
+
+	it("interrupt with an index naming no running child errors", async () => {
+		mockPi.onCall({
+			steps: [
+				{ jsonl: [events.messageStart()] },
+				{ delay: 2_000, jsonl: [events.assistantMessage("Sibling completed")] },
+			],
+		});
+		const state = {
+			baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(),
+			grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() },
+			foregroundControls: new Map(), lastForegroundControlId: null,
+		};
+		const executor = executorModule.createSubagentExecutor({
+			captureRuntime: mockPi.captureRuntime,
+			pi: { events: createEventBus(), getSessionName: () => undefined },
+			state,
+			resolveConfig: () => ({ control: { enabled: false } }),
+			tempArtifactsDir: tempDir,
+			getSubagentSessionRoot: () => tempDir,
+			expandTilde: (value: string) => value,
+			discoverAgents: () => ({ agents: [makeAgent("echo")] }),
+		});
+		const controller = new AbortController();
+		const ctx = makeMinimalCtx(tempDir);
+		const pending = executor.execute("invalid-child-index", {
+			tasks: [0, 1, 2].map((index) => ({ agent: "echo", task: `Task ${index}` })),
+			async: false,
+		}, controller.signal, undefined, ctx);
+		try {
+			const deadline = Date.now() + 5_000;
+			while (mockPi.callCount() < 3 && Date.now() < deadline) {
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			}
+			assert.equal(mockPi.callCount(), 3, "all three children must start before the request");
+			const [runId] = state.foregroundControls.keys();
+			assert.ok(runId, "the foreground run must still be in flight");
+			const response = await executor.execute("invalid-stop", {
+				action: "interrupt", id: runId, index: 3,
+			}, undefined, undefined, ctx);
+			const result = await pending;
+			assert.equal(response.isError, true, "index 3 names no running child and must return an error");
+			assert.match(response.content[0].text, /no running child at index 3/);
+			assert.equal(result.details.results.length, 3);
+			for (const child of result.details.results) {
+				assert.equal(child.exitCode, 0);
+				assert.notEqual(child.interrupted, true, "an invalid index must stop no child");
+				assert.equal(child.finalOutput, "Sibling completed");
+			}
+		} finally {
+			controller.abort();
+			await pending;
+		}
 	});
 
 	it("treats a silent in-flight turn under the ceiling as active_long_running, not needs_attention", async () => {
