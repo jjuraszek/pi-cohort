@@ -16,11 +16,18 @@ function listPendingFiles(dir) {
 		.sort();
 }
 
-function claimNextResponse(dir) {
+function claimNextResponse(dir, args) {
 	for (const fileName of listPendingFiles(dir)) {
 		const sourcePath = path.join(dir, fileName);
 		const targetPath = path.join(dir, fileName.replace(/^pending-/, "consumed-"));
 		try {
+			const candidate = JSON.parse(fs.readFileSync(sourcePath, "utf-8"));
+			if (candidate.taskIncludes && !args.some((arg) => {
+				if (arg.includes(candidate.taskIncludes)) return true;
+				if (!arg.startsWith("@")) return false;
+				try { return fs.readFileSync(arg.slice(1), "utf-8").includes(candidate.taskIncludes); }
+				catch { return false; }
+			})) continue;
 			fs.renameSync(sourcePath, targetPath);
 			return JSON.parse(fs.readFileSync(targetPath, "utf-8"));
 		} catch (error) {
@@ -239,7 +246,7 @@ async function main() {
 
 	const args = process.argv.slice(2);
 	const jsonMode = isJsonMode(args);
-	const response = claimNextResponse(queueDir) ?? defaultResponse();
+	const response = claimNextResponse(queueDir, args) ?? defaultResponse();
 	if (response.requireAcceptanceStructuredOrder && taskRequestsAcceptance(args) && !taskIncludesOrdering(args)) {
 		fail("Expected report-then-structured-output ordering sentence.");
 	}

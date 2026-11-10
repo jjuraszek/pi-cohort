@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import { capturePiRuntime, type PiRuntimeIdentity } from "../../src/runs/shared/pi-spawn.ts";
 
 interface MockPiResponse {
+	taskIncludes?: string;
 	output?: string;
 	stderr?: string;
 	exitCode?: number;

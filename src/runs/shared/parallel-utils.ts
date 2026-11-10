@@ -99,6 +99,7 @@ export async function mapConcurrent<T, R>(
 }
 
 export interface ParallelTaskResult {
+	interrupted?: boolean;
 	agent: string;
 	taskIndex?: number;
 	output: string;
@@ -120,7 +121,7 @@ export function aggregateParallelOutputs(
 			const header = headerFormat(r.taskIndex ?? i, r.agent);
 			const hasOutput = Boolean(r.output?.trim());
 			const status =
-				r.exitCode === -1
+				r.interrupted ? "INTERRUPTED" : r.exitCode === -1
 					? "SKIPPED"
 					: r.exitCode !== 0 && r.exitCode !== null
 						? `FAILED (exit code ${r.exitCode})${r.error ? `: ${r.error}` : ""}`

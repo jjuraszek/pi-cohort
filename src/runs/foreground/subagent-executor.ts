@@ -1472,13 +1472,14 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 			input.foregroundControl.currentIndex = index;
 			input.foregroundControl.currentActivityState = undefined;
 			input.foregroundControl.updatedAt = Date.now();
-			input.foregroundControl.interrupt = () => {
+			input.foregroundControl.lastAssigned = index;
+			input.foregroundControl.childInterrupts.set(index, () => {
 				if (interruptController.signal.aborted) return false;
 				interruptController.abort();
 				input.foregroundControl!.currentActivityState = undefined;
 				input.foregroundControl!.updatedAt = Date.now();
 				return true;
-			};
+			});
 		}
 		const agentConfig = input.agents.find((agent) => agent.name === task.agent);
 		return runSync(input.ctx.cwd, input.agents, task.agent, taskText, {
@@ -1547,8 +1548,9 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 					}
 				: undefined,
 		}).finally(() => {
-			if (input.foregroundControl?.currentIndex === index) {
-				input.foregroundControl.interrupt = undefined;
+			input.foregroundControl?.childInterrupts.delete(index);
+			if (input.foregroundControl?.lastAssigned === index) {
+				input.foregroundControl.lastAssigned = undefined;
 				input.foregroundControl.updatedAt = Date.now();
 			}
 		});
@@ -1842,7 +1844,8 @@ async function runParallelPath(data: ExecutionContextData, deps: CallExecutorDep
 			artifacts: allArtifactPaths.length ? { dir: artifactsDir, files: allArtifactPaths } : undefined,
 		});
 		rememberForegroundRun(deps.state, { runtime: data.runtime, sessionRoot: data.sessionRoot, runId, mode: "parallel", cwd: effectiveCwd, results: details.results });
-		if (interrupted) {
+		const stoppedByIndexOnly = interrupted && results.every((result, index) => !result.interrupted || foregroundControl?.stoppedByIndex.has(index));
+		if (interrupted && !stoppedByIndexOnly) {
 			return {
 				content: [{ type: "text", text: withWorktreeSuffix(`Parallel run paused after interrupt (${interrupted.agent}). Waiting for explicit next action.`) + formatInterruptedCleanup(results) }],
 				details,
@@ -1851,20 +1854,21 @@ async function runParallelPath(data: ExecutionContextData, deps: CallExecutorDep
 
 		if (foregroundControl) updateForegroundNestedProjection(foregroundControl);
 
-		const ok = results.filter((result) => result.exitCode === 0).length;
+		const ok = results.filter((result) => result.exitCode === 0 && !result.interrupted).length;
 		const downgradeNote = backgroundRequestedWhileClarifying ? " (background requested, but clarify kept this run foreground)" : "";
 		const aggregatedOutput = aggregateParallelOutputs(
 			results.map((result) => ({
 				agent: result.agent,
 				output: result.truncation?.text || getSingleResultOutput(result),
 				exitCode: result.exitCode,
+				interrupted: result.interrupted,
 				error: result.error,
 			})),
 			(i, agent) => `=== Task ${i + 1}: ${agent} ===`,
 		);
 
 		const summary = `${ok}/${results.length} succeeded${downgradeNote}`;
-		const fullContent = withWorktreeSuffix(`${summary}\n\n${aggregatedOutput}`);
+		const fullContent = withWorktreeSuffix(`${summary}\n\n${aggregatedOutput}`) + formatInterruptedCleanup(results);
 
 		return {
 			content: [{ type: "text", text: fullContent }],
@@ -2013,13 +2017,14 @@ async function runSinglePath(data: ExecutionContextData, deps: CallExecutorDeps)
 		foregroundControl.currentIndex = 0;
 		foregroundControl.currentActivityState = undefined;
 		foregroundControl.updatedAt = Date.now();
-		foregroundControl.interrupt = () => {
+		foregroundControl.lastAssigned = 0;
+		foregroundControl.childInterrupts.set(0, () => {
 			if (interruptController.signal.aborted) return false;
 			interruptController.abort();
 			foregroundControl.currentActivityState = undefined;
 			foregroundControl.updatedAt = Date.now();
 			return true;
-		};
+		});
 	}
 
 	const forwardSingleUpdate = onUpdate
@@ -2076,9 +2081,11 @@ async function runSinglePath(data: ExecutionContextData, deps: CallExecutorDeps)
 		acceptanceContext: { mode: "single" },
 		forwardedFlags: deps.forwardedFlags,
 		executionBackend: deps.config.executionBackend,
+	}).finally(() => {
+		foregroundControl?.childInterrupts.delete(0);
+		if (foregroundControl?.lastAssigned === 0) foregroundControl.lastAssigned = undefined;
 	});
 	if (foregroundControl?.currentIndex === 0) {
-		foregroundControl.interrupt = undefined;
 		foregroundControl.currentActivityState = r.progress?.activityState;
 		foregroundControl.lastActivityAt = r.progress?.lastActivityAt;
 		foregroundControl.currentTool = r.progress?.currentTool;
@@ -2245,17 +2252,17 @@ export function createSubagentExecutor(services: ExecutorDeps): {
 				if (resolved?.kind === "nested") return interruptNestedRun(resolved);
 				const foreground = getForegroundControl(deps.state, resolved?.kind === "foreground" ? resolved.id : targetRunId);
 				if (foreground?.interrupt) {
-					const interrupted = foreground.interrupt();
+					const interrupted = foreground.interrupt(params.index);
 					if (interrupted) {
 						foreground.updatedAt = Date.now();
 						foreground.currentActivityState = undefined;
 						return {
-							content: [{ type: "text", text: `Interrupt requested for foreground run ${foreground.runId}.` }],
+							content: [{ type: "text", text: params.index === undefined ? `Interrupt requested for foreground run ${foreground.runId}.` : `Interrupt requested for child ${params.index} of foreground run ${foreground.runId}.` }],
 							details: { mode: "management", results: [] },
 						};
 					}
 					return {
-						content: [{ type: "text", text: `Foreground run ${foreground.runId} has no active child step to interrupt.` }],
+						content: [{ type: "text", text: params.index === undefined ? `Foreground run ${foreground.runId} has no active child step to interrupt.` : `Foreground run ${foreground.runId} has no running child at index ${params.index}.` }],
 						isError: true,
 						details: { mode: "management", results: [] },
 					};
@@ -2405,7 +2412,7 @@ export function createSubagentExecutor(services: ExecutorDeps): {
 		};
 
 		const foregroundMode: "single" | "parallel" | "chain" = hasChain ? "chain" : hasTasks ? "parallel" : "single";
-		const foregroundControl = effectiveAsync
+		const foregroundControl: SubagentState["foregroundControls"] extends Map<string, infer T> ? T | undefined : never = effectiveAsync
 			? undefined
 			: {
 				runId,
@@ -2416,9 +2423,20 @@ export function createSubagentExecutor(services: ExecutorDeps): {
 				currentIndex: undefined,
 				currentActivityState: undefined,
 				nestedRoute,
-				interrupt: undefined,
+				childInterrupts: new Map(),
+				stoppedByIndex: new Set(),
 			};
 		if (foregroundControl) {
+			foregroundControl.interrupt = (index?: number) => {
+				const target = index ?? foregroundControl.lastAssigned;
+				if (target === undefined) return false;
+				const interrupted = foregroundControl.childInterrupts.get(target)?.() ?? false;
+				if (interrupted && index !== undefined) {
+					foregroundControl.childInterrupts.delete(index);
+					foregroundControl.stoppedByIndex.add(index);
+				}
+				return interrupted;
+			};
 			deps.state.foregroundControls.set(runId, foregroundControl);
 			deps.state.lastForegroundControlId = runId;
 		}
