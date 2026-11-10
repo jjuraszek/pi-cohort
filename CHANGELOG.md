@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [7.7.3] - 2026-11-10
 
 ### Added
 - `/interrupt-child <index> [run-id]` stops one running child while the calling agent is blocked, with running-child completions and notifications instead of conversation messages. (#58)
