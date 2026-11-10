@@ -284,7 +284,7 @@ describe("runSync execution backend routing", () => {
 		const h = dependencies(externalSelection);
 		h.deps.runExternalAttempt = async input => result(input.agent, input.task);
 		const rejected = await runSync("/runtime", [makeAgent("worker", { completionGuard: false })], "worker", "Task", {
-			runId: "rejected", sessionFile: "/tmp/rejected", acceptance: { level: "claimed", reason: "test", criteria: ["must report"] },
+			runId: "rejected", sessionFile: "/tmp/rejected", acceptance: { level: "checked", criteria: ["must report"] },
 		}, h.deps);
 		assert.equal(rejected.exitCode, 1);
 		assert.deepEqual(h.finishes, ["retained"]);

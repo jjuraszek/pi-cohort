@@ -34,7 +34,7 @@ Every run resolves an effective acceptance policy. Callers may omit `acceptance`
 }
 ```
 
-Accepted levels are `auto`, `none`, `attested`, `checked`, `verified`, and `reviewed`. `acceptance: "auto"` is the default. Read-only reviewer/scout tasks infer lightweight attestation, normal writer tasks infer checked evidence, and async/risky/dynamic writer contexts infer a reviewed gate. To disable gates, prefer `{ level: "none", reason: "..." }`.
+Accepted levels are `auto`, `none`, `attested`, `checked`, `verified`, and `reviewed`. `acceptance: "auto"` is the default. Read-only reviewer/scout tasks infer lightweight attestation, normal writer tasks infer checked evidence, and async/risky/dynamic writer contexts infer a reviewed gate. An explicit level is the level that runs; inference applies only to `"auto"` or an omitted `acceptance` (including an object without `level`). To disable gates, `none` requires the object form with a `reason`: `{ level: "none", reason: "..." }`; the bare string `"none"` is refused before dispatch.
 
 Acceptance provenance is stored separately from child prose:
 
