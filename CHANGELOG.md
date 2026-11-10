@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- A forked subagent (`context: "fork"`) on an external execution backend no longer fails at startup: pi branches the parent session with the default file mode (0644), and the external path refuses any session file readable by group or other, so the fork resolver now sets the branched file to 0600 after its existence and containment checks. The owner-only and regular-file rejections now carry the diagnostic code `session_file_untrusted`, rendered as `External execution attempt failed (session_file_untrusted)` on both the foreground and background paths, instead of the bare phrase. (#56)
+
 ## [7.7.1] - 2026-11-09
 
 ### Fixed

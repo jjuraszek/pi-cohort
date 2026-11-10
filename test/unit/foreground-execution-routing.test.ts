@@ -23,7 +23,7 @@ const runtime = mock.runtime;
 function runSync(cwd: string, agents: AgentConfig[], name: string, task: string, options: RunSyncOptions, deps: RunSyncDependencies = {}) {
 	return execute(cwd, agents, name, task, { runtime, ...options }, deps);
 }
-import type { ExternalAttemptResult, ExternalExecution, ExternalExecutionOptions } from "../../src/runs/shared/external-execution.ts";
+import { ExternalExecutionDiagnosticError, type ExternalAttemptResult, type ExternalExecution, type ExternalExecutionOptions } from "../../src/runs/shared/external-execution.ts";
 import type { RunExternalSingleAttemptInput } from "../../src/runs/foreground/external-single-attempt.ts";
 import { snapshotResult } from "../../src/runs/foreground/attempt-finalization.ts";
 import type { SingleResult } from "../../src/shared/types.ts";
@@ -304,6 +304,17 @@ describe("runSync execution backend routing", () => {
 			assert.ok(output.error?.includes(`External execution ${phase} failed`));
 			assert.ok(!output.error?.includes("secret"));
 		});
+	});
+
+	it("appends the diagnostic code when the attempt rejects the session file", async () => {
+		const h = dependencies(externalSelection);
+		h.deps.runExternalAttempt = async () => { throw new ExternalExecutionDiagnosticError("session_file_untrusted", "execution session file must be owner-only"); };
+		const output = await runSync("/runtime", [makeAgent("worker", { completionGuard: false })], "worker", "Task", {
+			runId: "untrusted", sessionFile: "/tmp/untrusted", acceptance: noAcceptance,
+		}, h.deps);
+		assert.equal(output.exitCode, 1);
+		assert.equal(output.error, "External execution attempt failed (session_file_untrusted)");
+		assert.equal(output.executionSurface?.retained, true);
 	});
 
 	it("preserves executionSurface through snapshots and JSON serialization", () => {
