@@ -2259,10 +2259,17 @@ export function createSubagentExecutor(services: ExecutorDeps): {
 						return { content: [{ type: "text", text: message }], isError: true, details: { mode: "management", results: [] } };
 					}
 				}
-				if (resolved?.kind === "nested") return interruptNestedRun(resolved);
+				if (resolved?.kind === "nested") {
+					if (params.index !== undefined) return {
+						content: [{ type: "text", text: `Interrupt by index is not supported for nested run ${resolved.match.run.id}.` }],
+						isError: true,
+						details: { mode: "management", results: [] },
+					};
+					return interruptNestedRun(resolved);
+				}
 				const foreground = getForegroundControl(deps.state, resolved?.kind === "foreground" ? resolved.id : targetRunId);
-				if (foreground?.interrupt) {
-					const interrupted = foreground.interrupt(params.index);
+				if (foreground && (params.index !== undefined || foreground.interrupt)) {
+					const interrupted = foreground.interrupt?.(params.index);
 					if (interrupted) {
 						foreground.updatedAt = Date.now();
 						foreground.currentActivityState = undefined;
