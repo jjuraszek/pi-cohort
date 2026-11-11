@@ -3,7 +3,7 @@
 base: 273a79b4e5f6d80b14ff1e96b1193dc054b46b9e
 verification: env -u PI_CODING_AGENT_DIR npm run test:all
 checks: commands
-iterations: 7
+iterations: 8
 allowance: 10
 
 | row | status | attempts | evidence |
@@ -15,7 +15,7 @@ allowance: 10
 | 5 | done | 1 | timeout -k 30 60 node --import ./test/support/isolate-test-env.mjs --test test/unit/foreground-execution-routing.test.ts; 28 passed, 0 failed; omitted, resolved and partial control configs abort at 14400000 ms and not one ms earlier; no paid or external action launched |
 | 6 | done | 1 | timeout -k 30 60 node --import ./test/support/isolate-test-env.mjs --test test/unit/foreground-execution-routing.test.ts; 31 passed, 0 failed; call-time caps above four hours abort exactly at their deadlines with bounded 32-bit timer chunks; no paid or external action launched |
 | 7 | done | 0 | timeout -k 30 60 node --import ./test/support/isolate-test-env.mjs --test test/unit/subagent-control.test.ts; 42 passed, 0 failed; invalid cap values fall through to settings then default without clamping; no paid or external action launched |
-| 8 | open | 0 | |
+| 8 | done | 1 | timeout -k 30 60 node --import ./test/support/isolate-test-env.mjs --test test/unit/foreground-execution-routing.test.ts; 41 passed, 0 failed; external cap aborts owner and attempt signals, rewrites interruptions and startup failures, and wins selection rejection races; no paid or external action launched |
 | 9 | open | 0 | |
 | 10 | open | 0 | |
 
@@ -28,3 +28,4 @@ row 3 done | Added a settings-only foreground cap check through resolveConfig; 2
 row 4 done | Added shorter and longer call-time override checks; 24 integration tests pass without runtime changes. | Reuse the call-time precedence cases in test/integration/foreground-in-flight-control.test.ts for executor-level cap checks.
 row 5 done | Added three deterministic default-deadline checks; 28 unit tests pass without runtime changes. | Reuse the mocked timers and monotonic clock cases in test/unit/foreground-execution-routing.test.ts for cap-boundary checks.
 row 6 done | Added three extended call-time deadline checks including multiple 32-bit timer chunks; 31 unit tests pass without runtime changes. | Reuse the extended-deadline cases in test/unit/foreground-execution-routing.test.ts to check long caps and timer re-arming.
+row 8 done | Fixed a cap-versus-backend-selection rejection race and added ten external cap checks; 41 unit tests pass. | Reuse the external cap cases in test/unit/foreground-execution-routing.test.ts for interruption rewrites, startup failures and selection races.

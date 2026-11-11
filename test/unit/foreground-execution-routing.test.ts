@@ -168,6 +168,127 @@ describe("runSync extended maxRuntimeMs deadline", () => {
 	}
 });
 
+describe("runSync external maxRuntimeMs", () => {
+	const capError = "Subagent killed: ran for 1s (exceeded maxRuntimeMs=1000ms).";
+	const diagnostic = "Process termination could not be confirmed; manual cleanup may be required.";
+	const cases = ["interrupted", "partial output", "thrown interruption", "retryable failure", "clean success"] as const;
+	for (const scenario of cases) it(`settles an external attempt at the cap: ${scenario}`, async t => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		let now = 123_456;
+		let calls = 0;
+		const caller = new AbortController();
+		const removeListener = t.mock.method(caller.signal, "removeEventListener");
+		const h = dependencies(externalSelection);
+		h.deps.monotonicNow = () => now;
+		delete h.deps.runExternalAttempt;
+		h.owner.runAttempt = async input => {
+			calls++;
+			assert.strictEqual(input.signal, h.ownerOptions[0].signal);
+			assert.notStrictEqual(input.signal, caller.signal);
+			now += 999;
+			t.mock.timers.tick(999);
+			assert.equal(input.signal?.aborted, false);
+			now++;
+			t.mock.timers.tick(1);
+			assert.equal(input.signal?.aborted, true);
+			assert.equal(caller.signal.aborted, false, "the cap belongs to the child, not its caller");
+			if (scenario === "thrown interruption") throw Object.assign(new Error(diagnostic), { interrupted: true });
+			if (scenario === "clean success") return successAttemptResult();
+			if (scenario === "retryable failure") return {
+				...successAttemptResult(), outcome: "failed", exit: { code: 1, signal: null }, error: "rate limit exceeded",
+			};
+			return {
+				...successAttemptResult(), outcome: "interrupted", interrupted: true,
+				finalOutput: scenario === "partial output" ? "partial work" : "", error: diagnostic,
+			};
+		};
+		const output = await runSync("/runtime", [makeAgent("worker", {
+			model: "one/model", fallbackModels: ["two/model"], completionGuard: false,
+		})], "worker", "Task", {
+			runId: "external-cap", sessionFile: path.join(mock.dir, "external-cap.jsonl"), signal: caller.signal,
+			acceptance: noAcceptance, controlConfig: resolveControlConfig(undefined, { enabled: false, maxRuntimeMs: 1000 }),
+		}, h.deps);
+		const succeeded = scenario === "clean success";
+		assert.equal(calls, 1, "a capped failure must not start a fallback model");
+		assert.equal(h.nativeCalls(), 0);
+		assert.equal(output.exitCode, succeeded ? 0 : 1);
+		assert.equal(output.interrupted, undefined);
+		assert.equal(output.error, succeeded ? undefined : `${capError}\n${scenario === "retryable failure" ? "rate limit exceeded" : diagnostic}`);
+		if (scenario === "interrupted" || scenario === "thrown interruption") assert.equal(output.finalOutput, undefined);
+		if (scenario === "partial output") assert.equal(output.finalOutput, "partial work");
+		if (scenario !== "thrown interruption") {
+			assert.equal(output.progress?.status, succeeded ? "completed" : "failed");
+			assert.equal(output.progress?.error, output.error);
+		}
+		assert.deepEqual(output.attemptedModels, ["one/model"]);
+		assert.equal(output.modelAttempts?.length, 1);
+		assert.equal(output.modelAttempts[0].success, succeeded);
+		assert.equal(output.modelAttempts[0].error, output.error);
+		assert.deepEqual(h.finishes, [succeeded ? "delivered" : "retained"]);
+		assert.equal(output.executionSurface?.retained, !succeeded);
+		assert.equal(removeListener.mock.calls.length, 1);
+		assert.equal(removeListener.mock.calls[0].arguments[0], "abort");
+	});
+
+	for (const phase of ["startup", "ready"] as const) it(`rewrites external ${phase} failure after the cap`, async t => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		let now = 0;
+		const h = dependencies(externalSelection);
+		h.deps.monotonicNow = () => now;
+		h.deps.createExternalOwner = async options => {
+			h.ownerOptions.push(options);
+			const failAtCap = () => {
+				now = 1000;
+				t.mock.timers.tick(1000);
+				assert.equal(options.signal.aborted, true);
+				throw new Error("private startup details");
+			};
+			if (phase === "startup") failAtCap();
+			Object.defineProperty(h.owner, "ready", { get: failAtCap });
+			return h.owner;
+		};
+		const output = await runSync("/runtime", [makeAgent("worker")], "worker", "Task", {
+			runId: "startup-cap", acceptance: noAcceptance,
+			controlConfig: resolveControlConfig(undefined, { maxRuntimeMs: 1000 }),
+		}, h.deps);
+		assert.equal(output.exitCode, 1);
+		assert.equal(output.error, `${capError}\nExternal execution startup failed`);
+		assert.equal(output.interrupted, undefined);
+		assert.equal(output.modelAttempts, undefined);
+		assert.equal(h.attempts.length, 0);
+		assert.equal(h.nativeCalls(), 0);
+		assert.deepEqual(h.finishes, phase === "ready" ? ["retained"] : []);
+	});
+
+	for (const settlement of ["pending", "late rejection", "same-turn rejection"] as const) {
+		it(`caps backend selection with ${settlement}`, async t => {
+			t.mock.timers.enable({ apis: ["setTimeout"] });
+			let now = 0;
+			let rejectSelection!: (error: Error) => void;
+			const h = dependencies(externalSelection);
+			h.deps.monotonicNow = () => now;
+			h.deps.selectBackend = () => new Promise((_resolve, reject) => { rejectSelection = reject; });
+			const pending = runSync("/runtime", [makeAgent("worker")], "worker", "Task", {
+				runId: "selection-cap", acceptance: noAcceptance,
+				controlConfig: resolveControlConfig(undefined, { maxRuntimeMs: 1000 }),
+			}, h.deps);
+			now = 1000;
+			t.mock.timers.tick(1000);
+			if (settlement === "same-turn rejection") rejectSelection(new Error("selection failed"));
+			const output = await pending;
+			assert.equal(output.exitCode, 1);
+			assert.equal(output.error, capError);
+			assert.equal(h.ownerOptions.length, 0);
+			assert.equal(h.attempts.length, 0);
+			assert.equal(h.nativeCalls(), 0);
+			if (settlement === "late rejection") {
+				rejectSelection(new Error("late selection failure"));
+				await new Promise(resolve => setImmediate(resolve));
+			}
+		});
+	}
+});
+
 describe("runSync execution backend routing", () => {
 	it("launches selected A through the actual native path despite process and PATH B", async t => {
 		for (const scenario of ["success", "spawn error", "entry disappeared"] as const) await t.test(scenario, async () => {

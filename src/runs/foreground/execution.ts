@@ -747,6 +747,7 @@ export async function runSync(
 			if (capElapsedMs !== undefined) return failedResult(agentName, task, capError());
 			backendSelection = selection!;
 		} catch (error) {
+			if (capElapsedMs !== undefined) return failedResult(agentName, task, capError());
 			return failedResult(agentName, task, error instanceof Error ? error.message : String(error));
 		}
 
