@@ -1,5 +1,4 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
-import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { capturePiRuntime, parsePiRuntime, type PiRuntimeIdentity } from "../shared/pi-spawn.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -47,7 +46,7 @@ import { compactForegroundDetails, getSingleResultOutput, mapConcurrent, readSta
 import { resolveSubagentResultStatus } from "../shared/result-children.ts";
 import { buildRevivedAsyncTask, resolveAsyncResumeTarget } from "../background/async-resume.ts";
 import { createForegroundChild, updateForegroundChild, projectNestedEvents, nestedResultsPath, createNestedRoute, readNestedControlResults, resolveInheritedNestedRouteFromEnv, resolveNestedAsyncDir, resolveNestedParentAddressFromEnv, updateForegroundNestedProjection, writeNestedControlRequest, writeNestedEvent, type NestedRunResolutionScope } from "../shared/nested-events.ts";
-import { resolveSubagentRunId, type ResolvedSubagentRunId } from "../background/run-id-resolver.ts";
+import { resolveSubagentRunId, type ResolvedSubagentRunId, type ResolvedStopTarget } from "../background/run-id-resolver.ts";
 import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
 import { inspectSubagentStatus } from "../background/run-status.ts";
 import { applyForceTopLevelAsyncOverride } from "../background/top-level-async.ts";
@@ -87,7 +86,7 @@ import {
 	wrapForkTask,
 } from "../../shared/types.ts";
 
-const ASYNC_INTERRUPT_SIGNAL: NodeJS.Signals = process.platform === "win32" ? "SIGBREAK" : "SIGUSR2";
+import { stopForegroundTarget, registerForegroundInterrupt, stoppedChildrenOnly, stoppingAncestor, requestAsyncStop } from "../shared/stop-control.ts";
 const MUTATING_MANAGEMENT_ACTIONS = new Set(["create", "update", "delete"]);
 
 interface TaskParam {
@@ -414,52 +413,14 @@ function emitControlNotification(input: {
 	}
 }
 
-function interruptAsyncRun(state: SubagentState, runId: string | undefined, index?: number): AgentToolResult<Details> | null {
-	const target = index !== undefined && runId ? state.asyncJobs.get(runId) : getAsyncInterruptTarget(state, runId);
-	if (!target) {
-		if (index === undefined || !runId) return null;
-		return {
-			content: [{ type: "text", text: `Run ${runId} has no running child at index ${index}.` }],
-			isError: true,
-			details: { mode: "management", results: [] },
-		};
+function interruptAsyncRun(state: SubagentState, asyncDir: string, runId: string, targetId: string): AgentToolResult<Details> {
+	requestAsyncStop(asyncDir, targetId);
+	const tracked = state.asyncJobs.get(runId);
+	if (tracked) {
+		tracked.activityState = undefined;
+		tracked.updatedAt = Date.now();
 	}
-	const status = readStatus(target.asyncDir);
-	const interruptable = status?.state === "running" && typeof status.pid === "number";
-	if (index !== undefined && (!interruptable || status.steps[index]?.status !== "running")) {
-		return {
-			content: [{ type: "text", text: `Async run ${target.asyncId} has no running child at index ${index}.` }],
-			isError: true,
-			details: { mode: "management", results: [] },
-		};
-	}
-	if (!status || status.state !== "running" || typeof status.pid !== "number") {
-		return {
-			content: [{ type: "text", text: `No running async run with an interrupt-capable pid was found for '${runId ?? "current"}'.` }],
-			isError: true,
-			details: { mode: "management", results: [] },
-		};
-	}
-	try {
-		writeAtomicJson(path.join(target.asyncDir, `interrupt-request-${index ?? "all"}.json`), { index, requestedAt: Date.now() });
-		process.kill(status.pid, ASYNC_INTERRUPT_SIGNAL);
-		const tracked = state.asyncJobs.get(target.asyncId);
-		if (tracked) {
-			tracked.activityState = undefined;
-			tracked.updatedAt = Date.now();
-		}
-		return {
-			content: [{ type: "text", text: index === undefined ? `Interrupt requested for async run ${target.asyncId}.` : `Interrupt requested for child ${index} of async run ${target.asyncId}.` }],
-			details: { mode: "management", results: [] },
-		};
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		return {
-			content: [{ type: "text", text: `Failed to interrupt async run ${target.asyncId}: ${message}` }],
-			isError: true,
-			details: { mode: "management", results: [] },
-		};
-	}
+	return { content: [{ type: "text", text: `Interrupt requested for ${targetId === runId ? "async run" : "child"} ${targetId}.` }], details: { mode: "management", results: [] } };
 }
 
 function nestedRunSessionFile(run: NestedRunSummary): string | undefined {
@@ -537,55 +498,27 @@ function resolveNestedResumeTarget(match: ResolvedSubagentRunId & { kind: "neste
 	};
 }
 
-async function waitForNestedControlResult(target: ResolvedSubagentRunId & { kind: "nested" }, requestId: string, timeoutMs = 1_000) {
+async function waitForNestedControlResult(target: ResolvedSubagentRunId & { kind: "nested" }, requestId: string, targetId: string, timeoutMs = 1_000) {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
-		const result = readNestedControlResults(target.match.route).find((candidate) => candidate.requestId === requestId && candidate.targetId === target.match.run.id);
+		const result = readNestedControlResults(target.match.route).find((candidate) => candidate.requestId === requestId && candidate.targetId === targetId);
 		if (result) return result;
 		await new Promise((resolve) => setTimeout(resolve, 50));
 	}
 	return undefined;
 }
 
-async function sendNestedControlRequest(target: ResolvedSubagentRunId & { kind: "nested" }, action: "interrupt" | "resume", message?: string) {
+async function sendNestedControlRequest(target: ResolvedSubagentRunId & { kind: "nested" }, action: "interrupt" | "resume", message?: string, targetId = target.id) {
 	const requestId = randomUUID();
-	writeNestedControlRequest(target.match.route, {
-		ts: Date.now(),
-		requestId,
-		targetId: target.match.run.id,
-		action,
-		...(message ? { message } : {}),
-	});
-	return waitForNestedControlResult(target, requestId);
+	const requestPath = writeNestedControlRequest(target.match.route, { ts: Date.now(), requestId, targetId, action, ...(message ? { message } : {}) });
+	try { return await waitForNestedControlResult(target, requestId, targetId); }
+	finally { try { fs.unlinkSync(requestPath); } catch {} }
 }
 
-function directNestedAsyncInterrupt(target: ResolvedSubagentRunId & { kind: "nested" }): AgentToolResult<Details> | undefined {
-	const run = target.match.run;
-	const asyncDir = resolveNestedAsyncDir(target.match.rootRunId, run);
-	if (!asyncDir) return undefined;
-	const status = readStatus(asyncDir);
-	const pid = typeof status?.pid === "number" && status.pid > 0 ? status.pid : run.pid;
-	if (!status || status.state !== "running" || typeof pid !== "number" || pid <= 0) return undefined;
-	try {
-		writeAtomicJson(path.join(asyncDir, "interrupt-request-all.json"), { requestedAt: Date.now() });
-		process.kill(pid, ASYNC_INTERRUPT_SIGNAL);
-		return { content: [{ type: "text", text: `Interrupt requested for nested async run ${run.id}.` }], details: { mode: "management", results: [] } };
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		return { content: [{ type: "text", text: `Failed to interrupt nested async run ${run.id}: ${message}` }], isError: true, details: { mode: "management", results: [] } };
-	}
-}
-
-async function interruptNestedRun(target: ResolvedSubagentRunId & { kind: "nested" }): Promise<AgentToolResult<Details>> {
-	const run = target.match.run;
-	if (run.state === "complete") return { content: [{ type: "text", text: `Nested run ${run.id} is already complete and cannot be interrupted.` }], isError: true, details: { mode: "management", results: [] } };
-	if (run.state === "failed") return { content: [{ type: "text", text: `Nested run ${run.id} has failed and cannot be interrupted.` }], isError: true, details: { mode: "management", results: [] } };
-	if (run.state === "paused") return { content: [{ type: "text", text: `Nested run ${run.id} is already paused.` }], isError: true, details: { mode: "management", results: [] } };
-	const result = await sendNestedControlRequest(target, "interrupt");
+async function interruptNestedRun(target: ResolvedSubagentRunId & { kind: "nested" }, targetId: string): Promise<AgentToolResult<Details>> {
+	const result = await sendNestedControlRequest(target, "interrupt", undefined, targetId);
 	if (result) return { content: [{ type: "text", text: result.message }], isError: result.ok ? undefined : true, details: { mode: "management", results: [] } };
-	const direct = directNestedAsyncInterrupt(target);
-	if (direct) return direct;
-	return { content: [{ type: "text", text: `Nested run ${run.id} owner is not reachable and no safe direct async interrupt fallback is available.` }], isError: true, details: { mode: "management", results: [] } };
+	return { content: [{ type: "text", text: `The owner of ${targetId.slice(0, 6)} did not confirm the stop within 1000 ms; the stop may still take effect.` }], isError: true, details: { mode: "management", results: [] } };
 }
 
 async function resumeLiveNestedRun(input: { target: ResolvedSubagentRunId & { kind: "nested" }; message: string }): Promise<AgentToolResult<Details>> {
@@ -1497,18 +1430,15 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 			input.foregroundControl.currentIndex = index;
 			input.foregroundControl.currentActivityState = undefined;
 			input.foregroundControl.updatedAt = Date.now();
-			input.foregroundControl.lastAssigned = index;
-			input.foregroundControl.childInterrupts.set(index, () => {
-				if (interruptController.signal.aborted) return false;
-				interruptController.abort();
-				input.foregroundControl!.currentActivityState = undefined;
-				input.foregroundControl!.updatedAt = Date.now();
-				return true;
-			});
 		}
 		const agentConfig = input.agents.find((agent) => agent.name === task.agent);
 		const id = childIds[index];
 		updateForegroundChild(input.foregroundControl, id, { status: "running" });
+		const unregister = registerForegroundInterrupt(input.foregroundControl, id, () => {
+			if (interruptController.signal.aborted) return false;
+			interruptController.abort();
+			return true;
+		});
 		return runSync(input.ctx.cwd, input.agents, task.agent, taskText, {
 			id,
 			label: task.label,
@@ -1582,11 +1512,7 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 			updateForegroundChild(input.foregroundControl, id, { status: "failed" });
 			throw error;
 		}).finally(() => {
-			input.foregroundControl?.childInterrupts.delete(index);
-			if (input.foregroundControl?.lastAssigned === index) {
-				input.foregroundControl.lastAssigned = undefined;
-				input.foregroundControl.updatedAt = Date.now();
-			}
+			unregister();
 		});
 	});
 }
@@ -1766,6 +1692,8 @@ async function runParallelPath(data: ExecutionContextData, deps: CallExecutorDep
 	const liveResults: (SingleResult | undefined)[] = new Array(tasks.length).fill(undefined);
 	const liveProgress: (AgentProgress | undefined)[] = new Array(tasks.length).fill(undefined);
 	const foregroundControl = deps.state.foregroundControls.get(runId);
+	const stopped = stoppingAncestor(data.nestedRoute, runId);
+	if (foregroundControl?.stopping || stopped) return buildParallelModeError(`Subagent launch refused: ${(stopped ?? runId).slice(0, 6)} is stopping.`);
 	const { setup: worktreeSetup, errorResult } = createParallelWorktreeSetup(
 		params.worktree,
 		effectiveCwd,
@@ -1879,8 +1807,8 @@ async function runParallelPath(data: ExecutionContextData, deps: CallExecutorDep
 			artifacts: allArtifactPaths.length ? { dir: artifactsDir, files: allArtifactPaths } : undefined,
 		});
 		rememberForegroundRun(deps.state, { runtime: data.runtime, sessionRoot: data.sessionRoot, runId, mode: "parallel", cwd: effectiveCwd, results: details.results });
-		const stoppedByIndexOnly = interrupted && results.every((result, index) => !result.interrupted || foregroundControl?.stoppedByIndex.has(index));
-		if (interrupted && !stoppedByIndexOnly) {
+		const targetedStopsOnly = interrupted && stoppedChildrenOnly(foregroundControl, results);
+		if (interrupted && !targetedStopsOnly) {
 			return {
 				content: [{ type: "text", text: withWorktreeSuffix(`Parallel run paused after interrupt (${interrupted.agent}). Waiting for explicit next action.`) + formatInterruptedCleanup(results) }],
 				details,
@@ -2055,15 +1983,12 @@ async function runSinglePath(data: ExecutionContextData, deps: CallExecutorDeps)
 		foregroundControl.currentIndex = 0;
 		foregroundControl.currentActivityState = undefined;
 		foregroundControl.updatedAt = Date.now();
-		foregroundControl.lastAssigned = 0;
-		foregroundControl.childInterrupts.set(0, () => {
-			if (interruptController.signal.aborted) return false;
-			interruptController.abort();
-			foregroundControl.currentActivityState = undefined;
-			foregroundControl.updatedAt = Date.now();
-			return true;
-		});
 	}
+	const unregister = registerForegroundInterrupt(foregroundControl, id, () => {
+		if (interruptController.signal.aborted) return false;
+		interruptController.abort();
+		return true;
+	});
 
 	const forwardSingleUpdate = (update: AgentToolResult<Details>) => {
 		updateForegroundChild(foregroundControl, id, { ...update.details?.progress?.[0], status: "running" });
@@ -2127,8 +2052,7 @@ async function runSinglePath(data: ExecutionContextData, deps: CallExecutorDeps)
 		updateForegroundChild(foregroundControl, id, { status: "failed" });
 		throw error;
 	}).finally(() => {
-		foregroundControl?.childInterrupts.delete(0);
-		if (foregroundControl?.lastAssigned === 0) foregroundControl.lastAssigned = undefined;
+		unregister();
 	});
 	if (foregroundControl?.currentIndex === 0) {
 		foregroundControl.currentActivityState = r.progress?.activityState;
@@ -2284,55 +2208,36 @@ export function createSubagentExecutor(services: ExecutorDeps): {
 				}
 			}
 			if (params.action === "interrupt") {
-				const targetRunId = paramsWithResolvedCwd.runId ?? paramsWithResolvedCwd.id;
-				let resolved: ResolvedSubagentRunId | undefined;
-				if (targetRunId) {
-					try {
-						resolved = resolveSubagentRunId(targetRunId, { state: deps.state, nested: nestedResolutionScopeForExecutor(deps) });
-					} catch (error) {
-						const message = error instanceof Error ? error.message : String(error);
-						return { content: [{ type: "text", text: message }], isError: true, details: { mode: "management", results: [] } };
+				try {
+					if (params.index !== undefined) throw new Error("interrupt no longer takes an index; pass the id at the start of the child's row.");
+					const requested = paramsWithResolvedCwd.id ?? paramsWithResolvedCwd.runId;
+					let target: ResolvedStopTarget | undefined;
+					if (requested !== undefined) target = resolveSubagentRunId(requested, { target: "interrupt", state: deps.state, nested: nestedResolutionScopeForExecutor(deps) });
+					else {
+						const foreground = getForegroundControl(deps.state, undefined);
+						if (foreground) target = { kind: "run", id: foreground.runId, runId: foreground.runId, name: foreground.mode, state: "running", owner: { kind: "foreground", id: foreground.runId } };
+						else {
+							const job = getAsyncInterruptTarget(deps.state, undefined);
+							if (job) return interruptAsyncRun(deps.state, job.asyncDir, job.asyncId, job.asyncId);
+						}
 					}
-				}
-				if (resolved?.kind === "nested") {
-					if (params.index !== undefined) return {
-						content: [{ type: "text", text: `Interrupt by index is not supported for nested run ${resolved.match.run.id}.` }],
-						isError: true,
-						details: { mode: "management", results: [] },
-					};
-					return interruptNestedRun(resolved);
-				}
-				const foreground = getForegroundControl(deps.state, resolved?.kind === "foreground" ? resolved.id : targetRunId);
-				if (params.index !== undefined && !foreground && targetRunId && deps.state.foregroundRuns?.has(targetRunId)) {
-					return {
-						content: [{ type: "text", text: `Foreground run ${targetRunId} has no running child at index ${params.index}.` }],
-						isError: true,
-						details: { mode: "management", results: [] },
-					};
-				}
-				if (foreground && (params.index !== undefined || (foreground.lastAssigned !== undefined && foreground.interrupt))) {
-					const interrupted = foreground.interrupt?.(params.index);
-					if (interrupted) {
-						foreground.updatedAt = Date.now();
-						foreground.currentActivityState = undefined;
-						return {
-							content: [{ type: "text", text: params.index === undefined ? `Interrupt requested for foreground run ${foreground.runId}.` : `Interrupt requested for child ${params.index} of foreground run ${foreground.runId}.` }],
-							details: { mode: "management", results: [] },
-						};
+					if (!target) throw new Error("No interrupt-capable run found in this session.");
+					if (target.kind === "child" && target.state === "pending") throw new Error(`Subagent ${target.id.slice(0, 6)} (${target.name}) has not started; stop its run to keep it from starting.`);
+					if (target.kind === "child" && target.state !== "running") throw new Error(`Subagent ${target.id.slice(0, 6)} (${target.name}) is no longer running: ${target.state}.`);
+					if (target.owner.kind === "foreground") {
+						const foreground = deps.state.foregroundControls.get(target.runId)!;
+						if (!foreground.interrupt?.(target.id)) throw new Error(`Foreground run ${target.runId} has no active child step to interrupt.`);
+						return { content: [{ type: "text", text: target.kind === "run" ? `Interrupt requested for foreground run ${target.id}.` : `Interrupt requested for child ${target.id} of foreground run ${target.runId}.` }], details: { mode: "management", results: [] } };
 					}
-					return {
-						content: [{ type: "text", text: params.index === undefined ? `Foreground run ${foreground.runId} has no active child step to interrupt.` : `Foreground run ${foreground.runId} has no running child at index ${params.index}.` }],
-						isError: true,
-						details: { mode: "management", results: [] },
-					};
+					if (target.owner.kind === "async") {
+						if (!target.owner.location.asyncDir) throw new Error("No running async run with an interrupt-capable pid was found.");
+						return interruptAsyncRun(deps.state, target.owner.location.asyncDir, target.runId, target.id);
+					}
+					if (target.kind === "run" && !["running", "queued"].includes(target.state)) throw new Error(`Subagent run ${target.id.slice(0, 6)} is no longer running: ${target.state}.`);
+					return await interruptNestedRun(target.owner, target.id);
+				} catch (error) {
+					return { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], isError: true, details: { mode: "management", results: [] } };
 				}
-				const asyncInterruptResult = interruptAsyncRun(deps.state, resolved?.kind === "async" ? resolved.id : targetRunId, params.index);
-				if (asyncInterruptResult) return asyncInterruptResult;
-				return {
-					content: [{ type: "text", text: "No interrupt-capable run found in this session." }],
-					isError: true,
-					details: { mode: "management", results: [] },
-				};
 			}
 			if (!(SUBAGENT_ACTIONS as readonly string[]).includes(params.action)) {
 				return {
@@ -2387,6 +2292,8 @@ export function createSubagentExecutor(services: ExecutorDeps): {
 		const inheritedNestedRoute = resolveInheritedNestedRouteFromEnv();
 		const nestedParentAddress = inheritedNestedRoute ? resolveNestedParentAddressFromEnv() : undefined;
 		const nestedRoute = inheritedNestedRoute ?? createNestedRoute(runId);
+		const stopped = stoppingAncestor(nestedRoute, runId, undefined, nestedParentAddress?.path);
+		if (stopped) return { content: [{ type: "text", text: `Subagent launch refused: ${stopped.slice(0, 6)} is stopping.` }], isError: true, details: { mode: "management", results: [] } };
 		deps.state.currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
 		const discoveredAgents = deps.discoverAgents(effectiveCwd, scope).agents;
 		effectiveParams = applyAgentDefaultContext(effectiveParams, discoveredAgents);
@@ -2483,20 +2390,9 @@ export function createSubagentExecutor(services: ExecutorDeps): {
 				currentActivityState: undefined,
 				nestedRoute,
 				children: new Map(),
-				childInterrupts: new Map(),
-				stoppedByIndex: new Set(),
 			};
 		if (foregroundControl) {
-			foregroundControl.interrupt = (index?: number) => {
-				const target = index ?? foregroundControl.lastAssigned;
-				if (target === undefined) return false;
-				const interrupted = foregroundControl.childInterrupts.get(target)?.() ?? false;
-				if (interrupted && index !== undefined) {
-					foregroundControl.childInterrupts.delete(index);
-					foregroundControl.stoppedByIndex.add(index);
-				}
-				return interrupted;
-			};
+			foregroundControl.interrupt = (targetId?: string) => stopForegroundTarget(foregroundControl, targetId);
 			deps.state.foregroundControls.set(runId, foregroundControl);
 			deps.state.lastForegroundControlId = runId;
 		}
@@ -2562,6 +2458,9 @@ export function createSubagentExecutor(services: ExecutorDeps): {
 			}
 		};
 
+		const stopOnAbort = () => { foregroundControl?.interrupt?.(); };
+		if (signal?.aborted) stopOnAbort();
+		else signal?.addEventListener("abort", stopOnAbort, { once: true });
 		let nestedForegroundStarted = false;
 		try {
 			const asyncResult = runAsyncPath(execData, deps);
@@ -2590,6 +2489,7 @@ export function createSubagentExecutor(services: ExecutorDeps): {
 			if (nestedForegroundStarted) writeNestedForegroundEvent("subagent.nested.completed", errorResult);
 			return errorResult;
 		} finally {
+			signal?.removeEventListener("abort", stopOnAbort);
 			if (foregroundControl) {
 				clearPendingForegroundControlNotices(deps.state, runId);
 				deps.state.foregroundControls.delete(runId);

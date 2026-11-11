@@ -765,10 +765,7 @@ export interface SubagentState {
 		nestedChildren?: NestedRunSummary[];
 		children: Map<string, { agent: string; label?: string; index: number; state: "pending" | "running" | "completed" | "failed" | "interrupted"; stopRequested?: true; interrupt?: () => boolean }>;
 		stopping?: true;
-		childInterrupts: Map<number, () => boolean>;
-		stoppedByIndex: Set<number>;
-		lastAssigned?: number;
-		interrupt?: (index?: number) => boolean;
+		interrupt?: (targetId?: string) => boolean;
 	}>;
 	lastForegroundControlId: string | null;
 	pendingForegroundControlNotices?: Map<string, ReturnType<typeof setTimeout>>;

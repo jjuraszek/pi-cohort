@@ -49,7 +49,7 @@ function createChildSafeState(): SubagentState {
 	};
 }
 
-function startNestedControlInboxListener(pi: ExtensionAPI, state: SubagentState): NodeJS.Timeout | undefined {
+export function startNestedControlInboxListener(pi: ExtensionAPI, state: SubagentState): NodeJS.Timeout | undefined {
 	let route;
 	try {
 		route = resolveNestedRouteFromEnv();
@@ -59,47 +59,52 @@ function startNestedControlInboxListener(pi: ExtensionAPI, state: SubagentState)
 	if (!route) return undefined;
 	const seen = new Set<string>();
 	const inFlight = new Set<string>();
-	const pendingResults = new Map<string, Parameters<typeof writeNestedControlResult>[1]>();
+	const pendingResults = new Map<string, { result: Parameters<typeof writeNestedControlResult>[1]; filePath: string }>();
+	const writePendingResult = (requestId: string): void => {
+		const pending = pendingResults.get(requestId)!;
+		try {
+			writeNestedControlResult(route, pending.result);
+		} catch (error) {
+			console.error(`Failed to write nested control result for request '${requestId}' targeting '${pending.result.targetId}' via inbox '${route.controlInbox}'; keeping request for retry:`, error);
+			return;
+		}
+		pendingResults.delete(requestId);
+		seen.add(requestId);
+		try { fs.unlinkSync(pending.filePath); } catch {}
+	};
 	const timer = setInterval(() => {
 		try {
+			// The caller may have removed its request after timing out; the accepted stop still gets its reply.
+			for (const requestId of pendingResults.keys()) writePendingResult(requestId);
 			for (const request of readNestedControlRequests(route)) {
-				if (seen.has(request.requestId) || inFlight.has(request.requestId)) continue;
+				if (seen.has(request.requestId) || inFlight.has(request.requestId) || pendingResults.has(request.requestId)) continue;
+				const control = [...state.foregroundControls.values()].find((entry) =>
+					entry.runId === request.targetId || (request.action === "interrupt" && entry.children?.has(request.targetId)));
+				if (!control) continue;
 				inFlight.add(request.requestId);
 				void (async () => {
 					try {
-						let result = pendingResults.get(request.requestId);
-						if (!result) {
-							let ok = false;
-							let message = "Control request failed.";
-							try {
-								const control = state.foregroundControls.get(request.targetId);
-								if (!control) {
-									message = `Nested run ${request.targetId} is not active in this fanout child.`;
-								} else if (request.action === "interrupt") {
-									ok = control.interrupt?.() === true;
-									message = ok
-										? `Interrupt requested for nested run ${request.targetId}.`
-										: `Nested run ${request.targetId} has no active child step to interrupt.`;
-								} else if (!request.message?.trim()) {
-									message = "Nested resume requires message.";
-								} else {
-									message = `Nested run ${request.targetId} is still active; wait for completion, then resume.`;
-								}
-							} catch (error) {
-								message = error instanceof Error ? error.message : String(error);
-							}
-							result = { ts: Date.now(), requestId: request.requestId, targetId: request.targetId, ok, message };
-						}
+						let ok = false;
+						let message = "Control request failed.";
 						try {
-							writeNestedControlResult(route, result);
+							if (request.action === "interrupt") {
+								ok = control.interrupt?.(request.targetId) === true;
+								message = ok
+									? `Interrupt requested for nested run ${request.targetId}.`
+									: `Nested run ${request.targetId} has no active child step to interrupt.`;
+							} else if (!request.message?.trim()) {
+								message = "Nested resume requires message.";
+							} else {
+								message = `Nested run ${request.targetId} is still active; wait for completion, then resume.`;
+							}
 						} catch (error) {
-							pendingResults.set(request.requestId, result);
-							console.error(`Failed to write nested control result for request '${request.requestId}' targeting '${request.targetId}' via inbox '${route.controlInbox}'; keeping request for retry:`, error);
-							return;
+							message = error instanceof Error ? error.message : String(error);
 						}
-						pendingResults.delete(request.requestId);
-						seen.add(request.requestId);
-						try { fs.unlinkSync(request.filePath); } catch {}
+						pendingResults.set(request.requestId, {
+							result: { ts: Date.now(), requestId: request.requestId, targetId: request.targetId, ok, message },
+							filePath: request.filePath,
+						});
+						writePendingResult(request.requestId);
 					} finally {
 						inFlight.delete(request.requestId);
 					}

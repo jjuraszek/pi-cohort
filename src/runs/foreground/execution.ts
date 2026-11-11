@@ -44,6 +44,7 @@ import { blockedLine } from "../shared/completion-guard.ts";
 import { getPiSpawnCommand, PiRuntimeLaunchError } from "../shared/pi-spawn.ts";
 import { PINNED_AGENT_DIR_OVERRIDE } from "../../shared/agent-dir.ts";
 import { createJsonlWriter } from "../../shared/jsonl-writer.ts";
+import { recordStop, stoppingAncestor, sweepBackgroundDescendants } from "../shared/stop-control.ts";
 import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
 import { buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
 import { captureSingleOutputSnapshot, formatFileOnlyFailure, validateFileOnlyOutputMode } from "../shared/single-output.ts";
@@ -241,7 +242,9 @@ async function runSingleAttempt(
 		const requestSilenceKill = (silenceMs: number) => {
 			if (silenceKillRequested || childExited || settled || processClosed) return;
 			silenceKillRequested = true;
+			const closedAdmission = closeChildAdmission(options);
 			const termSent = trySignalChild(proc, "SIGTERM");
+			if (closedAdmission) sweepBackgroundDescendants(options.nestedRoute, options.id!);
 			if (!termSent) return;
 			forcedTerminationSignal = true;
 			result.error = result.error ??
@@ -600,7 +603,7 @@ async function runSingleAttempt(
 			const kill = () => {
 				if (processClosed) return;
 				proc.kill("SIGTERM");
-				setTimeout(() => !proc.killed && proc.kill("SIGKILL"), 3000);
+				setTimeout(() => { if (!processClosed) trySignalChild(proc, "SIGKILL"); }, 3000).unref?.();
 			};
 			if (options.signal.aborted) kill();
 			else {
@@ -624,6 +627,9 @@ async function runSingleAttempt(
 					if (settled || processClosed) return;
 					trySignalChild(proc, "SIGTERM");
 				}, 1000).unref?.();
+				setTimeout(() => {
+					if (!processClosed) trySignalChild(proc, "SIGKILL");
+				}, 3000).unref?.();
 			};
 			if (options.interruptSignal.aborted) interrupt();
 			else {
@@ -645,10 +651,40 @@ async function runSingleAttempt(
 	});
 }
 
-/**
- * Run a subagent synchronously (blocking until complete)
- */
+function closeChildAdmission(options: RunSyncOptions): boolean {
+	if (!options.id || stoppingAncestor(options.nestedRoute, options.runId, options.id)) return false;
+	return recordStop(options.nestedRoute, options.id);
+}
+
+function refusedLaunch(agent: string, task: string, options: RunSyncOptions): SingleResult | undefined {
+	const stopped = stoppingAncestor(options.nestedRoute, options.runId, options.id);
+	if (!stopped && !options.signal?.aborted && !options.interruptSignal?.aborted) return undefined;
+	return {
+		id: options.id, label: options.label, agent, task, exitCode: 0, messages: [], usage: emptyUsage(), interrupted: true,
+		finalOutput: stopped ? `Subagent launch refused: ${stopped.slice(0, 6)} is stopping.` : "Interrupted before launch.",
+	};
+}
+
 export async function runSync(
+	...args: Parameters<typeof runOwnedSync>
+): Promise<SingleResult> {
+	const options = args[4];
+	const refused = refusedLaunch(args[2], args[3], options);
+	if (refused) return refused;
+	let closedAdmission = false;
+	const stop = () => { closedAdmission = closeChildAdmission(options) || closedAdmission; };
+	options.signal?.addEventListener("abort", stop, { once: true });
+	options.interruptSignal?.addEventListener("abort", stop, { once: true });
+	try {
+		return await runOwnedSync(...args);
+	} finally {
+		options.signal?.removeEventListener("abort", stop);
+		options.interruptSignal?.removeEventListener("abort", stop);
+		if (closedAdmission) sweepBackgroundDescendants(options.nestedRoute, options.id!);
+	}
+}
+
+async function runOwnedSync(
 	runtimeCwd: string,
 	agents: AgentConfig[],
 	agentName: string,
@@ -738,6 +774,8 @@ export async function runSync(
 	let lastResult: SingleResult | undefined;
 	let externalOwner: ExternalExecution | undefined;
 	const childId = `child-${options.index ?? 0}`;
+	const refused = refusedLaunch(agentName, task, options);
+	if (refused) return refused;
 	if (backendSelection.selection.kind === "external") {
 		try {
 			externalOwner = await (dependencies.createExternalOwner ?? createExternalExecution)({
@@ -757,6 +795,8 @@ export async function runSync(
 
 	const modelsToTry = candidates.length > 0 ? candidates : [undefined];
 	if (!lastResult) for (let i = 0; i < modelsToTry.length; i++) {
+		lastResult = refusedLaunch(agentName, task, options);
+		if (lastResult) break;
 		const candidate = modelsToTry[i];
 		if (candidate) attemptedModels.push(candidate);
 		const outputSnapshot = captureSingleOutputSnapshot(options.outputPath);

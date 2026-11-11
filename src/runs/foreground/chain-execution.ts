@@ -5,6 +5,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createForegroundChild, updateForegroundChild } from "../shared/nested-events.ts";
+import { registerForegroundInterrupt, stoppedChildrenOnly, stoppingAncestor } from "../shared/stop-control.ts";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../../agents/agents.ts";
@@ -278,20 +279,17 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 				input.foregroundControl.currentIndex = input.globalTaskIndex + taskIndex;
 				input.foregroundControl.currentActivityState = undefined;
 				input.foregroundControl.updatedAt = Date.now();
-				input.foregroundControl.lastAssigned = input.globalTaskIndex + taskIndex;
-				input.foregroundControl.childInterrupts.set(input.globalTaskIndex + taskIndex, () => {
-					if (interruptController.signal.aborted) return false;
-					interruptController.abort();
-					input.foregroundControl!.currentActivityState = undefined;
-					input.foregroundControl!.updatedAt = Date.now();
-					return true;
-				});
 			}
 
 			const structuredRuntime = task.outputSchema
 				? createStructuredOutputRuntime(task.outputSchema, path.join(input.chainDir, "structured-output"))
 				: undefined;
 			updateForegroundChild(input.foregroundControl, id, { status: "running" });
+			const unregister = registerForegroundInterrupt(input.foregroundControl, id, () => {
+				if (interruptController.signal.aborted) return false;
+				interruptController.abort();
+				return true;
+			});
 			const result = await runSync(input.ctx.cwd, input.agents, task.agent, taskStr, {
 				id,
 				label: task.label,
@@ -374,11 +372,7 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 				updateForegroundChild(input.foregroundControl, id, { status: "failed" });
 				throw error;
 			}).finally(() => {
-				input.foregroundControl?.childInterrupts.delete(input.globalTaskIndex + taskIndex);
-				if (input.foregroundControl?.lastAssigned === input.globalTaskIndex + taskIndex) {
-					input.foregroundControl.lastAssigned = undefined;
-					input.foregroundControl.updatedAt = Date.now();
-				}
+				unregister();
 			});
 
 			if (result.exitCode !== 0 && !result.interrupted && failFast) {
@@ -641,6 +635,12 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 
 	try {
 		for (let stepIndex = 0; stepIndex < chainSteps.length; stepIndex++) {
+			if (foregroundControl?.stopping || stoppingAncestor(params.nestedRoute, runId)) {
+				return {
+					content: [{ type: "text", text: `Chain paused before step ${stepIndex + 1}; the run is stopping.` }],
+					details: buildChainExecutionDetails(makeDetailsInput({ currentStepIndex: stepIndex, currentFlatIndex: globalTaskIndex })),
+				};
+			}
 			const step = chainSteps[stepIndex]!;
 			const stepTemplates = templates[stepIndex]!;
 
@@ -740,8 +740,8 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					}
 					const interruptedIndexInStep = parallelResults.findIndex((result) => result.interrupted);
 					const interrupted = interruptedIndexInStep >= 0 ? parallelResults[interruptedIndexInStep] : undefined;
-					const stoppedByIndexOnly = interrupted && parallelResults.every((result, index) => !result.interrupted || foregroundControl?.stoppedByIndex.has(globalTaskIndex - step.parallel.length + index));
-					if (interrupted && !stoppedByIndexOnly) {
+					const targetedStopsOnly = interrupted && stoppedChildrenOnly(foregroundControl, parallelResults);
+					if (interrupted && !targetedStopsOnly) {
 						return {
 							content: [{ type: "text", text: `Chain paused after interrupt at step ${stepIndex + 1} (${interrupted.agent}). Waiting for explicit next action.` + formatInterruptedCleanup(results) }],
 							details: buildChainExecutionDetails(makeDetailsInput({
@@ -774,13 +774,13 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 						const failureSummary = failures
 							.map((failure) => `- Task ${failure.originalIndex + 1} (${failure.agent}): ${failure.interrupted ? "interrupted" : failure.error || "failed"}`)
 							.join("\n");
-						const errorMsg = `Parallel step ${stepIndex + 1} failed:\n${failureSummary}` + (stoppedByIndexOnly ? formatInterruptedCleanup(results) : "");
+						const errorMsg = `Parallel step ${stepIndex + 1} failed:\n${failureSummary}` + (targetedStopsOnly ? formatInterruptedCleanup(results) : "");
 						const summary = buildChainSummary(chainSteps, results, chainDir, "failed", {
 							index: stepIndex,
 							error: errorMsg,
-						}, stoppedByIndexOnly ? { ...(stopRecord ? { stop: stopRecord } : {}), outputs: outputLog } : failureSummaryOptions());
+						}, targetedStopsOnly ? { ...(stopRecord ? { stop: stopRecord } : {}), outputs: outputLog } : failureSummaryOptions());
 						return {
-							content: [{ type: "text", text: stoppedByIndexOnly ? appendParallelWorktreeSummary(summary, diffs) : summary }],
+							content: [{ type: "text", text: targetedStopsOnly ? appendParallelWorktreeSummary(summary, diffs) : summary }],
 							isError: true,
 							details: buildChainExecutionDetails(makeDetailsInput({
 								currentStepIndex: stepIndex,
@@ -950,8 +950,8 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				const collected = collectDynamicResults(step, materialized.items, parallelResults);
 				const interruptedIndexInStep = parallelResults.findIndex((result) => result.interrupted);
 				const interrupted = interruptedIndexInStep >= 0 ? parallelResults[interruptedIndexInStep] : undefined;
-				const stoppedByIndexOnly = interrupted && parallelResults.every((result, index) => !result.interrupted || foregroundControl?.stoppedByIndex.has(globalTaskIndex - dynamicParallelStep.parallel.length + index));
-				if (interrupted && !stoppedByIndexOnly) {
+				const targetedStopsOnly = interrupted && stoppedChildrenOnly(foregroundControl, parallelResults);
+				if (interrupted && !targetedStopsOnly) {
 					return {
 						content: [{ type: "text", text: `Chain paused after interrupt at step ${stepIndex + 1} (${interrupted.agent}). Waiting for explicit next action.` + formatInterruptedCleanup(results) }],
 						details: buildChainExecutionDetails(makeDetailsInput({
@@ -984,12 +984,12 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					const failureSummary = failures
 						.map((failure) => `- Item ${failure.originalIndex + 1} (${failure.agent}, key ${materialized.items[failure.originalIndex]?.key ?? failure.originalIndex}): ${failure.interrupted ? "interrupted" : failure.error || "failed"}`)
 						.join("\n");
-					const errorMsg = `Dynamic step ${stepIndex + 1} failed:\n${failureSummary}` + (stoppedByIndexOnly ? formatInterruptedCleanup(results) : "");
+					const errorMsg = `Dynamic step ${stepIndex + 1} failed:\n${failureSummary}` + (targetedStopsOnly ? formatInterruptedCleanup(results) : "");
 					dynamicGroupStatuses[stepIndex] = { status: "failed", error: errorMsg };
 					const summary = buildChainSummary(chainSteps, results, chainDir, "failed", {
 						index: stepIndex,
 						error: errorMsg,
-					}, stoppedByIndexOnly ? { ...(stopRecord ? { stop: stopRecord } : {}), outputs: outputLog } : failureSummaryOptions());
+					}, targetedStopsOnly ? { ...(stopRecord ? { stop: stopRecord } : {}), outputs: outputLog } : failureSummaryOptions());
 					return {
 						content: [{ type: "text", text: summary }],
 						isError: true,
@@ -1123,14 +1123,6 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					foregroundControl.currentIndex = globalTaskIndex;
 					foregroundControl.currentActivityState = undefined;
 					foregroundControl.updatedAt = Date.now();
-					foregroundControl.lastAssigned = globalTaskIndex;
-					foregroundControl.childInterrupts.set(globalTaskIndex, () => {
-						if (interruptController.signal.aborted) return false;
-						interruptController.abort();
-						foregroundControl.currentActivityState = undefined;
-						foregroundControl.updatedAt = Date.now();
-						return true;
-					});
 				}
 
 				const structuredRuntime = seqStep.outputSchema
@@ -1138,6 +1130,11 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					: undefined;
 				const id = createForegroundChild(foregroundControl, seqStep.agent, seqStep.label, globalTaskIndex);
 				updateForegroundChild(foregroundControl, id, { status: "running" });
+				const unregister = registerForegroundInterrupt(foregroundControl, id, () => {
+					if (interruptController.signal.aborted) return false;
+					interruptController.abort();
+					return true;
+				});
 				const r = await runSync(ctx.cwd, agents, seqStep.agent, stepTask, {
 					id,
 					label: seqStep.label,
@@ -1220,11 +1217,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					updateForegroundChild(foregroundControl, id, { status: "failed" });
 					throw error;
 				}).finally(() => {
-					foregroundControl?.childInterrupts.delete(globalTaskIndex);
-					if (foregroundControl?.lastAssigned === globalTaskIndex) {
-						foregroundControl.lastAssigned = undefined;
-						foregroundControl.updatedAt = Date.now();
-					}
+					unregister();
 				});
 				recordRun(seqStep.agent, cleanTask, r.exitCode, r.progressSummary?.durationMs ?? 0);
 

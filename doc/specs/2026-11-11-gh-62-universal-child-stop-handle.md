@@ -2,7 +2,7 @@
 
 **Ticket:** [#62](https://github.com/jjuraszek/pi-cohort/issues/62)
 **Goal:** Every row that draws one subagent starts with a six-character id; `/interrupt-child <id>` and `subagent({ action: "interrupt", id })` stop that subagent and everything below it, at any nesting depth, with no index anywhere in the stop path.
-**Amend-grant:** every later spec amendment in this flow (corrected facts, paths, verification lines, and scope, acceptance-criteria, or public-contract edits alike) applies without asking; only a redraw (changed problem statement, component added, removed, or re-bounded) still stops for you, and the grant never stands in for a spec approval.; fund 2 fix rounds
+**Amend-grant:** every later spec amendment in this flow (corrected facts, paths, verification lines, and scope, acceptance-criteria, or public-contract edits alike) applies without asking; only a redraw (changed problem statement, component added, removed, or re-bounded) still stops for you, and the grant never stands in for a spec approval.; fund 4 fix rounds
 **Engine:** waves
 **Date:** 2026-11-11
 **Source bases:** pi-cohort `ecabac5` (7.7.3); `@earendil-works/pi-coding-agent` 1.5.0 (the worktree's `node_modules` copy), read-only; installed pi-gauntlet, read-only.
@@ -147,6 +147,8 @@ Add:
 - `label` on `TaskItem` and a top-level `label` on `SubagentParams` for the single-agent call (`src/extension/schemas.ts:146-156, 255`), carried into the records above for all five dispatch shapes.
 - Stop-id completions for `/interrupt-child`.
 - Skill text: the stop-by-id wording and the renamed `doc/programmatic-api.md` anchor in `skills/pi-cohort/SKILL.md:75`; `label` on `tasks[]` items and the single-agent call in `skills/pi-cohort/reference/config-fields.md`.
+
+Foreground control migration belongs to Task 3, including `src/shared/types.ts`: remove `childInterrupts`, `stoppedByIndex` and `lastAssigned` from the foreground control and replace `interrupt?: (index?: number) => boolean` with `interrupt?: (targetId?: string) => boolean`, using the full run or child id and retaining the existing no-argument whole-run selection. Task 3 also updates its existing `test/unit/nested-control.test.ts` fixtures from `targetRunId` to `targetId`, preserves polling recovery and failed-result-write retry coverage with owned targets, replaces the non-owner negative-acknowledgment expectation with no reply and no request deletion, and updates `test/integration/chain-execution.test.ts` session-name assertions to each result child's six-character id while preserving model and parent-name assertions. These changes implement the existing identity and owner-only stop contracts; they do not change resume indexing, add compatibility fallbacks, or broaden behavior.
 
 ### Identity
 
