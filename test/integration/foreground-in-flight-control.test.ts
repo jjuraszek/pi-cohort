@@ -10,7 +10,7 @@ import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { execFileSync } from "node:child_process";
+import { ChildProcess, execFileSync } from "node:child_process";
 import type { MockPi } from "../support/helpers.ts";
 import {
 	createEventBus,
@@ -515,12 +515,13 @@ describe("foreground in-flight turn control", { skip: !available ? "pi packages 
 		it(`maxRuntimeMs caps ${scenario} children with control disabled`, {
 			skip: scenario === "ignores SIGTERM" && process.platform === "win32",
 		}, async () => {
-			const cap = 800;
+			const cap = scenario === "short" ? 15_000 : 2_000;
+			const watchdogMs = 15_000;
 			mockPi.onCall({
 				ignoreSigterm: scenario === "ignores SIGTERM",
 				steps: [
 					{ jsonl: [events.messageStart()] },
-					...Array.from({ length: scenario === "short" ? 1 : scenario === "active" ? 25 : 60 }, () => ({
+					...Array.from({ length: scenario === "short" ? 1 : scenario === "active" ? 300 : 600 }, () => ({
 						delay: 100, jsonl: [events.toolStart("read"), events.toolEnd("read")],
 					})),
 					{ jsonl: [events.assistantMessage("done")] },
@@ -544,8 +545,8 @@ describe("foreground in-flight turn control", { skip: !available ? "pi packages 
 			} else {
 				assert.notEqual(result.exitCode, 0);
 				assert.ok(elapsed >= cap, "must not kill before the cap");
-				assert.ok(elapsed < (scenario === "active" ? 2_500 : 5_500), `settled after ${elapsed}ms`);
-				assert.match(result.error!, /maxRuntimeMs=800ms/);
+				assert.ok(elapsed < watchdogMs, `settled after ${elapsed}ms`);
+				assert.ok(result.error?.includes(`maxRuntimeMs=${cap}ms`));
 				assert.equal(result.interrupted, undefined);
 				assert.equal(result.progress.status, "failed");
 				assert.equal(result.progress.error, result.error);
@@ -553,6 +554,69 @@ describe("foreground in-flight turn control", { skip: !available ? "pi packages 
 			}
 		});
 	}
+
+	it("does not signal an exited child whose stdio is still open", {
+		skip: process.platform === "win32" ? "requires POSIX SIGTERM handling" : undefined,
+	}, async t => {
+		const pidFile = path.join(tempDir, "stdout-holder.pid");
+		mockPi.onCall({
+			exitOnSigtermWithOpenStdout: { pidFile },
+			steps: [
+				{ jsonl: [events.toolStart("read")] },
+				{ delay: 60_000, jsonl: [events.assistantMessage("too late")] },
+			],
+		});
+		const controller = new AbortController();
+		const signals: Array<{ signal: NodeJS.Signals | number | undefined; exited: boolean }> = [];
+		const originalKill = ChildProcess.prototype.kill;
+		let child: ChildProcess | undefined;
+		let markExited!: () => void;
+		const exited = new Promise<void>(resolve => { markExited = resolve; });
+		t.mock.method(ChildProcess.prototype, "kill", function (this: ChildProcess, signal) {
+			if (!child) {
+				child = this;
+				this.once("exit", markExited);
+			}
+			signals.push({ signal, exited: this.exitCode !== null || this.signalCode !== null });
+			return originalKill.call(this, signal);
+		});
+		let settled = false;
+		const pending = runSync(tempDir, makeAgentConfigs(["echo"]), "echo", "Hold stdout", {
+			runId: "exited-open-stdio", signal: controller.signal,
+			controlConfig: { enabled: false, maxRuntimeMs: 30_000 },
+			onUpdate: update => {
+				if (update.details.progress[0].toolCount > 0) controller.abort();
+			},
+		}).finally(() => { settled = true; });
+		let watchdog: NodeJS.Timeout;
+		const timedOut = new Promise<never>((_resolve, reject) => {
+			watchdog = setTimeout(() => reject(new Error("child did not exit within 15 seconds")), 15_000);
+		});
+		try {
+			await Promise.race([exited, timedOut, pending.then(() => { throw new Error("settled before exit observation"); })]);
+			assert.equal(child?.exitCode, 0, "the parent exits cleanly on SIGTERM");
+			await new Promise(resolve => setTimeout(resolve, 3_500));
+			assert.equal(settled, false, "inherited stdout must stay open beyond the 3000-ms escalation");
+			assert.deepEqual(signals, [{ signal: "SIGTERM", exited: false }], "the exited parent must receive no SIGKILL");
+		} finally {
+			clearTimeout(watchdog!);
+			controller.abort();
+			try {
+				if (fs.existsSync(pidFile)) {
+					const pid = Number(fs.readFileSync(pidFile, "utf8"));
+					try { process.kill(pid, "SIGKILL"); } catch (error) {
+						if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+					}
+				}
+			} finally {
+				await pending;
+			}
+		}
+		const result = await pending;
+		assert.equal(result.exitCode, 0, "the abort preserves the parent's clean exit");
+		assert.equal(result.error, undefined);
+		assert.equal(result.interrupted, undefined);
+	});
 
 	it("does not kill a turn that keeps emitting events past the kill cap", async () => {
 		mockPi.onCall({

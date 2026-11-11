@@ -125,6 +125,103 @@ describe("runSync maxRuntimeMs deadline", () => {
 	});
 });
 
+describe("runSync deadline continuity", () => {
+	it("keeps the original deadline across a fallback attempt", async t => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		let now = 0;
+		let calls = 0;
+		const h = dependencies(nativeSelection);
+		h.deps.monotonicNow = () => now;
+		h.deps.runNativeAttempt = async (_cwd, agent, task, _model, options) => {
+			calls++;
+			if (calls === 1) {
+				now = 600;
+				t.mock.timers.tick(600);
+				assert.equal(options.signal?.aborted, false);
+				return result(agent, task, { exitCode: 1, error: "rate limit exceeded" });
+			}
+			now = 999;
+			t.mock.timers.tick(399);
+			assert.equal(options.signal?.aborted, false, "fallback survives until the original deadline minus one ms");
+			now = 1000;
+			t.mock.timers.tick(1);
+			assert.equal(options.signal?.aborted, true, "fallback is aborted at the original deadline");
+			return result(agent, task, { exitCode: 1 });
+		};
+		const output = await runSync("/runtime", [makeAgent("worker", {
+			model: "one/model", fallbackModels: ["two/model"],
+		})], "worker", "Task", {
+			runId: "fallback-cap", acceptance: noAcceptance,
+			controlConfig: resolveControlConfig(undefined, { maxRuntimeMs: 1000 }),
+		}, h.deps);
+		assert.equal(calls, 2);
+		assert.deepEqual(output.attemptedModels, ["one/model", "two/model"]);
+		assert.deepEqual(output.modelAttempts?.map(attempt => attempt.success), [false, false]);
+		assert.equal(output.error, "Subagent killed: ran for 1s (exceeded maxRuntimeMs=1000ms).");
+	});
+
+	it("a wall-clock change does not move the cap deadline", async t => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		let wallNow = 7_200_000;
+		t.mock.method(Date, "now", () => wallNow);
+		let now = 0;
+		const h = dependencies(nativeSelection);
+		h.deps.monotonicNow = () => now;
+		h.deps.runNativeAttempt = async (_cwd, agent, task, _model, options) => {
+			now = 500;
+			t.mock.timers.tick(500);
+			const beforeJump = Date.now();
+			wallNow = beforeJump - 3_600_000;
+			assert.equal(Date.now(), beforeJump - 3_600_000);
+			now = 999;
+			t.mock.timers.tick(499);
+			assert.equal(options.signal?.aborted, false);
+			now = 1000;
+			t.mock.timers.tick(1);
+			assert.equal(options.signal?.aborted, true, "a backwards Date jump cannot postpone the monotonic deadline");
+			return result(agent, task, { exitCode: 1 });
+		};
+		const output = await runSync("/runtime", [makeAgent("worker")], "worker", "Task", {
+			runId: "wall-clock-cap", acceptance: noAcceptance,
+			controlConfig: resolveControlConfig(undefined, { maxRuntimeMs: 1000 }),
+		}, h.deps);
+		assert.equal(output.error, "Subagent killed: ran for 1s (exceeded maxRuntimeMs=1000ms).");
+	});
+
+	for (const scenario of ["caller abort", "interrupt"] as const) {
+		it(`leaves ${scenario === "interrupt" ? "an interrupt" : "a caller abort"} before the cap unchanged`, async t => {
+			t.mock.timers.enable({ apis: ["setTimeout"] });
+			let now = 0;
+			const stop = new AbortController();
+			const h = dependencies(nativeSelection);
+			h.deps.monotonicNow = () => now;
+			h.deps.runNativeAttempt = async (_cwd, agent, task, _model, options) => {
+				now = 500;
+				t.mock.timers.tick(500);
+				stop.abort();
+				assert.equal(options.signal?.aborted, scenario === "caller abort");
+				assert.equal(options.interruptSignal?.aborted, scenario === "interrupt" ? true : undefined);
+				now = 1500;
+				t.mock.timers.tick(1000);
+				assert.equal(options.signal?.aborted, scenario === "caller abort", "the cap must not signal a previously interrupted child");
+				return result(agent, task, scenario === "caller abort"
+					? { exitCode: 1, error: "caller cancelled", finalOutput: "partial work" }
+					: { interrupted: true, finalOutput: "interrupted work" });
+			};
+			const output = await runSync("/runtime", [makeAgent("worker")], "worker", "Task", {
+				runId: "cancel-before-cap", acceptance: noAcceptance,
+				...(scenario === "caller abort" ? { signal: stop.signal } : { interruptSignal: stop.signal }),
+				controlConfig: resolveControlConfig(undefined, { maxRuntimeMs: 1000 }),
+			}, h.deps);
+			assert.equal(output.exitCode, scenario === "caller abort" ? 1 : 0);
+			assert.equal(output.error, scenario === "caller abort" ? "caller cancelled" : undefined);
+			assert.equal(output.interrupted, scenario === "interrupt" ? true : undefined);
+			assert.equal(output.finalOutput, scenario === "caller abort" ? "partial work" : "interrupted work");
+			assert.equal(output.modelAttempts?.[0].success, scenario === "interrupt");
+		});
+	}
+});
+
 describe("runSync extended maxRuntimeMs deadline", () => {
 	for (const maxRuntimeMs of [14_400_001, 3_000_000_000, 4_294_967_300]) {
 		it(`runs past four hours and aborts at the call-time cap ${maxRuntimeMs}`, async t => {
