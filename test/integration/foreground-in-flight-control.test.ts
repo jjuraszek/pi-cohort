@@ -258,6 +258,47 @@ describe("foreground in-flight turn control", { skip: !available ? "pi packages 
 		});
 	}
 
+	it("caps a child at the settings maxRuntimeMs", async () => {
+		const cap = 800;
+		mockPi.onCall({
+			steps: [
+				{ jsonl: [events.messageStart()] },
+				...Array.from({ length: 30 }, () => ({
+					delay: 100, jsonl: [events.toolStart("read"), events.toolEnd("read")],
+				})),
+				{ jsonl: [events.assistantMessage("Must not finish")] },
+			],
+		});
+		const state = {
+			baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(),
+			grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() },
+			foregroundControls: new Map(), lastForegroundControlId: null,
+		};
+		const executor = executorModule.createSubagentExecutor({
+			captureRuntime: mockPi.captureRuntime,
+			pi: { events: createEventBus(), getSessionName: () => undefined }, state,
+			resolveConfig: () => ({ control: { enabled: false, maxRuntimeMs: cap } }),
+			tempArtifactsDir: tempDir, getSubagentSessionRoot: () => tempDir,
+			expandTilde: (value: string) => value,
+			discoverAgents: () => ({ agents: [makeAgent("echo", { completionGuard: false })] }),
+		});
+		const started = performance.now();
+		const result = await executor.execute("settings-cap", {
+			agent: "echo", task: "Stream until capped", async: false, clarify: false, includeProgress: true,
+		}, undefined, undefined, makeMinimalCtx(tempDir));
+		const elapsed = performance.now() - started;
+		assert.equal(mockPi.callCount(), 1);
+		assert.equal(result.isError, true);
+		assert.equal(result.details.results.length, 1);
+		const [child] = result.details.results;
+		assert.notEqual(child.exitCode, 0);
+		assert.match(child.error, /maxRuntimeMs=800ms/);
+		assert.equal(child.interrupted, undefined);
+		assert.ok(result.details.progress[0].toolCount > 0, "settings cap must stop an active child");
+		assert.ok(elapsed >= cap, "settings cap must not fire early");
+		assert.ok(elapsed < 3_000, `settings cap settled after ${elapsed}ms`);
+	});
+
 	it("whole-run interrupt after the last-started child settles falls through to async without stopping an older sibling", async (t) => {
 		for (const index of [0, 1]) mockPi.onCall({ taskIncludes: `Child task ${index}`, steps: [
 			{ jsonl: [events.messageStart()] },
