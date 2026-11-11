@@ -125,6 +125,54 @@ describe("runSync maxRuntimeMs deadline", () => {
 	});
 });
 
+describe("runSync maxRuntimeMs cleanup", () => {
+	for (const scenario of ["early clean success", "thrown native attempt"] as const) {
+		it(`cleans up after ${scenario}`, async t => {
+			t.mock.timers.enable({ apis: ["setTimeout"] });
+			let now = 0;
+			let derivedSignal: AbortSignal | undefined;
+			const caller = new AbortController();
+			const originalError = new Error("native attempt failed");
+			const h = dependencies(nativeSelection);
+			h.deps.monotonicNow = () => now;
+			h.deps.runNativeAttempt = async (_cwd, agent, task, _model, options) => {
+				derivedSignal = options.signal;
+				assert.ok(derivedSignal);
+				assert.notStrictEqual(derivedSignal, caller.signal);
+				now = 250;
+				t.mock.timers.tick(250);
+				assert.equal(derivedSignal.aborted, false);
+				if (scenario === "thrown native attempt") throw originalError;
+				return result(agent, task);
+			};
+			const pending = runSync("/runtime", [makeAgent("worker")], "worker", "Task", {
+				runId: "cleanup-cap", acceptance: noAcceptance, signal: caller.signal,
+				controlConfig: resolveControlConfig(undefined, { maxRuntimeMs: 1000 }),
+			}, h.deps);
+			if (scenario === "thrown native attempt") {
+				await assert.rejects(pending, error => {
+					assert.strictEqual(error, originalError);
+					return true;
+				});
+			} else {
+				const output = await pending;
+				assert.equal(output.exitCode, 0);
+				assert.equal(output.error, undefined);
+				assert.equal(output.interrupted, undefined);
+				assert.equal(output.finalOutput, "done");
+			}
+			assert.ok(derivedSignal);
+			assert.equal(derivedSignal.aborted, false);
+			now = 1001;
+			t.mock.timers.tick(751);
+			assert.equal(derivedSignal.aborted, false, "the cleared cap timer cannot abort a settled attempt");
+			caller.abort();
+			assert.equal(caller.signal.aborted, true);
+			assert.equal(derivedSignal.aborted, false, "the removed listener cannot forward a later caller abort");
+		});
+	}
+});
+
 describe("runSync deadline continuity", () => {
 	it("keeps the original deadline across a fallback attempt", async t => {
 		t.mock.timers.enable({ apis: ["setTimeout"] });
