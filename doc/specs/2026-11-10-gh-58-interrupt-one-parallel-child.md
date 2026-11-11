@@ -1,5 +1,7 @@
 # Stop one child of a parallel run by index
 
+> **Superseded by:** [doc/specs/2026-11-11-gh-62-universal-child-stop-handle.md](./2026-11-11-gh-62-universal-child-stop-handle.md) - the index as the stop address in `Foreground targeting`, `interrupt action`, `Background transport` and `/interrupt-child <index> [run-id]`
+
 **Ticket:** [#58](https://github.com/jjuraszek/pi-cohort/issues/58)
 **Goal:** `interrupt` with a child `index` stops exactly that child of a running foreground or background run, the siblings finish, and the waiting call returns their results with the stopped child marked interrupted; a slash command gives the person at the terminal the same stop while the calling agent is blocked.
 **Amend-grant:** every later spec amendment in this flow (corrected facts, paths, verification lines, and scope, acceptance-criteria, or public-contract edits alike) applies without asking; only a redraw (changed problem statement, component added, removed, or re-bounded) still stops for you, and the grant never stands in for a spec approval.
