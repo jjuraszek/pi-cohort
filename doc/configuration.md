@@ -89,6 +89,7 @@ Defaults to `false`. Forces depth-0 single, parallel, and chain runs into backgr
       "activeNoticeAfterMs": 240000,
       "inFlightSilenceCeilingMs": 600000,
       "inFlightSilenceKillMs": 1800000,
+      "maxRuntimeMs": 14400000,
       "failedToolAttemptsBeforeAttention": 3,
       "notifyOn": ["active_long_running", "needs_attention"],
       "notifyChannels": ["event", "async"]
@@ -97,7 +98,9 @@ Defaults to `false`. Forces depth-0 single, parallel, and chain runs into backgr
 }
 ```
 
-These are the consumer defaults. Optional `activeNoticeAfterTurns` and `activeNoticeAfterTokens` have no defaults and remain unset. Numeric thresholds must be positive integers; invalid thresholds fall back in the consumer. The kill threshold is clamped to at least `inFlightSilenceCeilingMs + needsAttentionAfterMs`. `notifyOn` accepts the two event names shown above; `notifyChannels` accepts `event` and `async`. An empty list disables those notifications. Per-call control overrides take precedence over the resolved settings object; this is separate from whole-object replacement between settings levels.
+These are the consumer defaults. Optional `activeNoticeAfterTurns` and `activeNoticeAfterTokens` have no defaults and remain unset. Numeric thresholds must be positive integers; invalid thresholds fall back in the consumer. The silence-kill threshold is clamped to at least `inFlightSilenceCeilingMs + needsAttentionAfterMs`. `notifyOn` accepts the two event names shown above; `notifyChannels` accepts `event` and `async`. An empty list disables those notifications. Per-call control overrides take precedence over the resolved settings object; this is separate from whole-object replacement between settings levels.
+
+`maxRuntimeMs` defaults to `14400000` ms (4 h) and caps each foreground child from its start regardless of activity; async children are not capped. `enabled: false` disables attention tracking and the silence kill, not this runtime cap. A capped child returns a failure whose `error` names `maxRuntimeMs` and its value. No value disables the cap: invalid values fall through to settings, then the default; use a very large positive integer for no practical limit. The runtime cap is not clamped against the silence thresholds.
 
 ## `chain`
 

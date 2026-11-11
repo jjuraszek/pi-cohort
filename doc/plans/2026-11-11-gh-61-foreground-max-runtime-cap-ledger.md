@@ -3,7 +3,7 @@
 base: 273a79b4e5f6d80b14ff1e96b1193dc054b46b9e
 verification: env -u PI_CODING_AGENT_DIR npm run test:all
 checks: commands
-iterations: 9
+iterations: 10
 allowance: 10
 
 | row | status | attempts | evidence |
@@ -17,7 +17,7 @@ allowance: 10
 | 7 | done | 0 | timeout -k 30 60 node --import ./test/support/isolate-test-env.mjs --test test/unit/subagent-control.test.ts; 42 passed, 0 failed; invalid cap values fall through to settings then default without clamping; no paid or external action launched |
 | 8 | done | 1 | timeout -k 30 60 node --import ./test/support/isolate-test-env.mjs --test test/unit/foreground-execution-routing.test.ts; 41 passed, 0 failed; external cap aborts owner and attempt signals, rewrites interruptions and startup failures, and wins selection rejection races; no paid or external action launched |
 | 9 | done | 1 | timeout -k 30 180 node --import ./test/support/isolate-test-env.mjs --test test/integration/top-level-async.test.ts; 21 passed, 0 failed; async child stays running past maxRuntimeMs=100 and completes its 1500 ms script with control enabled; no paid or external action launched |
-| 10 | open | 0 | |
+| 10 | done | 1 | timeout -k 30 10 python3 -c 'assert all(any(all(t in line for t in tokens) for line in __import__("pathlib").Path(path).read_text().splitlines()) for path, tokens in [("doc/configuration.md", ["\"maxRuntimeMs\": 14400000"]), ("doc/configuration.md", ["maxRuntimeMs", "14400000", "foreground", "enabled: false"]), ("doc/programmatic-api.md", ["maxRuntimeMs", "14400000", "foreground only", "result.error", "enabled"]), ("doc/programmatic-api.md", ["Supports", "maxRuntimeMs"]), ("skills/pi-cohort/reference/config-fields.md", ["maxRuntimeMs", "integer >= 1", "14400000", "foreground only"]), ("skills/pi-cohort/SKILL.md", ["maxRuntimeMs", "control:"])])'; 6 documentation assertions passed after baseline failure; tables and settings example document the default and foreground cap independent of enabled; no paid or external action launched |
 
 ## Decisions
 row 0 done | seeded 1 rows, closed 0 on baseline | row 7
@@ -30,3 +30,4 @@ row 5 done | Added three deterministic default-deadline checks; 28 unit tests pa
 row 6 done | Added three extended call-time deadline checks including multiple 32-bit timer chunks; 31 unit tests pass without runtime changes. | Reuse the extended-deadline cases in test/unit/foreground-execution-routing.test.ts to check long caps and timer re-arming.
 row 8 done | Fixed a cap-versus-backend-selection rejection race and added ten external cap checks; 41 unit tests pass. | Reuse the external cap cases in test/unit/foreground-execution-routing.test.ts for interruption rewrites, startup failures and selection races.
 row 9 done | Added an async cap-exemption scenario with control enabled; 21 integration tests pass without runtime changes. | Reuse the runtime-cap scenario in test/integration/top-level-async.test.ts to verify async completion beyond a configured cap.
+row 10 done | Documented maxRuntimeMs in configuration, API and skill references; six documentation assertions pass. | Reuse doc/configuration.md and doc/programmatic-api.md for settings and call-time cap guidance, including the default and foreground-only scope.
