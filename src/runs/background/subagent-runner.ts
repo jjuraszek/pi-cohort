@@ -54,6 +54,8 @@ import { buildStopRecord, evaluateStopCondition } from "../shared/stop-condition
 import { createStructuredOutputRuntime, readStructuredOutput } from "../shared/structured-output.ts";
 import { collectDynamicResults, DynamicFanoutError, materializeDynamicParallelStep, validateDynamicCollection } from "../shared/dynamic-fanout.ts";
 import { nestedSummaryFromAsyncStatus, writeNestedEvent } from "../shared/nested-events.ts";
+import { isSafeNestedPathId, type NestedPathEntry } from "../shared/nested-path.ts";
+import { recordStop, stoppingAncestor, sweepBackgroundDescendants, type ForegroundControl } from "../shared/stop-control.ts";
 import { formatModelAttemptNote, isRetryableModelFailure } from "../shared/model-fallback.ts";
 import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
 import { detectSubagentError, extractTextFromContent, extractToolArgsPreview, getFinalOutput, resolveChildCwd } from "../../shared/utils.ts";
@@ -133,7 +135,7 @@ interface SubagentRunConfig {
 	dynamicFanoutMaxItems?: number;
 	workflowGraph?: WorkflowGraphSnapshot;
 	nestedRoute?: NestedRouteInfo;
-	nestedSelf?: { parentRunId: string; parentStepIndex?: number; depth: number; path?: Array<{ runId: string; stepIndex?: number; agent?: string }> };
+	nestedSelf?: { parentRunId: string; parentStepIndex?: number; depth: number; path?: NestedPathEntry[] };
 	executionBackends?: DetachedExecutionBackendConfig;
 }
 
@@ -269,6 +271,7 @@ function runPiStreaming(
 	onChildEvent?: (event: ChildEvent) => void,
 	structuredRun = false,
 	controlConfig: ResolvedControlConfig = DEFAULT_CONTROL_CONFIG,
+	onPolicyStop?: (signal: () => boolean) => boolean,
 ): Promise<RunPiStreamingResult> {
 	return new Promise((resolve, reject) => {
 		const spawnSpec = getPiSpawnCommand(args, runtime);
@@ -407,6 +410,10 @@ function runPiStreaming(
 			if (settlementWaitTimer) clearInterval(settlementWaitTimer);
 			settlementWaitTimer = undefined;
 		}
+		function signalByPolicy(signal: NodeJS.Signals): boolean {
+			const send = () => trySignalChild(child, signal);
+			return onPolicyStop ? onPolicyStop(send) : send();
+		}
 		function startSettlementWait(): void {
 			if (settlementWaitTimer || settled || childExited) return;
 			settlementWaitTimer = setInterval(() => {
@@ -418,7 +425,7 @@ function runPiStreaming(
 					startFinalDrain();
 				}
 				if (silenceMs >= controlConfig.inFlightSilenceKillMs) {
-					forcedTerminationSignal = trySignalChild(child, "SIGKILL") || forcedTerminationSignal;
+					forcedTerminationSignal = signalByPolicy("SIGKILL") || forcedTerminationSignal;
 				}
 			}, Math.min(1000, controlConfig.inFlightSilenceCeilingMs / 4));
 			settlementWaitTimer.unref?.();
@@ -462,7 +469,7 @@ function runPiStreaming(
 			if (childExited || finalDrainTimer || settled) return;
 			finalDrainTimer = setTimeout(() => {
 				if (settled) return;
-				const termSent = trySignalChild(child, "SIGTERM");
+				const termSent = signalByPolicy("SIGTERM");
 				if (!termSent) return;
 				forcedTerminationSignal = true;
 				if (!cleanTerminalAssistantStopReceived && !error && !assistantError) {
@@ -470,7 +477,7 @@ function runPiStreaming(
 				}
 				finalHardKillTimer = setTimeout(() => {
 					if (settled) return;
-					forcedTerminationSignal = trySignalChild(child, "SIGKILL") || forcedTerminationSignal;
+					forcedTerminationSignal = signalByPolicy("SIGKILL") || forcedTerminationSignal;
 				}, HARD_KILL_MS);
 				finalHardKillTimer.unref?.();
 			}, FINAL_STOP_GRACE_MS);
@@ -618,6 +625,8 @@ function writeRunLog(
 /** Internal context for one detached-runner leaf. */
 export interface SingleStepContext {
 	childId: string;
+	isStopping?: () => boolean;
+	parentPath?: NestedPathEntry[];
 	jobCwd?: string;
 	previousOutput: string;
 	outputs?: ChainOutputMap;
@@ -686,6 +695,9 @@ async function runSingleStepAttempts(
 	acceptance?: import("../../shared/types.ts").AcceptanceLedger;
 	executionSurface?: ExecutionSurfaceResult;
 }> {
+	const stopped = () => ctx.isStopping?.() || stoppingAncestor(ctx.nestedRoute, ctx.id, ctx.childId, ctx.parentPath);
+	const paused = () => ({ agent: step.agent, output: "", exitCode: 0, interrupted: true, sessionFile: step.sessionFile });
+	if (stopped()) return paused();
 	let childCwd: string;
 	const placeholderRegex = new RegExp(ctx.placeholder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g");
 	let task = step.task.replace(placeholderRegex, () => ctx.previousOutput);
@@ -720,6 +732,7 @@ async function runSingleStepAttempts(
 		};
 	}
 
+	if (stopped()) return paused();
 	const effectiveStructuredOutput = step.structuredOutput ?? (step.structuredOutputSchema
 		? createStructuredOutputRuntime(step.structuredOutputSchema, path.join(path.dirname(ctx.outputFile), "structured-output"))
 		: undefined);
@@ -794,6 +807,10 @@ async function runSingleStepAttempts(
 
 		try {
 			for (let index = 0; index < candidates.length; index++) {
+				if (stopped() || interruptController.signal.aborted) {
+					finalResult = { ...paused(), stderr: "", messages: [], usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 }, finalOutput: "" };
+					break;
+				}
 				const candidate = candidates[index];
 				ctx.onAttemptStart?.({ model: candidate, thinking: resolveEffectiveThinking(candidate, step.thinking) });
 				const outputSnapshot = captureSingleOutputSnapshot(step.outputPath);
@@ -829,6 +846,7 @@ async function runSingleStepAttempts(
 					promptFileStem: step.agent,
 					runId: ctx.id,
 					childId: ctx.childId,
+					parentPath: ctx.parentPath ? [...ctx.parentPath, { runId: ctx.id, childId: ctx.childId, stepIndex: ctx.flatIndex, agent: step.agent }] : undefined,
 					childAgentName: step.agent,
 					childIndex: ctx.flatIndex,
 					parentSessionLabel: ctx.parentSessionLabel,
@@ -954,6 +972,7 @@ async function runSingleStepAttempts(
 		}
 	} else {
 	for (let index = 0; index < candidates.length; index++) {
+		if (stopped()) return paused();
 		const candidate = candidates[index];
 		ctx.onAttemptStart?.({ model: candidate, thinking: resolveEffectiveThinking(candidate, step.thinking) });
 		const outputSnapshot = captureSingleOutputSnapshot(step.outputPath);
@@ -981,6 +1000,7 @@ async function runSingleStepAttempts(
 			promptFileStem: step.agent,
 			runId: ctx.id,
 			childId: ctx.childId,
+			parentPath: ctx.parentPath ? [...ctx.parentPath, { runId: ctx.id, childId: ctx.childId, stepIndex: ctx.flatIndex, agent: step.agent }] : undefined,
 			childAgentName: step.agent,
 			childIndex: ctx.flatIndex,
 			parentSessionLabel: ctx.parentSessionLabel,
@@ -1006,6 +1026,12 @@ async function runSingleStepAttempts(
 				ctx.onChildEvent,
 				effectiveStructuredOutput !== undefined,
 				ctx.controlConfig ?? DEFAULT_CONTROL_CONFIG,
+				(signal) => {
+					const recorded = recordStop(ctx.nestedRoute, ctx.childId);
+					const sent = signal();
+					if (recorded) sweepBackgroundDescendants(ctx.nestedRoute, ctx.childId);
+					return sent;
+				},
 			);
 		} catch (error) {
 			if (!(error instanceof PiRuntimeLaunchError)) throw error;
@@ -1413,10 +1439,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	const eventsPath = path.join(asyncDir, "events.jsonl");
 	const logPath = path.join(asyncDir, `subagent-log-${id}.md`);
 	const controlConfig = config.controlConfig ?? DEFAULT_CONTROL_CONFIG;
-	let activeChildInterrupt: (() => void) | undefined;
-	const childInterrupts = new Map<number, () => void>();
-	const pendingStops = new Set<number>();
-	let wholeRunInterruptRequested = false;
+	const children: ForegroundControl["children"] = new Map();
 	let interrupted = false;
 	let currentActivityState: ActivityState | undefined;
 	let activityTimer: NodeJS.Timeout | undefined;
@@ -1508,6 +1531,16 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		outputFile: path.join(asyncDir, "output-0.log"),
 	};
 
+	const syncChildControls = (): void => {
+		for (const [index, step] of statusPayload.steps.entries()) {
+			if (!step.id) continue;
+			const state = step.status === "complete" ? "completed" : step.status === "paused" ? "interrupted" : step.status;
+			const child = children.get(step.id);
+			if (child) Object.assign(child, { agent: step.agent, label: step.label, index, state });
+			else children.set(step.id, { agent: step.agent, label: step.label, index, state });
+		}
+	};
+	syncChildControls();
 	fs.mkdirSync(asyncDir, { recursive: true });
 	writeAtomicJson(statusPath, statusPayload);
 	const publishedChildSnapshots = new Map<string, string>();
@@ -1567,6 +1600,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		statusPayload.workflowGraph = graph;
 	};
 	const writeStatusPayload = (): void => {
+		syncChildControls();
 		refreshWorkflowGraph();
 		writeAtomicJson(statusPath, statusPayload);
 		emitNestedSelfEvent(statusPayload.state === "running" || statusPayload.state === "queued" ? "subagent.nested.updated" : "subagent.nested.completed");
@@ -1837,58 +1871,54 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		step.lastActivityAt = now;
 		statusPayload.lastUpdate = now;
 	};
-	const registerChildInterrupt = (index: number, interrupt: (() => void) | undefined) => {
-		activeChildInterrupt = interrupt;
-		if (!interrupt) {
-			childInterrupts.delete(index);
-			return;
-		}
-		if (pendingStops.delete(index)) {
-			pauseStep(index);
-			writeStatusPayload();
-			interrupt();
-		} else {
-			childInterrupts.set(index, interrupt);
-		}
-	};
-	const interruptRunner = () => {
+	const stopTarget = (targetId: string): void => {
 		if (statusPayload.state !== "running") return;
-		const requests = fs.readdirSync(asyncDir).filter((name) => /^interrupt-request-(\d+|all)\.json$/.test(name));
-		let changed = false;
-		let wholeRun = false;
-		for (const name of requests) {
-			fs.readFileSync(path.join(asyncDir, name), "utf8");
-			fs.unlinkSync(path.join(asyncDir, name));
-			if (name === "interrupt-request-all.json") {
-				wholeRun = true;
-				continue;
-			}
-			const index = Number(name.slice("interrupt-request-".length, -".json".length));
-			const interrupt = childInterrupts.get(index);
-			if (interrupt) {
-				pauseStep(index);
-				childInterrupts.delete(index);
-				interrupt();
-				changed = true;
-			} else if (statusPayload.steps[index]?.status === "running") {
-				pendingStops.add(index);
-			}
-		}
-		if (wholeRun && !wholeRunInterruptRequested) {
-			wholeRunInterruptRequested = true;
+		const wholeRun = targetId === id;
+		const child = wholeRun ? undefined : children.get(targetId);
+		if (!wholeRun && (!child || child.state !== "running")) return;
+		if (statusPayload.stopping || child?.stopRequested) return;
+		recordStop(config.nestedRoute, targetId);
+		if (wholeRun) {
+			statusPayload.stopping = true;
 			interrupted = true;
 			currentActivityState = undefined;
 			statusPayload.activityState = undefined;
-			statusPayload.lastUpdate = Date.now();
-			for (let index = 0; index < statusPayload.steps.length; index++) {
-				if (statusPayload.steps[index].status === "running") pauseStep(index);
+			for (const entry of children.values()) {
+				if (entry.state !== "running") continue;
+				pauseStep(entry.index);
+				entry.interrupt?.();
 			}
-			activeChildInterrupt?.();
-			changed = true;
+		} else if (child) {
+			child.stopRequested = true;
+			pauseStep(child.index);
+			child.interrupt?.();
 		}
-		if (changed) writeStatusPayload();
+		sweepBackgroundDescendants(config.nestedRoute, targetId);
+		writeStatusPayload();
+	};
+	const registerChildInterrupt = (index: number, interrupt: (() => void) | undefined) => {
+		const child = children.get(statusPayload.steps[index].id)!;
+		child.interrupt = interrupt ? () => { interrupt(); return true; } : undefined;
+		if (statusPayload.stopping || child.stopRequested) child.interrupt?.();
+	};
+	const interruptRunner = () => {
+		if (statusPayload.state !== "running") return;
+		for (const name of fs.readdirSync(asyncDir).filter((name) => /^interrupt-request-.*\.json$/.test(name))) {
+			const file = path.join(asyncDir, name);
+			let request: { targetId?: unknown };
+			try { request = JSON.parse(fs.readFileSync(file, "utf8")); }
+			catch { continue; }
+			finally { fs.unlinkSync(file); }
+			const targetId = name.slice("interrupt-request-".length, -".json".length);
+			if (!isSafeNestedPathId(targetId) || request?.targetId !== targetId) continue;
+			stopTarget(targetId);
+		}
 	};
 	process.on(ASYNC_INTERRUPT_SIGNAL, interruptRunner);
+	const terminateRunner = () => stopTarget(id);
+	process.on("SIGTERM", terminateRunner);
+	if (stoppingAncestor(config.nestedRoute, id, undefined, config.nestedSelf?.path)) stopTarget(id);
+	interruptRunner();
 	appendJsonl(
 		eventsPath,
 		JSON.stringify({
@@ -2056,6 +2086,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			let aborted = false;
 			const parallelResults = await mapConcurrent(dynamicSteps, concurrency, async (task, taskIdx) => {
 				const fi = groupStartFlatIndex + taskIdx;
+				if (statusPayload.stopping) return { id: statusPayload.steps[fi].id, agent: task.agent, output: "", exitCode: -1 as number | null, skipped: true };
 				if (aborted && failFast) {
 					const skippedAt = Date.now();
 					statusPayload.steps[fi].status = "failed";
@@ -2082,7 +2113,9 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				writeStatusPayload();
 				appendJsonl(eventsPath, JSON.stringify({ type: "subagent.step.started", ts: taskStartTime, runId: id, stepIndex: fi, agent: task.agent }));
 				const singleResult = await runSingleStep(task, {
-					childId: statusPayload.steps[fi].id,
+					childId: statusPayload.steps[fi].id!,
+					isStopping: () => statusPayload.stopping === true || children.get(statusPayload.steps[fi].id!)?.stopRequested === true,
+					parentPath: config.nestedSelf?.path,
 					jobCwd: config.cwd,
 					previousOutput, placeholder, cwd, sessionEnabled,
 					outputs,
@@ -2105,7 +2138,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				});
 				const taskEndTime = Date.now();
 				if (singleResult.interrupted) interrupted = true;
-				pendingStops.delete(fi);
 				statusPayload.steps[fi].status = singleResult.interrupted ? "paused" : singleResult.exitCode === 0 ? "complete" : "failed";
 				statusPayload.steps[fi].endedAt = taskEndTime;
 				statusPayload.steps[fi].durationMs = taskEndTime - taskStartTime;
@@ -2336,6 +2368,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					concurrency,
 					async (task, taskIdx) => {
 						const fi = groupStartFlatIndex + taskIdx;
+						if (statusPayload.stopping) return { id: statusPayload.steps[fi].id, agent: task.agent, output: "", exitCode: -1 as number | null, skipped: true };
 						if (aborted && failFast) {
 							const skippedAt = Date.now();
 							statusPayload.steps[fi].status = "failed";
@@ -2378,7 +2411,9 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 						const { taskForRun, taskCwd } = prepareParallelTaskRun(task, cwd, worktreeSetup, taskIdx, groupCwd);
 
 						const singleResult = await runSingleStep(taskForRun, {
-							childId: statusPayload.steps[fi].id,
+							childId: statusPayload.steps[fi].id!,
+							isStopping: () => statusPayload.stopping === true || children.get(statusPayload.steps[fi].id!)?.stopRequested === true,
+							parentPath: config.nestedSelf?.path,
 							jobCwd: config.cwd,
 							previousOutput, placeholder, cwd: taskCwd, sessionEnabled,
 							outputs,
@@ -2404,7 +2439,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 						const taskDuration = taskEndTime - taskStartTime;
 
 						if (singleResult.interrupted) interrupted = true;
-						pendingStops.delete(fi);
 						statusPayload.steps[fi].status = singleResult.interrupted ? "paused" : singleResult.exitCode === 0 ? "complete" : "failed";
 						statusPayload.steps[fi].endedAt = taskEndTime;
 						statusPayload.steps[fi].durationMs = taskDuration;
@@ -2564,7 +2598,9 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			}));
 
 			const singleResult = await runSingleStep(seqStep, {
-				childId: statusPayload.steps[flatIndex].id,
+				childId: statusPayload.steps[flatIndex].id!,
+				isStopping: () => statusPayload.stopping === true || children.get(statusPayload.steps[flatIndex].id!)?.stopRequested === true,
+				parentPath: config.nestedSelf?.path,
 				jobCwd: config.cwd,
 				previousOutput, placeholder, cwd, sessionEnabled,
 				outputs,
@@ -2629,7 +2665,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 
 			const stepEndTime = Date.now();
 			if (singleResult.interrupted) interrupted = true;
-			pendingStops.delete(flatIndex);
 			statusPayload.steps[flatIndex].status = singleResult.interrupted ? "paused" : singleResult.exitCode === 0 ? "complete" : "failed";
 			statusPayload.steps[flatIndex].endedAt = stepEndTime;
 			statusPayload.steps[flatIndex].durationMs = stepEndTime - stepStartTime;
@@ -2843,6 +2878,9 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		});
 	} catch (err) {
 		console.error(`Failed to write result file ${resultPath}:`, err);
+	} finally {
+		process.removeListener(ASYNC_INTERRUPT_SIGNAL, interruptRunner);
+		process.removeListener("SIGTERM", terminateRunner);
 	}
 }
 

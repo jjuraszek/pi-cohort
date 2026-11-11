@@ -10,7 +10,8 @@
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import * as fs from "node:fs";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import defaultFs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -20,6 +21,9 @@ import { getArtifactPaths } from "../../src/shared/artifacts.ts";
 import { formatModelAttemptNote } from "../../src/runs/shared/model-fallback.ts";
 import { DEFAULT_CONTROL_CONFIG } from "../../src/runs/shared/subagent-control.ts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { createNestedRoute, findNestedRun, nestedRouteEnv, projectNestedEvents, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
+import { recordStop, sweepBackgroundDescendants } from "../../src/runs/shared/stop-control.ts";
+import { SUBAGENT_PARENT_RUN_ID_ENV, SUBAGENT_PARENT_PATH_ENV, SUBAGENT_PARENT_DEPTH_ENV } from "../../src/runs/shared/pi-args.ts";
 
 interface AsyncExecutionResult {
 	content: Array<{ text?: string }>;
@@ -50,6 +54,7 @@ interface AsyncStatusPayload {
 	totalTokens?: { total: number };
 	parallelGroups?: Array<{ start: number; count: number; stepIndex: number }>;
 	steps?: Array<{
+		id?: string;
 		label?: string;
 		phase?: string;
 		outputName?: string;
@@ -292,6 +297,93 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 	afterEach(() => {
 		removeTempDir(tempDir);
 	});
+	it("publishes refused nested admission as paused before any spawn", async () => {
+		const rootId = `admission-root-${Date.now()}`;
+		const route = createNestedRoute(rootId);
+		recordStop(route, "stopped-child");
+		const env = { ...nestedRouteEnv(route), [SUBAGENT_PARENT_RUN_ID_ENV]: rootId,
+			[SUBAGENT_PARENT_PATH_ENV]: JSON.stringify([{ runId: rootId, childId: "stopped-child" }]) };
+		const saved = Object.fromEntries(Object.keys(env).map(key => [key, process.env[key]]));
+		Object.assign(process.env, env);
+		try {
+			const id = `admission-child-${Date.now()}`;
+			const result = executeAsyncSingle(id, {
+				agent: "worker", task: "Must not start", agentConfig: makeAgent("worker"),
+				ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
+				artifactConfig: { enabled: false }, shareEnabled: false, maxSubagentDepth: 2,
+			});
+			assert.equal(result.isError, true);
+			assert.match(result.content[0].text, /stopping.*ancestor|ancestor.*stopping/i);
+			const registered = projectNestedEvents(route).children;
+			assert.equal(registered.length, 1);
+			assert.equal(registered[0].state, "paused");
+			assert.equal(readStatus(registered[0].asyncDir!)?.state, "paused");
+			assert.equal(mockPi.callCount(), 0);
+		} finally {
+			for (const [key, value] of Object.entries(saved)) {
+				if (value === undefined) delete process.env[key]; else process.env[key] = value;
+			}
+		}
+	});
+
+	it("a stop at queued publication closes admission below five ancestors and seventeen siblings", async () => {
+		const route = createNestedRoute(`publish-race-${Date.now()}`);
+		const id = `queued-${Date.now()}`;
+		const ancestry = Array.from({ length: 5 }, (_, index) => ({ runId: `ancestor-${index}`, childId: `owner-${index}` }));
+		const timestamp = Date.now() - 1_000;
+		for (let index = 0; index < 5; index++) {
+			const parentRunId = index === 0 ? route.rootRunId : `ancestor-${index - 1}`;
+			writeNestedEvent(route, { type: "subagent.nested.started", ts: timestamp + index, parentRunId,
+				child: { id: `ancestor-${index}`, parentRunId, depth: index + 1, path: ancestry.slice(0, index), state: "running" } });
+		}
+		for (let index = 0; index < 17; index++) writeNestedEvent(route, {
+			type: "subagent.nested.started", ts: timestamp + 5 + index, parentRunId: "ancestor-4",
+			child: { id: `sibling-${index}`, parentRunId: "ancestor-4", depth: 6,
+				path: [...ancestry.slice(0, 4), { runId: "ancestor-4", childId: `sibling-owner-${index}` }], state: "running" },
+		});
+		const saved = { ...process.env };
+		Object.assign(process.env, nestedRouteEnv(route), {
+			[SUBAGENT_PARENT_RUN_ID_ENV]: "ancestor-4",
+			[SUBAGENT_PARENT_DEPTH_ENV]: "6",
+			[SUBAGENT_PARENT_PATH_ENV]: JSON.stringify(ancestry),
+		});
+		let publishedWithoutPid = false;
+		let queuedDir: string | undefined;
+		try {
+			const result = asyncMod!.executeAsyncSingle(id, {
+				agent: "worker", task: "Must not spawn", agentConfig: makeAgent("worker"),
+				ctx: { pi: { events: { emit() {} } } as any, cwd: tempDir, currentSessionId: "parent", runtime: mockPi.runtime },
+				artifactConfig: { enabled: false }, shareEnabled: false, maxSubagentDepth: 10,
+			}, (eventRoute, event) => {
+				if (event.type !== "subagent.nested.started") throw new Error("Expected queued publication");
+				assert.equal(event.child.state, "queued");
+				assert.equal(event.child.pid, undefined);
+				publishedWithoutPid = true;
+				queuedDir = event.child.asyncDir;
+				writeNestedEvent(eventRoute, event);
+				recordStop(route, "owner-4");
+				let scans = 0;
+				let capabilityReads = 0;
+				const readdir = fs.readdirSync;
+				const readFile = fs.readFileSync;
+				fs.readdirSync = ((dir, ...args) => { if (String(dir) === route.eventSink) scans++; return readdir(dir, ...args); }) as typeof fs.readdirSync;
+				fs.readFileSync = ((file, ...args) => { if (String(file) === path.join(path.dirname(route.eventSink), "route.json")) capabilityReads++; return readFile(file, ...args); }) as typeof fs.readFileSync;
+				syncBuiltinESMExports();
+				try { sweepBackgroundDescendants(route, "owner-4"); }
+				finally { fs.readdirSync = readdir; fs.readFileSync = readFile; syncBuiltinESMExports(); }
+				assert.equal(scans, 1);
+				assert.ok(capabilityReads <= 1);
+			});
+			assert.equal(result.isError, true);
+			assert.match(result.content[0].text, /stopping.*ancestor|ancestor.*stopping/i);
+		} finally { process.env = saved; }
+		assert.equal(publishedWithoutPid, true);
+		assert.equal(readStatus(queuedDir!)?.state, "paused");
+		assert.equal(mockPi.callCount(), 0);
+		const registry = projectNestedEvents(route);
+		assert.equal(findNestedRun(registry.children, "ancestor-4")?.children?.filter(child => child.id.startsWith("sibling-") && child.state === "running").length, 17);
+	});
+
 	it("reports jiti availability as boolean", () => {
 		const result = isAsyncAvailable();
 		assert.equal(typeof result, "boolean");
@@ -340,7 +432,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			shareEnabled: false,
 			maxSubagentDepth: 2,
 		};
-		mockPi.onCall({ echoEnv: ["PI_SUBAGENT_RUN_DIR"] });
+		mockPi.onCall({ echoEnv: ["PI_SUBAGENT_RUN_DIR", "PI_SUBAGENT_PARENT_PATH", "PI_SUBAGENT_OWNER_PID"] });
 		const singleId = `async-handoff-single-${Date.now().toString(36)}`;
 		const singleResult = executeAsyncSingle(singleId, {
 			agent: "worker",
@@ -355,8 +447,13 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		// First detached spawn in the suite pays the cold jiti-transpile cost; give it a wide budget (slow Windows CI).
 		const singleResultPath = await waitForAsyncResultFile(singleId, 30_000);
 		const singlePayload = JSON.parse(fs.readFileSync(singleResultPath, "utf-8")) as AsyncResultPayload;
-		const observedEnv = JSON.parse(singlePayload.results[0]?.output ?? "{}") as { PI_SUBAGENT_RUN_DIR?: string };
+		const observedEnv = JSON.parse(singlePayload.results[0]?.output ?? "{}");
+		const singleStatus = readStatus(path.join(ASYNC_DIR, singleId));
 		assert.equal(observedEnv.PI_SUBAGENT_RUN_DIR, path.join(ASYNC_DIR, singleId));
+		assert.equal(observedEnv.PI_SUBAGENT_OWNER_PID, String(singleStatus.pid));
+		assert.deepEqual(JSON.parse(observedEnv.PI_SUBAGENT_PARENT_PATH).at(-1), {
+			runId: singleId, childId: singleStatus.steps[0].id, stepIndex: 0, agent: "worker",
+		});
 
 		mockPi.onCall({ output: "parallel one done" });
 		mockPi.onCall({ output: "parallel two done" });
@@ -842,7 +939,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		for (const index of [1, 2]) {
 			const args = readMockPiArgs(mockPi, index);
 			assert.ok(args.includes("--name"));
-			assert.equal(args[args.indexOf("--name") + 1], `reviewer ${id.slice(0, 8)}/${index} from P`);
+			assert.equal(args[args.indexOf("--name") + 1], `reviewer ${status.steps[index].id.slice(0, 6)} from P`);
 		}
 		assert.match(readMockPiArgs(mockPi, 3).at(-1) ?? "", /"key":"src\/a\.ts"/);
 		const collected = payload.outputs?.reviews?.structured as Array<{ key: string; structured: unknown }>;
@@ -1348,7 +1445,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 						assert.ok(Date.now() < deadline, "Timed out waiting for tree child");
 						await new Promise((resolve) => setTimeout(resolve, 25));
 					}
-					fs.writeFileSync(path.join(ASYNC_DIR, id, "interrupt-request-all.json"), JSON.stringify({ requestedAt: Date.now() }));
+					fs.writeFileSync(path.join(ASYNC_DIR, id, `interrupt-request-${id}.json`), JSON.stringify({ targetId: id, requestedAt: Date.now() }));
 					process.kill(runnerPid!, "SIGUSR2");
 					while (true) {
 						const status = JSON.parse(fs.readFileSync(statusPath, "utf8"));
@@ -1382,7 +1479,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 				}
 			} finally {
 				if (runnerPid) {
-					if (runId) fs.writeFileSync(path.join(ASYNC_DIR, runId, "interrupt-request-all.json"), JSON.stringify({ requestedAt: Date.now() }));
+					if (runId) fs.writeFileSync(path.join(ASYNC_DIR, runId, `interrupt-request-${runId}.json`), JSON.stringify({ targetId: runId, requestedAt: Date.now() }));
 					try { process.kill(runnerPid, "SIGUSR2"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
 					if (runId) await waitForAsyncResultFile(runId);
 				}
@@ -3049,7 +3146,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 					await new Promise((resolve) => setTimeout(resolve, 25));
 				}
 				const status = JSON.parse(fs.readFileSync(path.join(runRoot, "status.json"), "utf8"));
-				fs.writeFileSync(path.join(runRoot, "interrupt-request-all.json"), JSON.stringify({ requestedAt: Date.now() }));
+				fs.writeFileSync(path.join(runRoot, `interrupt-request-${id}.json`), JSON.stringify({ targetId: id, requestedAt: Date.now() }));
 				process.kill(status.pid, "SIGUSR2");
 			}
 			const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id, 6000), "utf8")) as AsyncResultPayload;

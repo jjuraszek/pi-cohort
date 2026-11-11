@@ -47,6 +47,7 @@ import {
 	resolveChildMaxSubagentDepth,
 } from "../../shared/types.ts";
 import { nestedResultsPath, resolveInheritedNestedRouteFromEnv, resolveNestedParentAddressFromEnv, writeNestedEvent } from "../shared/nested-events.ts";
+import { stoppingAncestor } from "../shared/stop-control.ts";
 
 interface AsyncExecutionContext {
 	runtime: PiRuntimeIdentity;
@@ -334,6 +335,15 @@ function publishAndSpawnRunner(
 			} catch (error) {
 				throw new Error(`Failed to stamp nested origin: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
 			}
+		}
+		if (stoppingAncestor(origin.route, cfg.id, undefined, origin.address?.path ?? [])) {
+			const lastUpdate = Date.now();
+			writeAtomicJson(statusPath, { ...status, state: "paused", lastUpdate });
+			if (origin.route && origin.address) writeNestedEvent(origin.route, {
+				type: "subagent.nested.completed", ts: lastUpdate, parentRunId: origin.address.parentRunId,
+				child: { id: cfg.id, ...origin.address, asyncDir, mode: cfg.resultMode, state: "paused", lastUpdate },
+			});
+			return { error: "Cannot start a child beneath a stopping ancestor." };
 		}
 		const result = spawnRunner(cfg, suffix, cwd, asyncDir);
 		if (result.error) throw new Error(result.error);

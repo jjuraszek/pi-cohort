@@ -15,8 +15,8 @@ async function waitFor(predicate: () => boolean, message: string, timeout = 75_0
 	}
 }
 
-for (const scenario of ["parallel", "static", "dynamic", "single", "early", "fallback", "overlap", "mixed", "later-target", "later-whole", "empty", "last-settled", "whole", "structured-static", "structured-dynamic", "mutation", "hidden-error"]) {
-it(`async stop by index pauses only that child (${scenario})`, { skip: process.platform === "win32" ? "requires POSIX signals" : undefined }, async () => {
+for (const scenario of ["parallel", "static", "dynamic", "single", "early", "fallback", "overlap", "mixed", "later-target", "later-whole", "empty", "last-settled", "whole", "legacy", "malformed", "unknown", "structured-static", "structured-dynamic", "mutation", "hidden-error"]) {
+it(`async stop by UUID pauses only that child (${scenario})`, { skip: process.platform === "win32" ? "requires POSIX signals" : undefined }, async () => {
 	const mock = createMockPi();
 	const cwd = createTempDir();
 	mock.install();
@@ -30,15 +30,16 @@ it(`async stop by index pauses only that child (${scenario})`, { skip: process.p
 		const offset = scenario === "dynamic" || scenario === "structured-dynamic" ? 1 : 0;
 		const target = single ? 0 : offset + 1;
 		const whole = ["mixed", "later-whole", "last-settled", "whole"].includes(scenario);
-		const stopped = scenario === "empty" || scenario === "last-settled" ? []
-			: scenario === "whole" ? [2] : single ? [0]
+		const noOp = ["empty", "legacy", "malformed", "unknown"].includes(scenario);
+		const stopped = noOp ? [] : scenario === "last-settled" ? [0, 1]
+			: whole ? [0, 1, 2] : single ? [0]
 			: scenario === "overlap" ? [0, 1] : scenario === "later-target" ? [1, 0]
-			: scenario === "mixed" ? [1, 2] : [1 + offset];
+			: [1 + offset];
 		if (offset) mock.onCall({ taskIncludes: "Seed items", output: "Seed", structuredOutput: { items: [0, 1, 2] } });
 		if (scenario === "fallback") mock.onCall({ taskIncludes: "Child task 1", steps: [{ delay: 150, stderr: "rate limit exceeded\n" }], exitCode: 1 });
 		for (const index of single ? [0] : [0, 1, 2]) mock.onCall({ taskIncludes: `Child task ${index}`, steps: [
 			{ jsonl: [events.messageStart(), ...(scenario === "hidden-error" && index === 1 ? [events.toolResult("read", "rate limit exceeded", true)] : [])] },
-			{ delay: stopped.includes(index + offset) ? 60_000 : scenario === "last-settled" && index === 2 ? 100 : 1_500,
+			{ delay: stopped.includes(index + offset) ? 5_000 : scenario === "last-settled" && index === 2 ? 100 : 1_500,
 				jsonl: [events.assistantMessage(`Completed child ${index}`)],
 				...(structured && index !== 1 ? { structuredOutput: { done: true } } : {}) },
 		] });
@@ -76,10 +77,13 @@ it(`async stop by index pauses only that child (${scenario})`, { skip: process.p
 			&& (scenario === "early" || mock.callCount() >= (single ? 1 : (validation ? 2 : 3) + offset)), "children running");
 		pid = status().pid;
 		const signal = () => process.kill(pid!, process.platform === "win32" ? "SIGBREAK" : "SIGUSR2");
-		const request = (index: number | "all") => writeAtomicJson(path.join(dir, `interrupt-request-${index}.json`), { requestedAt: Date.now() });
+		const childId = (index: number) => status().steps[index].id;
+		const request = (targetId: string) => writeAtomicJson(path.join(dir, `interrupt-request-${targetId}.json`), { targetId, requestedAt: Date.now() });
 		const stop = async (index?: number) => {
-			const response = await executor.execute("stop", { action: "interrupt", id, index }, undefined, undefined, ctx);
-			assert.match(response.content[0].text, new RegExp(index === undefined ? "Interrupt requested for async run" : `Interrupt requested for child ${index} of async run`));
+			const targetId = index === undefined ? id : childId(index);
+			const response = await executor.execute("stop", { action: "interrupt", id: targetId }, undefined, undefined, ctx);
+			assert.equal(response.isError, undefined, response.content[0].text);
+			assert.match(response.content[0].text, /Interrupt requested/);
 		};
 		if (scenario === "hidden-error") await waitFor(() => fs.readFileSync(path.join(dir, "events.jsonl"), "utf8").includes("rate limit exceeded"), "retryable hidden error observed");
 		// The stop races the failed attempt's exit and the fallback's registration; the outcome below holds wherever it lands.
@@ -87,21 +91,26 @@ it(`async stop by index pauses only that child (${scenario})`, { skip: process.p
 		if (scenario === "parallel") {
 			const invalid = await executor.execute("invalid", { action: "interrupt", id, index: 99 }, undefined, undefined, ctx);
 			assert.equal(invalid.isError, true);
-			assert.match(invalid.content[0].text, /no running child at index 99/);
+			assert.match(invalid.content[0].text, /no longer takes an index/i);
 			assert.equal(fs.readdirSync(dir).some((name) => name.startsWith("interrupt-request-")), false);
 		}
-		if (scenario === "empty") {
+		if (noOp) {
+			if (scenario === "legacy") {
+				writeAtomicJson(path.join(dir, "interrupt-request-all.json"), { requestedAt: Date.now() });
+				writeAtomicJson(path.join(dir, "interrupt-request-1.json"), { requestedAt: Date.now() });
+			} else if (scenario === "malformed") fs.writeFileSync(path.join(dir, `interrupt-request-${id}.json`), "{");
+			else if (scenario === "unknown") request("unknown-child");
 			signal();
 		} else if (scenario === "last-settled") {
 			await waitFor(() => status().steps[2].status === "complete", "last child settled");
-			request(2);
+			request(childId(2));
 			signal();
-			await waitFor(() => !fs.existsSync(path.join(dir, "interrupt-request-2.json")), "stale request deleted");
+			await waitFor(() => !fs.existsSync(path.join(dir, `interrupt-request-${childId(2)}.json`)), "stale request deleted");
 			assert.equal(status().steps[0].status, "running");
 			await stop();
 		} else if (scenario === "overlap" || scenario === "mixed") {
-			request(scenario === "overlap" ? 0 : "all");
-			request(1);
+			request(scenario === "overlap" ? childId(0) : id);
+			request(childId(1));
 			signal();
 			await waitFor(() => !fs.readdirSync(dir).some((name) => name.startsWith("interrupt-request-")), "requests consumed together");
 			signal();
@@ -122,8 +131,9 @@ it(`async stop by index pauses only that child (${scenario})`, { skip: process.p
 			return fs.existsSync(resultPath!);
 		}, "result file");
 		const result = JSON.parse(fs.readFileSync(resultPath, "utf8"));
-		assert.equal(result.state, scenario === "empty" ? "complete" : "paused");
-		if (scenario !== "empty") assert.equal(result.summary, "Paused after interrupt. Waiting for explicit next action.");
+		assert.equal(result.state, noOp ? "complete" : "paused");
+		assert.equal(status().stopping, whole ? true : undefined, "only a whole-run stop publishes run stopping state");
+		if (!noOp) assert.equal(result.summary, "Paused after interrupt. Waiting for explicit next action.");
 		if (staticChain || offset) {
 			assert.equal(mock.callCount(), 3 + offset, "later chain steps must not run");
 			assert.equal(status().steps.at(-1).status, "pending");
@@ -132,7 +142,7 @@ it(`async stop by index pauses only that child (${scenario})`, { skip: process.p
 			assert.equal(status().steps[index].status, stopped.includes(index) ? "paused" : "complete");
 			if (stopped.includes(index)) {
 				assert.equal(result.results[index].interrupted, true);
-				assert.equal(result.results[index].modelAttempts.at(-1).exitCode, 0);
+				if (result.results[index].modelAttempts?.length) assert.equal(result.results[index].modelAttempts.at(-1).exitCode, 0);
 				if (validation) {
 					assert.equal(result.results[index].error, undefined);
 					assert.equal(result.results[index].modelAttempts.length, 1, "interrupted attempts must not select model fallback");
@@ -150,7 +160,10 @@ it(`async stop by index pauses only that child (${scenario})`, { skip: process.p
 			assert.equal((inspected.content[0].text.match(/echo complete/g) ?? []).length, 2);
 		}
 	} finally {
-		if (resultPath) await waitFor(() => fs.existsSync(resultPath!), "fixture result cleanup");
+		if (pid && resultPath && !fs.existsSync(resultPath)) {
+			// Failed assertions must not leave the detached fixture running.
+			try { process.kill(pid, "SIGTERM"); } catch {}
+		}
 		if (pid) await waitFor(() => {
 			try { process.kill(pid!, 0); return false; } catch (error) {
 				if (error.code !== "ESRCH") throw error;

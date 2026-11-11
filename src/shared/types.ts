@@ -610,6 +610,7 @@ export interface AsyncStatus {
 	sessionId?: string;
 	mode: SubagentRunMode;
 	state: "queued" | "running" | "complete" | "failed" | "paused";
+	stopping?: true;
 	activityState?: ActivityState;
 	lastActivityAt?: number;
 	currentTool?: string;
