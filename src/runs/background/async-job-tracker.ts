@@ -16,7 +16,8 @@ import {
 import { readStatus } from "../../shared/utils.ts";
 import { normalizeParallelGroups } from "./parallel-groups.ts";
 import { reconcileAsyncRun, reconcileNestedAsyncDescendants } from "./stale-run-reconciler.ts";
-import { hasLiveNestedDescendants, updateAsyncJobNestedProjection } from "../shared/nested-events.ts";
+import { hasLiveNestedDescendants, projectNestedEvents, updateAsyncJobNestedProjection } from "../shared/nested-events.ts";
+import { updateBackgroundStopInventory, updateNestedStopInventory } from "./run-id-resolver.ts";
 
 interface AsyncJobTrackerOptions {
 	completionRetentionMs?: number;
@@ -49,6 +50,8 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 		cancelCleanup(asyncId);
 		const timer = setTimeout(() => {
 			state.cleanupTimers.delete(asyncId);
+			const job = state.asyncJobs.get(asyncId);
+			if (hasLiveNestedDescendants(job?.nestedChildren)) return;
 			state.asyncJobs.delete(asyncId);
 			if (state.lastUiContext) {
 				rerenderWidget(state.lastUiContext);
@@ -107,7 +110,17 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 	const ensurePoller = () => {
 		if (state.poller) return;
 		state.poller = setInterval(() => {
-			if (state.asyncJobs.size === 0) {
+			for (const [id, route] of state.retainedNestedRoutes ?? []) {
+				try {
+					reconcileNestedAsyncDescendants(route, { resultsDir, kill: options.kill, now: options.now });
+					const children = projectNestedEvents(route).children;
+					updateNestedStopInventory(route, children);
+					if (!hasLiveNestedDescendants(children)) state.retainedNestedRoutes.delete(id);
+				} catch (error) {
+					console.error(`Failed to refresh retained nested route '${id}':`, error);
+				}
+			}
+			if (state.asyncJobs.size === 0 && !state.retainedNestedRoutes?.size) {
 				if (state.lastUiContext?.hasUI) rerenderWidget(state.lastUiContext, []);
 				if (state.poller) {
 					clearInterval(state.poller);
@@ -161,6 +174,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 					});
 					const status = reconciliation.status ?? readStatus(job.asyncDir);
 					if (status) {
+						updateBackgroundStopInventory(job.asyncDir, status, fs.statSync(path.join(job.asyncDir, "status.json")).mtimeMs);
 						const previousStatus = job.status;
 						job.status = status.state;
 						if (job.status !== "complete" && job.status !== "failed" && job.status !== "paused") cancelCleanup(job.asyncId);
@@ -301,6 +315,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 		}
 		state.cleanupTimers.clear();
 		state.asyncJobs.clear();
+		state.retainedNestedRoutes?.clear();
 		state.foregroundControls?.clear();
 		state.lastForegroundControlId = null;
 		state.resultFileCoalescer.clear();

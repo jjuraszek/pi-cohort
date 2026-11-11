@@ -17,6 +17,7 @@ export interface ResolveSubagentRunIdDeps {
 	nested?: NestedRunResolutionScope;
 	readOnlyLegacy?: boolean;
 	target?: "interrupt";
+	sessionOnly?: boolean;
 }
 
 export interface ResolvedStopTarget {
@@ -35,6 +36,10 @@ interface BackgroundStopEntry {
 }
 const backgroundStopInventory = new Map<string, BackgroundStopEntry>();
 const nestedStopInventory = new WeakMap<NestedRoute, NestedRunSummary[]>();
+
+export function updateNestedStopInventory(route: NestedRoute, children: NestedRunSummary[]): void {
+	nestedStopInventory.set(route, children);
+}
 
 export function updateBackgroundStopInventory(asyncDir: string, status: AsyncStatus, mtime: number): void {
 	backgroundStopInventory.set(asyncDir, { status, mtime });
@@ -70,10 +75,14 @@ export function listStopTargets(deps: ResolveSubagentRunIdDeps = {}, refresh = f
 		add({ kind: "run", id: control.runId, runId: control.runId, name: control.currentAgent ?? control.mode, state: "running", owner }, 3);
 		for (const [id, child] of control.children ?? []) add({ kind: "child", id, runId: control.runId, name: child.agent, label: child.label, state: child.state, owner }, 3);
 	}
-	const asyncEntries = refresh
+	const asyncEntries = new Map((refresh
 		? winningAsyncRunEntries(deps.asyncDirRoot ?? [ASYNC_DIR, LEGACY_ASYNC_DIR])
-		: [...backgroundStopInventory.keys()].map((asyncDir) => ({ id: path.basename(asyncDir), asyncDir }));
-	for (const { id, asyncDir } of asyncEntries) {
+		: deps.sessionOnly ? [] : [...backgroundStopInventory.keys()].map((asyncDir) => ({ id: path.basename(asyncDir), asyncDir })))
+		.map((entry) => [entry.id, entry]));
+	for (const job of deps.state?.asyncJobs.values() ?? []) {
+		if (!asyncEntries.has(job.asyncId)) asyncEntries.set(job.asyncId, { id: job.asyncId, asyncDir: job.asyncDir });
+	}
+	for (const { id, asyncDir } of asyncEntries.values()) {
 		const status = backgroundStatus(asyncDir, refresh);
 		const owner = { kind: "async" as const, id, location: { asyncDir, resultPath: null, resolvedId: id } };
 		const priority = status?.state === "running" && status.pid && (!refresh || (matchesOwner(id, status.steps) && checkPidLiveness(status.pid) === "alive")) ? 2 : 0;
@@ -86,7 +95,7 @@ export function listStopTargets(deps: ResolveSubagentRunIdDeps = {}, refresh = f
 		if (refresh) {
 			try {
 				children = projectNestedEvents(route, { readOnlyLegacy: deps.readOnlyLegacy }).children;
-				nestedStopInventory.set(route, children);
+				updateNestedStopInventory(route, children);
 			} catch { continue; }
 		} else {
 			const controls = [...deps.state?.foregroundControls.values() ?? [], ...deps.state?.asyncJobs.values() ?? []];

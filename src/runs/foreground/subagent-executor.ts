@@ -45,8 +45,8 @@ import { blockedLine } from "../shared/completion-guard.ts";
 import { compactForegroundDetails, getSingleResultOutput, mapConcurrent, readStatus, resolveChildCwd } from "../../shared/utils.ts";
 import { resolveSubagentResultStatus } from "../shared/result-children.ts";
 import { buildRevivedAsyncTask, resolveAsyncResumeTarget } from "../background/async-resume.ts";
-import { createForegroundChild, updateForegroundChild, projectNestedEvents, nestedResultsPath, createNestedRoute, readNestedControlResults, resolveInheritedNestedRouteFromEnv, resolveNestedAsyncDir, resolveNestedParentAddressFromEnv, updateForegroundNestedProjection, writeNestedControlRequest, writeNestedEvent, type NestedRunResolutionScope } from "../shared/nested-events.ts";
-import { resolveSubagentRunId, type ResolvedSubagentRunId, type ResolvedStopTarget } from "../background/run-id-resolver.ts";
+import { hasLiveNestedDescendants, createForegroundChild, updateForegroundChild, projectNestedEvents, nestedResultsPath, createNestedRoute, readNestedControlResults, resolveInheritedNestedRouteFromEnv, resolveNestedAsyncDir, resolveNestedParentAddressFromEnv, updateForegroundNestedProjection, writeNestedControlRequest, writeNestedEvent, type NestedRunResolutionScope } from "../shared/nested-events.ts";
+import { updateNestedStopInventory, resolveSubagentRunId, type ResolvedSubagentRunId, type ResolvedStopTarget } from "../background/run-id-resolver.ts";
 import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
 import { inspectSubagentStatus } from "../background/run-status.ts";
 import { applyForceTopLevelAsyncOverride } from "../background/top-level-async.ts";
@@ -2492,6 +2492,14 @@ export function createSubagentExecutor(services: ExecutorDeps): {
 			signal?.removeEventListener("abort", stopOnAbort);
 			if (foregroundControl) {
 				clearPendingForegroundControlNotices(deps.state, runId);
+				const route = foregroundControl.nestedRoute;
+				if (route?.rootRunId === runId) {
+					updateForegroundNestedProjection(foregroundControl);
+					if (hasLiveNestedDescendants(foregroundControl.nestedChildren)) {
+						(deps.state.retainedNestedRoutes ??= new Map()).set(runId, route);
+						updateNestedStopInventory(route, foregroundControl.nestedChildren!);
+					}
+				}
 				deps.state.foregroundControls.delete(runId);
 				if (deps.state.lastForegroundControlId === runId) {
 					deps.state.lastForegroundControlId = null;

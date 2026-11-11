@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { spawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
 import { describe, it } from "node:test";
-import { createTempDir, removeTempDir, tryImport } from "../support/helpers.ts";
+import { createMockPi, createTempDir, events as childEvents, makeMinimalCtx, removeTempDir, tryImport } from "../support/helpers.ts";
+import { createNestedRoute, findNestedRouteForRootId, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
+import registerSubagentExtension from "../../src/extension/index.ts";
+import { listStopTargets, resolveSubagentRunId } from "../../src/runs/background/run-id-resolver.ts";
+import { RUN_STATE_ROOT_DIR } from "../../src/shared/types.ts";
 
 interface AsyncJobTrackerModule {
 	createAsyncJobTracker(
@@ -17,6 +23,7 @@ interface AsyncJobTrackerModule {
 			now?: () => number;
 		},
 	): {
+		ensurePoller(): void;
 		resetJobs(ctx?: unknown): void;
 		handleStarted(data: unknown): void;
 		handleComplete(data: unknown): void;
@@ -32,6 +39,8 @@ function createState() {
 		baseCwd: "/repo",
 		currentSessionId: null,
 		asyncJobs: new Map(),
+		foregroundControls: new Map(),
+		retainedNestedRoutes: new Map(),
 		grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() },
 		cleanupTimers: new Map(),
 		lastUiContext: null,
@@ -106,6 +115,175 @@ function createUiContext() {
 }
 
 describe("async job tracker", { skip: !available ? "pi packages not available" : undefined }, () => {
+	it("polls only retained routes and drops them after the last live descendant settles", async () => {
+		const root = createTempDir("pi-retained-route-");
+		const route = createNestedRoute("returned-root");
+		const foreign = createNestedRoute("foreign-root");
+		const state = createState();
+		const tracker = trackerMod!.createAsyncJobTracker(createEventRecorder().pi, state, root, { pollIntervalMs: 10 });
+		const emit = (target: typeof route, id: string, status: string, ts: number) => writeNestedEvent(target, {
+			type: "subagent.nested.updated", ts, parentRunId: target.rootRunId,
+			child: { id, parentRunId: target.rootRunId, depth: 1, path: [{ runId: target.rootRunId }], state: status, agent: "worker" },
+		});
+		try {
+			emit(route, "retained-child", "running", 1); emit(foreign, "foreign-child", "running", 1);
+			state.retainedNestedRoutes.set(route.rootRunId, route);
+			tracker.ensurePoller();
+			await waitForCondition(() => listStopTargets({ state }, false).some((entry) => entry.id === "retained-child"));
+			assert.ok(listStopTargets({ state }, false).some((entry) => entry.id === "retained-child"));
+			assert.equal(resolveSubagentRunId("retained-child", { state, asyncDirRoot: root, target: "interrupt" })?.owner.kind, "nested");
+			assert.throws(() => resolveSubagentRunId("foreign-child", { state, asyncDirRoot: root, target: "interrupt" }), /No running subagent matches/);
+			emit(route, "retained-child", "complete", 2);
+			await waitForCondition(() => state.retainedNestedRoutes.size === 0);
+			assert.equal(state.retainedNestedRoutes.size, 0);
+		} finally {
+			tracker.resetJobs(); if (state.poller) clearInterval(state.poller);
+			removeTempDir(path.dirname(route.eventSink)); removeTempDir(path.dirname(foreign.eventSink)); removeTempDir(root);
+		}
+	});
+	for (const caller of ["slash", "delegation"]) {
+		it(`starts retained child polling after a ${caller} caller returns without a tool result`, async (t) => {
+			const root = createTempDir("pi-retained-caller-");
+			const mock = createMockPi();
+			const originalArgv = [...process.argv];
+			const childEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith("PI_SUBAGENT_")));
+			const callbacks = new Map<string, Function>();
+			const commands = new Map<string, any>();
+			const listeners = new Map<string, Set<(data: any) => void>>();
+			const events = {
+				on(name: string, handler: (data: any) => void) {
+					const handlers = listeners.get(name) ?? new Set();
+					handlers.add(handler); listeners.set(name, handlers);
+					return () => handlers.delete(handler);
+				},
+				emit(name: string, data: any) { for (const handler of listeners.get(name) ?? []) handler(data); },
+			};
+			let route: ReturnType<typeof createNestedRoute> | undefined;
+			let owner: ChildProcess | undefined;
+			let asyncDir: string | undefined;
+			try {
+				fs.mkdirSync(path.join(root, ".pi", "agents"), { recursive: true });
+				fs.writeFileSync(path.join(root, ".pi", "agents", "echo.md"), "---\nname: echo\ndescription: test agent\ncompletionGuard: false\n---\nFollow the task.\n");
+				mock.install();
+				process.argv = [process.execPath, mock.runtime.piEntryPath];
+				mock.onCall({ steps: [{ jsonl: [childEvents.messageStart()] },
+					{ delay: 500, jsonl: [childEvents.assistantMessage("root done")] }] });
+				for (const key of Object.keys(childEnv)) delete process.env[key];
+				registerSubagentExtension({
+					events, on: (name: string, handler: Function) => callbacks.set(name, handler),
+					registerCommand: (name: string, spec: unknown) => commands.set(name, spec),
+					registerShortcut() {}, registerMessageRenderer() {}, registerTool() {},
+					sendMessage() {}, getSessionName: () => undefined,
+				} as never);
+				const ctx = makeMinimalCtx(root);
+				ctx.sessionManager.getEntries = () => [];
+				callbacks.get("session_start")!({}, ctx);
+				const requestChannel = caller === "slash" ? "subagent:slash:request" : "prompt-template:subagent:request";
+				const responseChannel = caller === "slash" ? "subagent:slash:response" : "prompt-template:subagent:response";
+				const completed = new Promise<any>((resolve) => events.on(responseChannel, resolve));
+				const task = "return with live descendants";
+				events.emit(requestChannel, caller === "slash"
+					? { requestId: `retained-${caller}`, params: { agent: "echo", task, agentScope: "project", async: false } }
+					: { requestId: `retained-${caller}`, agent: "echo", task, context: "fresh", model: "test-model", cwd: root });
+				await waitForCondition(() => mock.callCount() > 0);
+				assert.equal(mock.callCount(), 1);
+				const callFile = fs.readdirSync(mock.dir).find((file) => file.startsWith("call-"))!;
+				const { args } = JSON.parse(fs.readFileSync(path.join(mock.dir, callFile), "utf-8"));
+				const sessionFile = args[args.indexOf("--session") + 1];
+				const runId = path.basename(path.dirname(path.dirname(sessionFile)));
+				route = findNestedRouteForRootId(runId);
+				assert.ok(route);
+				writeNestedEvent(route, { type: "subagent.nested.updated", ts: 1, parentRunId: runId,
+					child: { id: "returned-nested-run", parentRunId: runId, depth: 1, path: [{ runId }], state: "complete", agent: "echo",
+						steps: [{ id: "aabbccdd-child", agent: "echo", label: "retained work", status: "running" }] } });
+				if (process.platform !== "win32") {
+					asyncDir = path.join(RUN_STATE_ROOT_DIR, "nested-subagent-runs", runId, "returned-background-run");
+					fs.mkdirSync(asyncDir, { recursive: true });
+					owner = spawn(process.execPath, ["-e", `
+						const fs = require("node:fs"), path = require("node:path");
+						const dir = process.argv[1];
+						process.on("SIGUSR2", () => {
+							const requests = fs.readdirSync(dir).filter(name => name.startsWith("interrupt-request-"));
+							fs.writeFileSync(path.join(dir, "received-stop.json"), JSON.stringify(requests));
+						});
+						setInterval(() => {}, 1000);
+						process.stdout.write("ready");
+					`, asyncDir], { stdio: ["ignore", "pipe", "inherit"] });
+					await once(owner.stdout!, "data");
+					fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
+						runId: "returned-background-run", state: "running", pid: owner.pid, startedAt: Date.now(), lastUpdate: Date.now(),
+						steps: [{ id: "fedcba98-child", agent: "echo", label: "background work", status: "running" }],
+					}));
+					writeNestedEvent(route!, { type: "subagent.nested.updated", ts: 4, parentRunId: runId,
+						child: { id: "returned-background-run", parentRunId: runId, depth: 1, path: [{ runId }],
+							state: "running", agent: "echo", asyncDir,
+							steps: [{ id: "fedcba98-child", agent: "echo", label: "background work", status: "running" }] } });
+				}
+				const response = await completed;
+				assert.notEqual(response.isError, true);
+				writeNestedEvent(route, { type: "subagent.nested.child", ts: 2, runId: "returned-nested-run",
+					id: "ddeeff00-child", index: 1, agent: "echo", label: "late work", status: "running" });
+				const completions = (prefix: string) => commands.get("interrupt-child").getArgumentCompletions(prefix);
+				await waitForCondition(() => completions("ddeeff").length > 0);
+				assert.equal(completions("ddeeff")[0]?.value, "ddeeff");
+				assert.match(completions("ddeeff")[0].label, /late work/);
+				await t.test("stops a distinct retained background child after the root returns", {
+					skip: process.platform === "win32" ? "requires POSIX background interrupt signals" : undefined,
+				}, async () => {
+					assert.ok(asyncDir);
+					assert.ok(owner);
+					const received = path.join(asyncDir, "received-stop.json");
+					await waitForCondition(() => completions("fedcba").length > 0);
+					assert.equal(completions("fedcba")[0]?.value, "fedcba");
+					assert.match(completions("fedcba")[0].label, /background work/);
+					const target = resolveSubagentRunId("fedcba", { target: "interrupt", asyncDirRoot: root,
+						state: { ...createState(), retainedNestedRoutes: new Map([[runId, route!]]) } as never });
+					assert.equal(target?.kind, "child");
+					assert.equal(target?.id, "fedcba98-child");
+					assert.equal(target?.runId, "returned-background-run");
+					assert.equal(target?.owner.kind, "async");
+					assert.equal(target?.owner.kind === "async" && target.owner.location.asyncDir, asyncDir);
+					const stopped = new Promise<any>((resolve) => events.on("subagent:slash:response", resolve));
+					events.emit("subagent:slash:request", { requestId: "retained-stop", params: { action: "interrupt", id: "fedcba" } });
+					const stopResponse = await stopped;
+					assert.notEqual(stopResponse.isError, true);
+					assert.match(stopResponse.result.content[0].text, /Interrupt requested for child fedcba98-child/);
+					await waitForCondition(() => fs.existsSync(received));
+					assert.deepEqual(JSON.parse(fs.readFileSync(received, "utf8")), ["interrupt-request-fedcba98-child.json"]);
+					assert.equal(JSON.parse(fs.readFileSync(path.join(asyncDir, "interrupt-request-fedcba98-child.json"), "utf8")).targetId, "fedcba98-child");
+					fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({
+						runId: "returned-background-run", state: "paused", pid: owner.pid, startedAt: Date.now(), lastUpdate: Date.now(),
+						steps: [{ id: "fedcba98-child", agent: "echo", status: "paused" }],
+					}));
+					writeNestedEvent(route!, { type: "subagent.nested.completed", ts: Date.now(), parentRunId: runId,
+						child: { id: "returned-background-run", parentRunId: runId, depth: 1, path: [{ runId }],
+							state: "paused", agent: "echo", asyncDir,
+							steps: [{ id: "fedcba98-child", agent: "echo", status: "paused" }] } });
+					await waitForCondition(() => completions("fedcba").length === 0);
+					assert.deepEqual(completions("fedcba"), []);
+				});
+				for (const [index, [id, label]] of [["aabbccdd-child", "retained work"], ["ddeeff00-child", "late work"]].entries()) {
+					writeNestedEvent(route, { type: "subagent.nested.child", ts: 3, runId: "returned-nested-run", id, index, agent: "echo", label, status: "completed" });
+				}
+				await waitForCondition(() => completions("ddeeff").length === 0 && completions("aabbcc").length === 0);
+				assert.deepEqual(completions("ddeeff"), []);
+				assert.deepEqual(completions("aabbcc"), []);
+			} finally {
+				callbacks.get("session_shutdown")?.();
+				if (owner && owner.exitCode === null && owner.signalCode === null) {
+					const exited = once(owner, "exit");
+					owner.kill("SIGKILL");
+					await exited;
+				}
+				if (asyncDir) removeTempDir(asyncDir);
+				process.argv = originalArgv;
+				Object.assign(process.env, childEnv);
+				mock.uninstall();
+				if (route) removeTempDir(path.dirname(route.eventSink));
+				removeTempDir(root);
+			}
+		});
+	}
 	it("removes completed jobs after retention and requests a rerender", async () => {
 		const asyncRoot = createTempDir("pi-async-job-tracker-");
 		try {

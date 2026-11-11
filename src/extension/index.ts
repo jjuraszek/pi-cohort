@@ -344,9 +344,13 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		return new SubagentControlNoticeComponent({ ...details, noticeText: formatSubagentControlNotice(details, content) }, theme);
 	});
 
-	const executeSubagentCollapsed = (id: string, params: SubagentParamsLike, signal: AbortSignal, onUpdate: ((result: AgentToolResult<Details>) => void) | undefined, ctx: ExtensionContext) => {
+	const executeSubagentCollapsed = async (id: string, params: SubagentParamsLike, signal: AbortSignal, onUpdate: ((result: AgentToolResult<Details>) => void) | undefined, ctx: ExtensionContext) => {
 		if (ctx.hasUI) ctx.ui.setToolsExpanded(false);
-		return executor.execute(id, params, signal, onUpdate, ctx);
+		try {
+			return await executor.execute(id, params, signal, onUpdate, ctx);
+		} finally {
+			if (state.asyncJobs.size > 0 || state.retainedNestedRoutes.size > 0) ensurePoller();
+		}
 	};
 
 	const slashBridge = registerSlashSubagentBridge({
@@ -514,7 +518,6 @@ DIAGNOSTICS:
 		if (state.asyncJobs.size > 0) {
 			renderWidget(ctx, Array.from(state.asyncJobs.values()));
 			ctx.ui.requestRender?.();
-			ensurePoller();
 		}
 	});
 

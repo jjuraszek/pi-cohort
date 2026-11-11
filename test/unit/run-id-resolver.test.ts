@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, it } from "node:test";
-import type { SubagentState } from "../../src/shared/types.ts";
-import { resolveSubagentRunId } from "../../src/runs/background/run-id-resolver.ts";
+import { TEMP_ROOT_DIR, type SubagentState } from "../../src/shared/types.ts";
+import { listStopTargets, resolveSubagentRunId, updateBackgroundStopInventory } from "../../src/runs/background/run-id-resolver.ts";
 import { createNestedRoute, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
 
 const routeRoots: string[] = [];
@@ -160,6 +161,82 @@ describe("subagent run id resolver", () => {
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
+	});
+
+	it("resolves every child from event projection, including the seventeenth row", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-stop-ids-"));
+		const route = nested("projection-root", "projection-run");
+		try {
+			for (let index = 0; index < 16; index++) writeNestedEvent(route, {
+				type: "subagent.nested.child", ts: 200 + index, runId: "projection-run", index,
+				id: `child-${String(index).padStart(2, "0")}`, agent: "worker", status: "running",
+			});
+			const deps = { target: "interrupt" as const, asyncDirRoot: root, nested: { routes: [route] } };
+			assert.equal(resolveSubagentRunId("child-00", deps)?.id, "child-00");
+			writeNestedEvent(route, { type: "subagent.nested.child", ts: 216, runId: "projection-run", index: 16,
+				id: "child-16", agent: "worker", status: "running" });
+			for (let index = 0; index < 17; index++) {
+				const id = `child-${String(index).padStart(2, "0")}`;
+				assert.equal(resolveSubagentRunId(id, deps)?.id, id);
+			}
+			assert.throws(() => resolveSubagentRunId("child-", deps), /Ambiguous stop id.*child:/);
+		} finally { fs.rmSync(root, { recursive: true, force: true }); }
+	});
+
+	it("prefers a live nested async owner over its event projection without duplicate matches", () => {
+		const route = nested("async-root", "nested-async");
+		const dir = path.join(TEMP_ROOT_DIR, "nested-subagent-runs", route.rootRunId, "nested-async");
+		try {
+			fs.mkdirSync(dir, { recursive: true });
+			fs.writeFileSync(path.join(dir, "status.json"), JSON.stringify({ state: "running", pid: process.pid,
+				steps: [{ id: "async-leaf", agent: "worker", status: "running" }] }));
+			writeNestedEvent(route, { type: "subagent.nested.updated", ts: 200, parentRunId: route.rootRunId,
+				child: { id: "nested-async", parentRunId: route.rootRunId, depth: 1, path: [{ runId: route.rootRunId }],
+					state: "running", agent: "worker", asyncDir: dir,
+					steps: [{ id: "async-leaf", index: 0, agent: "worker", status: "running" }] } });
+			const targets = listStopTargets({ state: stateWithNestedRoute(route), asyncDirRoot: path.dirname(dir) }, true);
+			assert.equal(targets.filter((entry) => entry.id === "async-leaf").length, 1);
+			assert.equal(targets.find((entry) => entry.id === "async-leaf")?.owner.kind, "async");
+		} finally { fs.rmSync(path.dirname(dir), { recursive: true, force: true }); }
+	});
+
+	it("keeps settled collisions and exact winners in the stop namespace, not status/resume", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-stop-prefix-"));
+		try {
+			const state = stateWithForeground("abcd-run");
+			state.foregroundControls.get("abcd-run")!.children = new Map([
+				["abcd", { agent: "scout", state: "running" }],
+				["abcd-settled", { agent: "reviewer", state: "completed" }],
+			]);
+			const deps = { state, asyncDirRoot: root, resultsDir: root };
+			assert.equal(resolveSubagentRunId("abcd", { ...deps, target: "interrupt" })?.kind, "child");
+			assert.throws(() => resolveSubagentRunId("abcd-", { ...deps, target: "interrupt" }), /run:.*child:/);
+			assert.throws(() => resolveSubagentRunId("abc", { ...deps, target: "interrupt" }), /too short/);
+			assert.throws(() => resolveSubagentRunId("missing", { ...deps, target: "interrupt" }), /No running subagent matches 'missing'/);
+			assert.equal(resolveSubagentRunId("a", deps)?.id, "abcd-run");
+		} finally { fs.rmSync(root, { recursive: true, force: true }); }
+	});
+
+	it("reads terminal status once, refreshes changed live status and reuses tracker-fed status", (t) => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-stop-cache-"));
+		try {
+			const dir = path.join(root, "cache-run"); fs.mkdirSync(dir);
+			const file = path.join(dir, "status.json");
+			const write = (state: string, agent: string) => fs.writeFileSync(file, JSON.stringify({ state, pid: process.pid, steps: [{ id: "cache-child", agent, status: state }] }));
+			write("running", "scout");
+			const read = t.mock.method(fs, "readFileSync"); syncBuiltinESMExports();
+			t.after(() => { read.mock.restore(); syncBuiltinESMExports(); });
+			const resolve = () => resolveSubagentRunId("cache-child", { target: "interrupt", asyncDirRoot: root, nested: { routes: [] } });
+			const reads = () => read.mock.calls.filter((call) => call.arguments[0] === file).length;
+			assert.equal(resolve()?.name, "scout"); assert.equal(resolve()?.name, "scout");
+			assert.equal(reads(), 1);
+			write("complete", "reviewer"); fs.utimesSync(file, new Date(), new Date(Date.now() + 2000));
+			assert.equal(resolve()?.name, "reviewer"); assert.equal(resolve()?.state, "completed");
+			assert.equal(reads(), 2);
+			updateBackgroundStopInventory(dir, { state: "running", pid: process.pid, steps: [{ id: "cache-child", agent: "fed", status: "running" }] }, fs.statSync(file).mtimeMs);
+			assert.equal(resolve()?.name, "fed"); assert.equal(reads(), 2);
+			assert.ok(listStopTargets({ asyncDirRoot: root }, false).some((target) => target.id === "cache-child"));
+		} finally { fs.rmSync(root, { recursive: true, force: true }); }
 	});
 
 	it("rejects unsafe nested id tokens before lookup", () => {
