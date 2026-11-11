@@ -214,8 +214,9 @@ describe("foreground in-flight turn control", { skip: !available ? "pi packages 
 	for (const mode of ["top-level", "chain"] as const) {
 		it(`siblings of a capped parallel child finish (${mode})`, async () => {
 			const cap = 10_000;
-			const siblingDelay = 1_000;
-			assert.ok(cap - siblingDelay >= 5_000, "leave seconds for sibling startup and exit on slow runners");
+			// Two sibling delays span the cap, leaving one running and one queued;
+			// each sibling still has four seconds for startup and exit on slow runners.
+			const siblingDelay = 6_000;
 			for (const index of [0, 1, 2, 3]) {
 				mockPi.onCall({
 					taskIncludes: `Capped parallel task ${index}`,
@@ -240,10 +241,18 @@ describe("foreground in-flight turn control", { skip: !available ? "pi packages 
 			});
 			const tasks = [0, 1, 2, 3].map((index) => ({ agent: "echo", task: `Capped parallel task ${index}` }));
 			const controller = new AbortController();
+			let cappedChildFailed = false;
+			let lastSiblingStartedAfterCap: boolean | undefined;
 			const result = await executor.execute(`capped-${mode}`, {
 				...(mode === "top-level" ? { tasks, concurrency: 2 } : { chain: [{ parallel: tasks, concurrency: 2 }] }),
 				async: false, clarify: false, control: { maxRuntimeMs: cap },
-			}, controller.signal, undefined, makeMinimalCtx(tempDir));
+			}, controller.signal, (update) => {
+				for (const progress of update.details?.progress ?? []) {
+					if (progress.index === 0 && progress.status === "failed") cappedChildFailed = true;
+					if (progress.index === 3) lastSiblingStartedAfterCap ??= cappedChildFailed;
+				}
+			}, makeMinimalCtx(tempDir));
+			assert.equal(lastSiblingStartedAfterCap, true, "the last sibling must start only after the capped child frees a slot");
 			assert.equal(controller.signal.aborted, false, "a child cap must not abort the caller");
 			assert.equal(mockPi.callCount(), 4, "queued siblings must still start after the cap");
 			assert.equal(result.details.results.length, 4);
