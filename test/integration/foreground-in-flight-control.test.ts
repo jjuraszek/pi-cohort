@@ -299,6 +299,50 @@ describe("foreground in-flight turn control", { skip: !available ? "pi packages 
 		assert.ok(elapsed < 3_000, `settings cap settled after ${elapsed}ms`);
 	});
 
+	for (const [settingsCap, callCap] of [[800, 1_600], [1_600, 800]]) {
+		it(`call-time maxRuntimeMs=${callCap} beats settings=${settingsCap}`, async () => {
+			mockPi.onCall({
+				steps: [
+					{ jsonl: [events.messageStart()] },
+					...Array.from({ length: 40 }, () => ({
+						delay: 100, jsonl: [events.toolStart("read"), events.toolEnd("read")],
+					})),
+					{ jsonl: [events.assistantMessage("Must not finish")] },
+				],
+			});
+			const state = {
+				baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(),
+				grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() },
+				foregroundControls: new Map(), lastForegroundControlId: null,
+			};
+			const executor = executorModule.createSubagentExecutor({
+				captureRuntime: mockPi.captureRuntime,
+				pi: { events: createEventBus(), getSessionName: () => undefined }, state,
+				resolveConfig: () => ({ control: { enabled: false, maxRuntimeMs: settingsCap } }),
+				tempArtifactsDir: tempDir, getSubagentSessionRoot: () => tempDir,
+				expandTilde: (value: string) => value,
+				discoverAgents: () => ({ agents: [makeAgent("echo", { completionGuard: false })] }),
+			});
+			const started = performance.now();
+			const result = await executor.execute("call-cap", {
+				agent: "echo", task: "Stream until capped", async: false, clarify: false, includeProgress: true,
+				control: { maxRuntimeMs: callCap },
+			}, undefined, undefined, makeMinimalCtx(tempDir));
+			const elapsed = performance.now() - started;
+			assert.equal(mockPi.callCount(), 1);
+			assert.equal(result.isError, true);
+			assert.equal(result.details.results.length, 1);
+			const [child] = result.details.results;
+			assert.notEqual(child.exitCode, 0);
+			assert.match(child.error, new RegExp(`maxRuntimeMs=${callCap}ms`));
+			assert.doesNotMatch(child.error, new RegExp(`maxRuntimeMs=${settingsCap}ms`));
+			assert.equal(child.interrupted, undefined);
+			assert.ok(result.details.progress[0].toolCount > 0, "call-time cap must stop an active child");
+			assert.ok(elapsed >= callCap, "call-time cap must not fire early");
+			assert.ok(elapsed < 4_000, `call-time cap settled after ${elapsed}ms`);
+		});
+	}
+
 	it("whole-run interrupt after the last-started child settles falls through to async without stopping an older sibling", async (t) => {
 		for (const index of [0, 1]) mockPi.onCall({ taskIncludes: `Child task ${index}`, steps: [
 			{ jsonl: [events.messageStart()] },
