@@ -1,0 +1,25 @@
+skill: shape-ticket
+session: 01a1c9aa-5f7c-72cf-8243-9dce871b3c47
+ts: 2026-11-11T09:17:40Z
+repo: jjuraszek/pi-cohort
+items:
+  - kind: ticket
+    key: "#61"
+    outcome: written
+author:
+  name: Jacek Juraszek
+  email: jacek.juraszek@gmail.com
+gauntlet_version: 8.4.6
+models:
+  - anthropic-fable/claude-fable-5-2
+  - github-copilot/gpt-6.1-terra:medium
+  - github-copilot/grok-4.7:low
+  - github-copilot/gpt-6-astra:low
+  - anthropic-fable/claude-fable-5-2:low
+  - github-copilot/gpt-6.1-sol:low
+tokens:
+  input: 25657
+  output: 79568
+  cache_read: 2382512
+  cache_write: 354789
+cost: 7.531621449999999
