@@ -7,6 +7,9 @@
 		"task": {
 			"type": "string"
 		},
+		"label": {
+			"type": "string"
+		},
 		"action": {
 			"type": "string",
 			"enum": [
@@ -59,6 +62,9 @@
 						"type": "string"
 					},
 					"task": {
+						"type": "string"
+					},
+					"label": {
 						"type": "string"
 					},
 					"count": {

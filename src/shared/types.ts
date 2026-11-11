@@ -222,9 +222,12 @@ export interface SubagentResultChild {
 // ============================================================================
 
 export interface AgentProgress {
+	id: string;
+	label?: string;
+	children?: NestedRunSummary[];
 	index: number;
 	agent: string;
-	status: "pending" | "running" | "completed" | "failed";
+	status: "pending" | "running" | "completed" | "failed" | "interrupted";
 	activityState?: ActivityState;
 	task: string;
 	skills?: string[];
@@ -419,6 +422,8 @@ export interface ExecutionSurfaceResult {
 }
 
 export interface SingleResult {
+	id: string;
+	label?: string;
 	agent: string;
 	task: string;
 	exitCode: number;
@@ -518,12 +523,16 @@ export interface NestedRunAddress {
 	parentStepIndex?: number;
 	parentAgent?: string;
 	depth: number;
-	path: Array<{ runId: string; stepIndex?: number; agent?: string }>;
+	path: Array<{ runId: string; childId?: string; stepIndex?: number; agent?: string }>;
 }
 
 export interface NestedStepSummary {
+	id: string;
+	label?: string;
+	index?: number;
+	lastUpdate?: number;
 	agent: string;
-	status: "pending" | "running" | "complete" | "completed" | "failed" | "paused";
+	status: "pending" | "running" | "complete" | "completed" | "failed" | "paused" | "interrupted";
 	sessionFile?: string;
 	activityState?: ActivityState;
 	lastActivityAt?: number;
@@ -618,12 +627,13 @@ export interface AsyncStatus {
 	parallelGroups?: AsyncParallelGroupStatus[];
 	workflowGraph?: WorkflowGraphSnapshot;
 	steps?: Array<{
+		id?: string;
 		agent: string;
 		phase?: string;
 		label?: string;
 		outputName?: string;
 		structured?: boolean;
-		status: "pending" | "running" | "complete" | "completed" | "failed" | "paused";
+		status: "pending" | "running" | "complete" | "completed" | "failed" | "paused" | "interrupted";
 		children?: NestedRunSummary[];
 		sessionFile?: string;
 		activityState?: ActivityState;
@@ -701,6 +711,8 @@ export interface AsyncJobState {
 }
 
 export interface ForegroundResumeChild {
+	id: string;
+	label?: string;
 	agent: string;
 	index: number;
 	sessionFile?: string;
@@ -733,6 +745,7 @@ export interface SubagentState {
 		externalCostBySource: Map<string, ExternalCostEntry>;
 	};
 	foregroundRuns?: Map<string, ForegroundResumeRun>;
+	retainedNestedRoutes: Map<string, NestedRouteInfo>;
 	foregroundControls: Map<string, {
 		runId: string;
 		mode: SubagentRunMode;
@@ -750,6 +763,8 @@ export interface SubagentState {
 		toolCount?: number;
 		nestedRoute?: NestedRouteInfo;
 		nestedChildren?: NestedRunSummary[];
+		children: Map<string, { agent: string; label?: string; index: number; state: "pending" | "running" | "completed" | "failed" | "interrupted"; stopRequested?: true; interrupt?: () => boolean }>;
+		stopping?: true;
 		childInterrupts: Map<number, () => boolean>;
 		stoppedByIndex: Set<number>;
 		lastAssigned?: number;
@@ -803,6 +818,8 @@ export const SUBAGENT_CONTROL_EVENT = "subagent:control-event";
 // ============================================================================
 
 export interface RunSyncOptions {
+	id: string;
+	label?: string;
 	runtime: PiRuntimeIdentity;
 	cwd?: string;
 	signal?: AbortSignal;

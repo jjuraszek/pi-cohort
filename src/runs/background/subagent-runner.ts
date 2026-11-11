@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { PINNED_AGENT_DIR_OVERRIDE } from "../../shared/agent-dir.ts";
 import { resolveExtensionConfig } from "../../agents/agents.ts";
 import * as fs from "node:fs";
+import { randomUUID } from "node:crypto";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Message } from "@earendil-works/pi-ai";
@@ -137,6 +138,8 @@ interface SubagentRunConfig {
 }
 
 interface StepResult {
+	id?: string;
+	label?: string;
 	interrupted?: RunPiStreamingResult["interrupted"];
 	agent: string;
 	output: string;
@@ -614,6 +617,7 @@ function writeRunLog(
 
 /** Internal context for one detached-runner leaf. */
 export interface SingleStepContext {
+	childId: string;
 	jobCwd?: string;
 	previousOutput: string;
 	outputs?: ChainOutputMap;
@@ -656,7 +660,12 @@ function stampSessionHeaderCwd(sessionFile: string, cwd: string): void {
 }
 
 /** Execute one detached-runner leaf. */
-export async function runSingleStep(
+export async function runSingleStep(step: SubagentStep, ctx: SingleStepContext) {
+	const result = await runSingleStepAttempts(step, ctx);
+	return { ...result, id: ctx.childId, label: step.label };
+}
+
+async function runSingleStepAttempts(
 	step: SubagentStep,
 	ctx: SingleStepContext,
 ): Promise<{
@@ -1412,6 +1421,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	let previousCumulativeCost = 0;
 
 	const parallelGroups: Array<{ start: number; count: number; stepIndex: number }> = [];
+	const queuedSteps: RunnerStatusStep[] = fs.existsSync(statusPath) ? JSON.parse(fs.readFileSync(statusPath, "utf8")).steps ?? [] : [];
 	const initialStatusSteps: RunnerStatusStep[] = [];
 	let flatStepCount = 0;
 	for (let stepIndex = 0; stepIndex < steps.length; stepIndex++) {
@@ -1420,6 +1430,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			parallelGroups.push({ start: flatStepCount, count: step.parallel.length, stepIndex });
 			for (const task of step.parallel) {
 				initialStatusSteps.push({
+					id: queuedSteps[initialStatusSteps.length]?.id ?? randomUUID(),
 					agent: task.agent,
 					phase: task.phase,
 					label: task.label,
@@ -1451,6 +1462,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			flatStepCount++;
 		} else {
 			initialStatusSteps.push({
+				id: queuedSteps[initialStatusSteps.length]?.id ?? randomUUID(),
 				agent: step.agent,
 				phase: step.phase,
 				label: step.label,
@@ -1495,24 +1507,28 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 
 	fs.mkdirSync(asyncDir, { recursive: true });
 	writeAtomicJson(statusPath, statusPayload);
+	const publishedChildSnapshots = new Map<string, string>();
 	const emitNestedSelfEvent = (type: "subagent.nested.updated" | "subagent.nested.completed"): void => {
 		if (!config.nestedRoute || !config.nestedSelf) return;
 		try {
+			const child = nestedSummaryFromAsyncStatus(statusPayload, asyncDir, {
+				id,
+				parentRunId: config.nestedSelf.parentRunId,
+				parentStepIndex: config.nestedSelf.parentStepIndex,
+				depth: config.nestedSelf.depth,
+				path: config.nestedSelf.path,
+				mode: statusPayload.mode,
+				ts: Date.now(),
+			});
+			const changedSteps = child.steps?.filter((step) => publishedChildSnapshots.get(step.id) !== JSON.stringify(step));
 			writeNestedEvent(config.nestedRoute, {
 				type,
 				ts: Date.now(),
 				parentRunId: config.nestedSelf.parentRunId,
 				parentStepIndex: config.nestedSelf.parentStepIndex,
-				child: nestedSummaryFromAsyncStatus(statusPayload, asyncDir, {
-					id,
-					parentRunId: config.nestedSelf.parentRunId,
-					parentStepIndex: config.nestedSelf.parentStepIndex,
-					depth: config.nestedSelf.depth,
-					path: config.nestedSelf.path,
-					mode: statusPayload.mode,
-					ts: Date.now(),
-				}),
+				child: { ...child, steps: changedSteps },
 			});
+			for (const step of changedSteps ?? []) publishedChildSnapshots.set(step.id, JSON.stringify(step));
 		} catch (error) {
 			console.error("Failed to emit nested async status event:", error);
 		}
@@ -1977,6 +1993,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				structuredOutputSchema: step.parallel.structuredOutputSchema ?? step.parallel.structuredOutput?.schema,
 			}));
 			const dynamicStatusSteps: RunnerStatusStep[] = dynamicSteps.map((task) => ({
+					id: randomUUID(),
 					agent: task.agent,
 					phase: task.phase ?? step.phase,
 					label: task.label,
@@ -2062,6 +2079,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				writeStatusPayload();
 				appendJsonl(eventsPath, JSON.stringify({ type: "subagent.step.started", ts: taskStartTime, runId: id, stepIndex: fi, agent: task.agent }));
 				const singleResult = await runSingleStep(task, {
+					childId: statusPayload.steps[fi].id,
 					jobCwd: config.cwd,
 					previousOutput, placeholder, cwd, sessionEnabled,
 					outputs,
@@ -2113,6 +2131,8 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			flatIndex += dynamicSteps.length;
 			for (const pr of parallelResults) {
 				results.push({
+					id: pr.id,
+					label: pr.label,
 					agent: pr.agent,
 					output: pr.output,
 					error: pr.error,
@@ -2355,6 +2375,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 						const { taskForRun, taskCwd } = prepareParallelTaskRun(task, cwd, worktreeSetup, taskIdx, groupCwd);
 
 						const singleResult = await runSingleStep(taskForRun, {
+							childId: statusPayload.steps[fi].id,
 							jobCwd: config.cwd,
 							previousOutput, placeholder, cwd: taskCwd, sessionEnabled,
 							outputs,
@@ -2446,6 +2467,8 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 
 				for (const pr of parallelResults) {
 					results.push({
+						id: pr.id,
+						label: pr.label,
 						agent: pr.agent,
 						output: pr.output,
 						error: pr.error,
@@ -2538,6 +2561,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			}));
 
 			const singleResult = await runSingleStep(seqStep, {
+				childId: statusPayload.steps[flatIndex].id,
 				jobCwd: config.cwd,
 				previousOutput, placeholder, cwd, sessionEnabled,
 				outputs,
@@ -2561,6 +2585,8 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 
 			previousOutput = singleResult.output;
 			results.push({
+				id: singleResult.id,
+				label: singleResult.label,
 				agent: singleResult.agent,
 				output: singleResult.output,
 				error: singleResult.error,
@@ -2774,6 +2800,8 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			state: interrupted ? "paused" : results.every((r) => r.success) ? "complete" : "failed",
 			summary: interrupted ? "Paused after interrupt. Waiting for explicit next action." + formatInterruptedCleanup(results) : summary,
 			results: results.map((r) => ({
+				id: r.id,
+				label: r.label,
 				agent: r.agent,
 				output: r.output,
 				error: r.error,

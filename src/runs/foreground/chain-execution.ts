@@ -4,6 +4,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { createForegroundChild, updateForegroundChild } from "../shared/nested-events.ts";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../../agents/agents.ts";
@@ -51,7 +52,6 @@ import {
 	patchPathForDiff,
 } from "../shared/worktree.ts";
 import {
-	type ActivityState,
 	type AgentProgress,
 	type ArtifactConfig,
 	type ArtifactPaths,
@@ -116,23 +116,7 @@ interface ParallelChainRunInput {
 	onUpdate?: (r: AgentToolResult<Details>) => void;
 	onControlEvent?: (event: ControlEvent) => void;
 	controlConfig: ResolvedControlConfig;
-	foregroundControl?: {
-		updatedAt: number;
-		currentAgent?: string;
-		currentIndex?: number;
-		currentActivityState?: ActivityState;
-		lastActivityAt?: number;
-		currentTool?: string;
-		currentToolStartedAt?: number;
-		currentPath?: string;
-		turnCount?: number;
-		tokens?: number;
-		toolCount?: number;
-		childInterrupts: Map<number, () => boolean>;
-		stoppedByIndex: Set<number>;
-		lastAssigned?: number;
-		interrupt?: (index?: number) => boolean;
-	};
+	foregroundControl?: Parameters<typeof createForegroundChild>[0];
 	results: SingleResult[];
 	allProgress: AgentProgress[];
 	outputs: ChainOutputMap;
@@ -215,6 +199,7 @@ function patchInfoForDiff(diff: WorktreeDiff | undefined): { patchPath?: string;
 }
 
 async function runParallelChainTasks(input: ParallelChainRunInput): Promise<SingleResult[]> {
+	const childIds = input.step.parallel.map((task, index) => createForegroundChild(input.foregroundControl, task.agent, task.label, input.globalTaskIndex + index));
 	const concurrency = input.step.concurrency ?? MAX_CONCURRENCY;
 	const failFast = input.step.failFast ?? false;
 	let aborted = false;
@@ -223,8 +208,12 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 		input.step.parallel,
 		concurrency,
 		async (task, taskIndex) => {
+			const id = childIds[taskIndex];
 			if (aborted && failFast) {
+				updateForegroundChild(input.foregroundControl, id, { status: "failed" });
 				return {
+					id,
+					label: task.label,
 					agent: task.agent,
 					task: "(skipped)",
 					exitCode: -1,
@@ -255,7 +244,10 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 			} catch (error) {
 				if (!(error instanceof ChainOutputValidationError)) throw error;
 				if (failFast) aborted = true;
+				updateForegroundChild(input.foregroundControl, id, { status: "failed", error: error.message });
 				return {
+					id,
+					label: task.label,
 					agent: task.agent,
 					task: taskTemplate,
 					exitCode: 1,
@@ -299,7 +291,10 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 			const structuredRuntime = task.outputSchema
 				? createStructuredOutputRuntime(task.outputSchema, path.join(input.chainDir, "structured-output"))
 				: undefined;
+			updateForegroundChild(input.foregroundControl, id, { status: "running" });
 			const result = await runSync(input.ctx.cwd, input.agents, task.agent, taskStr, {
+				id,
+				label: task.label,
 				runtime: input.runtime,
 				cwd: taskCwd,
 				executionBackend: input.resolveConfig?.(taskCwd).executionBackend,
@@ -330,8 +325,8 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 				acceptance: task.acceptance,
 				acceptanceContext: { mode: "chain" },
 				forwardedFlags: input.forwardedFlags,
-				onUpdate: input.onUpdate
-					? (progressUpdate) => {
+				onUpdate: (progressUpdate) => {
+						updateForegroundChild(input.foregroundControl, id, { ...progressUpdate.details?.progress?.[0], status: "running" });
 						const stepResults = progressUpdate.details?.results || [];
 						const stepProgress = progressUpdate.details?.progress || [];
 						if (input.foregroundControl && stepProgress.length > 0) {
@@ -371,8 +366,13 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 								}),
 							},
 						});
-					}
-					: undefined,
+					},
+			}).then((result) => {
+				updateForegroundChild(input.foregroundControl, id, { status: result.interrupted ? "interrupted" : result.exitCode === 0 ? "completed" : "failed", sessionFile: result.sessionFile, error: result.error });
+				return result;
+			}, (error) => {
+				updateForegroundChild(input.foregroundControl, id, { status: "failed" });
+				throw error;
 			}).finally(() => {
 				input.foregroundControl?.childInterrupts.delete(input.globalTaskIndex + taskIndex);
 				if (input.foregroundControl?.lastAssigned === input.globalTaskIndex + taskIndex) {
@@ -411,23 +411,7 @@ interface ChainExecutionParams {
 	onUpdate?: (r: AgentToolResult<Details>) => void;
 	onControlEvent?: (event: ControlEvent) => void;
 	controlConfig: ResolvedControlConfig;
-	foregroundControl?: {
-		updatedAt: number;
-		currentAgent?: string;
-		currentIndex?: number;
-		currentActivityState?: ActivityState;
-		lastActivityAt?: number;
-		currentTool?: string;
-		currentToolStartedAt?: number;
-		currentPath?: string;
-		turnCount?: number;
-		tokens?: number;
-		toolCount?: number;
-		childInterrupts: Map<number, () => boolean>;
-		stoppedByIndex: Set<number>;
-		lastAssigned?: number;
-		interrupt?: (index?: number) => boolean;
-	};
+	foregroundControl?: Parameters<typeof createForegroundChild>[0];
 	chainSkills?: string[];
 	chainDir?: string;
 	dynamicFanoutMaxItems?: number;
@@ -1152,7 +1136,11 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				const structuredRuntime = seqStep.outputSchema
 					? createStructuredOutputRuntime(seqStep.outputSchema, path.join(chainDir, "structured-output"))
 					: undefined;
+				const id = createForegroundChild(foregroundControl, seqStep.agent, seqStep.label, globalTaskIndex);
+				updateForegroundChild(foregroundControl, id, { status: "running" });
 				const r = await runSync(ctx.cwd, agents, seqStep.agent, stepTask, {
+					id,
+					label: seqStep.label,
 					runtime: params.runtime,
 					cwd: stepCwd,
 					executionBackend: params.resolveConfig?.(stepCwd).executionBackend,
@@ -1183,8 +1171,8 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					structuredOutput: structuredRuntime,
 					acceptance: seqStep.acceptance,
 					acceptanceContext: { mode: "chain" },
-					onUpdate: onUpdate
-						? (p) => {
+					onUpdate: (p) => {
+							updateForegroundChild(foregroundControl, id, { ...p.details?.progress?.[0], status: "running" });
 							const stepResults = p.details?.results || [];
 							const stepProgress = p.details?.progress || [];
 							if (foregroundControl && stepProgress.length > 0) {
@@ -1201,7 +1189,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 								foregroundControl.toolCount = current?.toolCount;
 								foregroundControl.updatedAt = Date.now();
 							}
-							onUpdate({
+							onUpdate?.({
 								...p,
 								details: {
 									mode: "chain",
@@ -1224,8 +1212,13 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 									}),
 								},
 							});
-						}
-						: undefined,
+						},
+				}).then((result) => {
+					updateForegroundChild(foregroundControl, id, { status: result.interrupted ? "interrupted" : result.exitCode === 0 ? "completed" : "failed", sessionFile: result.sessionFile, error: result.error });
+					return result;
+				}, (error) => {
+					updateForegroundChild(foregroundControl, id, { status: "failed" });
+					throw error;
 				}).finally(() => {
 					foregroundControl?.childInterrupts.delete(globalTaskIndex);
 					if (foregroundControl?.lastAssigned === globalTaskIndex) {

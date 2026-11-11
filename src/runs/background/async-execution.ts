@@ -5,6 +5,7 @@
 import { spawn } from "node:child_process";
 import { PINNED_AGENT_DIR_OVERRIDE } from "../../shared/agent-dir.ts";
 import fs from "node:fs";
+import { randomUUID } from "node:crypto";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -101,6 +102,7 @@ function detachedExecutionBackends(userPreference: string | undefined): Detached
 }
 
 interface AsyncSingleParams {
+	label?: string;
 	agent: string;
 	task?: string;
 	agentConfig: AgentConfig;
@@ -249,6 +251,7 @@ function publishAndSpawnRunner(
 		if (isParallelGroup(step) || isDynamicRunnerGroup(step)) parallelGroups.push({ start: steps.length, count: leaves.length, stepIndex });
 		for (const leaf of leaves) {
 			steps.push({
+				id: isDynamicRunnerGroup(step) ? undefined : randomUUID(),
 				agent: isDynamicRunnerGroup(step) ? `expand:${leaf.agent}` : leaf.agent,
 				phase: isDynamicRunnerGroup(step) ? step.phase ?? leaf.phase : leaf.phase,
 				label: isDynamicRunnerGroup(step) ? step.label ?? leaf.label ?? `Dynamic fanout (${step.collect.as})` : leaf.label,
@@ -324,7 +327,7 @@ function publishAndSpawnRunner(
 					child: {
 						id: cfg.id, ...origin.address, asyncDir, sessionId: cfg.sessionId, capabilityToken: origin.route.capabilityToken,
 						runtime: cfg.runtime, sessionRoot, mode: cfg.resultMode, state: "queued",
-						agent: firstLeaf?.agent, agents, chainStepCount: cfg.steps.length, parallelGroups,
+						agent: firstLeaf?.agent, agents, steps, chainStepCount: cfg.steps.length, parallelGroups,
 						startedAt: now, lastUpdate: now,
 					},
 				}) === false) throw new Error("Nested origin stamp was refused.");
@@ -814,6 +817,7 @@ export function executeAsyncSingle(
 				steps: [
 					{
 						agent,
+						label: params.label,
 						task: taskWithOutputInstruction,
 						cwd: runnerCwd,
 						model,

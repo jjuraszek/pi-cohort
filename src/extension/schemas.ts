@@ -140,9 +140,8 @@ const AcceptanceOverrideStub = Type.Unsafe({
 // tasks[] stub (round three): same treatment as ParallelTaskSchema below; structural keys
 // stay explicit (agent/task required, count = arity); every per-task override (model, output,
 // outputMode, reads, progress, skill, cwd, acceptance) passes through additionalProperties
-// and is documented in the pi-cohort skill. No `as` (no {outputs.name} wiring here) and no
-// `label` (TaskParam has no such field at this position). Widening-only: unknown keys were
-// already ignored at runtime.
+// and is documented in the pi-cohort skill. No `as` (no {outputs.name} wiring here).
+// Labels stay explicit because they identify a child on its live and settled rows.
 const TaskItem = Type.Unsafe({
 	type: "object",
 	additionalProperties: true,
@@ -150,6 +149,7 @@ const TaskItem = Type.Unsafe({
 	properties: {
 		agent: { type: "string" },
 		task: { type: "string" },
+		label: { type: "string" },
 		count: { type: "integer", minimum: 1, description: "Repeat N times (same settings)." },
 	},
 	description: "Per-task overrides (model, output, reads, skill, ...): pi-cohort skill.",
@@ -255,6 +255,7 @@ const ControlOverrides = Type.Unsafe({
 export const SubagentParams = Type.Object({
 	agent: Type.Optional(Type.String({ description: "SINGLE mode agent, or management target." })),
 	task: Type.Optional(Type.String({ description: "Task (SINGLE mode; optional if self-contained)." })),
+	label: Type.Optional(Type.String({ description: "Child row label." })),
 	// Management action (when present, tool operates in management mode)
 	action: Type.Optional(Type.String({
 		enum: [...SUBAGENT_ACTIONS],
@@ -263,7 +264,7 @@ export const SubagentParams = Type.Object({
 	id: Type.Optional(Type.String({
 		description: "Run id/prefix for status/interrupt/resume."
 	})),
-	index: Type.Optional(Type.Integer({ minimum: 0, description: "Zero-based index for per-child actions." })),
+	index: Type.Optional(Type.Integer({ minimum: 0, description: "Zero-based child index for resume only." })),
 	message: Type.Optional(Type.String({ description: "Follow-up message for resume." })),
 	// Chain identifier for management (can't reuse 'chain' — that's the execution array)
 	chainName: Type.Optional(Type.String({

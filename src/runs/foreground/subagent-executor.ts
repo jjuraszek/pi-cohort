@@ -46,7 +46,7 @@ import { blockedLine } from "../shared/completion-guard.ts";
 import { compactForegroundDetails, getSingleResultOutput, mapConcurrent, readStatus, resolveChildCwd } from "../../shared/utils.ts";
 import { resolveSubagentResultStatus } from "../shared/result-children.ts";
 import { buildRevivedAsyncTask, resolveAsyncResumeTarget } from "../background/async-resume.ts";
-import { projectNestedEvents, nestedResultsPath, createNestedRoute, readNestedControlResults, resolveInheritedNestedRouteFromEnv, resolveNestedAsyncDir, resolveNestedParentAddressFromEnv, updateForegroundNestedProjection, writeNestedControlRequest, writeNestedEvent, type NestedRunResolutionScope } from "../shared/nested-events.ts";
+import { createForegroundChild, updateForegroundChild, projectNestedEvents, nestedResultsPath, createNestedRoute, readNestedControlResults, resolveInheritedNestedRouteFromEnv, resolveNestedAsyncDir, resolveNestedParentAddressFromEnv, updateForegroundNestedProjection, writeNestedControlRequest, writeNestedEvent, type NestedRunResolutionScope } from "../shared/nested-events.ts";
 import { resolveSubagentRunId, type ResolvedSubagentRunId } from "../background/run-id-resolver.ts";
 import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
 import { inspectSubagentStatus } from "../background/run-status.ts";
@@ -91,6 +91,7 @@ const ASYNC_INTERRUPT_SIGNAL: NodeJS.Signals = process.platform === "win32" ? "S
 const MUTATING_MANAGEMENT_ACTIONS = new Set(["create", "update", "delete"]);
 
 interface TaskParam {
+	label?: string;
 	agent: string;
 	task: string;
 	cwd?: string;
@@ -111,6 +112,7 @@ export interface SubagentParamsLike {
 	dir?: string;
 	index?: number;
 	agent?: string;
+	label?: string;
 	task?: string;
 	message?: string;
 	chain?: ChainStep[];
@@ -263,6 +265,8 @@ function rememberForegroundRun(state: SubagentState, input: { runtime: PiRuntime
 		cwd: input.cwd,
 		updatedAt: Date.now(),
 		children: input.results.map((result, index) => ({
+			id: result.id,
+			label: result.label,
 			agent: result.agent,
 			index,
 			status: resolveSubagentResultStatus({ exitCode: result.exitCode, interrupted: result.interrupted }),
@@ -536,7 +540,7 @@ function resolveNestedResumeTarget(match: ResolvedSubagentRunId & { kind: "neste
 async function waitForNestedControlResult(target: ResolvedSubagentRunId & { kind: "nested" }, requestId: string, timeoutMs = 1_000) {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
-		const result = readNestedControlResults(target.match.route).find((candidate) => candidate.requestId === requestId && candidate.targetRunId === target.match.run.id);
+		const result = readNestedControlResults(target.match.route).find((candidate) => candidate.requestId === requestId && candidate.targetId === target.match.run.id);
 		if (result) return result;
 		await new Promise((resolve) => setTimeout(resolve, 50));
 	}
@@ -548,7 +552,7 @@ async function sendNestedControlRequest(target: ResolvedSubagentRunId & { kind: 
 	writeNestedControlRequest(target.match.route, {
 		ts: Date.now(),
 		requestId,
-		targetRunId: target.match.run.id,
+		targetId: target.match.run.id,
 		action,
 		...(message ? { message } : {}),
 	});
@@ -1066,6 +1070,7 @@ function runAsyncPath(data: ExecutionContextData, deps: CallExecutorDeps): Agent
 		const skillOverrides = params.tasks.map((task) => normalizeSkillInput(task.skill));
 		const parallelTasks = params.tasks.map((task, index) => ({
 			agent: task.agent,
+			label: task.label,
 			task: params.context === "fork" ? wrapForkTask(task.task) : task.task,
 			cwd: task.cwd,
 			...(modelOverrides[index] ? { model: modelOverrides[index] } : {}),
@@ -1153,6 +1158,7 @@ function runAsyncPath(data: ExecutionContextData, deps: CallExecutorDeps): Agent
 		const maxSubagentDepth = resolveChildMaxSubagentDepth(currentMaxSubagentDepth, a.maxSubagentDepth);
 		const modelOverride = resolveModelCandidate((params.model as string | undefined) ?? a.model, availableModels, currentProvider);
 		return executeAsyncSingle(id, {
+			label: params.label,
 			agent: params.agent!,
 			task: params.context === "fork" ? wrapForkTask(params.task ?? "") : (params.task ?? ""),
 			agentConfig: a,
@@ -1459,6 +1465,7 @@ function findDuplicateParallelOutputPath(input: {
 }
 
 async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Promise<SingleResult[]> {
+	const childIds = input.tasks.map((task, index) => createForegroundChild(input.foregroundControl, task.agent, task.label, index));
 	return mapConcurrent(input.tasks, input.concurrencyLimit, async (task, index) => {
 		const behavior = input.behaviors[index];
 		const effectiveSkills = behavior?.skills;
@@ -1500,7 +1507,11 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 			});
 		}
 		const agentConfig = input.agents.find((agent) => agent.name === task.agent);
+		const id = childIds[index];
+		updateForegroundChild(input.foregroundControl, id, { status: "running" });
 		return runSync(input.ctx.cwd, input.agents, task.agent, taskText, {
+			id,
+			label: task.label,
 			runtime: input.runtime,
 			cwd: taskCwd,
 			signal: input.signal,
@@ -1531,40 +1542,45 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 			acceptance: task.acceptance,
 			acceptanceContext: { mode: "parallel" },
 			forwardedFlags: input.forwardedFlags,
-				onUpdate: input.onUpdate
-					? (progressUpdate) => {
-						const stepResults = progressUpdate.details?.results || [];
-						const stepProgress = progressUpdate.details?.progress || [];
-						if (input.foregroundControl && stepProgress.length > 0) {
-							const current = stepProgress[0];
-							input.foregroundControl.currentAgent = task.agent;
-							input.foregroundControl.currentIndex = index;
-							input.foregroundControl.currentActivityState = current?.activityState;
-							input.foregroundControl.lastActivityAt = current?.lastActivityAt;
-							input.foregroundControl.currentTool = current?.currentTool;
-							input.foregroundControl.currentToolStartedAt = current?.currentToolStartedAt;
-							input.foregroundControl.currentPath = current?.currentPath;
-							input.foregroundControl.turnCount = current?.turnCount;
-							input.foregroundControl.tokens = current?.tokens;
-							input.foregroundControl.toolCount = current?.toolCount;
-							input.foregroundControl.updatedAt = Date.now();
-						}
-						if (stepResults.length > 0) input.liveResults[index] = stepResults[0];
-						if (stepProgress.length > 0) input.liveProgress[index] = stepProgress[0];
-						const mergedResults = input.liveResults.filter((result): result is SingleResult => result !== undefined);
-						const mergedProgress = input.liveProgress.filter((progress): progress is AgentProgress => progress !== undefined);
-						input.onUpdate?.({
-							content: progressUpdate.content,
-							details: {
-								mode: "parallel",
-								results: mergedResults,
-								progress: mergedProgress,
-								controlEvents: progressUpdate.details?.controlEvents,
-								totalSteps: input.tasks.length,
-							},
-						});
-					}
-				: undefined,
+			onUpdate: (progressUpdate) => {
+				updateForegroundChild(input.foregroundControl, id, { ...progressUpdate.details?.progress?.[0], status: "running" });
+				const stepResults = progressUpdate.details?.results || [];
+				const stepProgress = progressUpdate.details?.progress || [];
+				if (input.foregroundControl && stepProgress.length > 0) {
+					const current = stepProgress[0];
+					input.foregroundControl.currentAgent = task.agent;
+					input.foregroundControl.currentIndex = index;
+					input.foregroundControl.currentActivityState = current?.activityState;
+					input.foregroundControl.lastActivityAt = current?.lastActivityAt;
+					input.foregroundControl.currentTool = current?.currentTool;
+					input.foregroundControl.currentToolStartedAt = current?.currentToolStartedAt;
+					input.foregroundControl.currentPath = current?.currentPath;
+					input.foregroundControl.turnCount = current?.turnCount;
+					input.foregroundControl.tokens = current?.tokens;
+					input.foregroundControl.toolCount = current?.toolCount;
+					input.foregroundControl.updatedAt = Date.now();
+				}
+				if (stepResults.length > 0) input.liveResults[index] = stepResults[0];
+				if (stepProgress.length > 0) input.liveProgress[index] = stepProgress[0];
+				const mergedResults = input.liveResults.filter((result): result is SingleResult => result !== undefined);
+				const mergedProgress = input.liveProgress.filter((progress): progress is AgentProgress => progress !== undefined);
+				input.onUpdate?.({
+					content: progressUpdate.content,
+					details: {
+						mode: "parallel",
+						results: mergedResults,
+						progress: mergedProgress,
+						controlEvents: progressUpdate.details?.controlEvents,
+						totalSteps: input.tasks.length,
+					},
+				});
+			},
+		}).then((result) => {
+			updateForegroundChild(input.foregroundControl, id, { status: result.interrupted ? "interrupted" : result.exitCode === 0 ? "completed" : "failed", sessionFile: result.sessionFile, error: result.error });
+			return result;
+		}, (error) => {
+			updateForegroundChild(input.foregroundControl, id, { status: "failed" });
+			throw error;
 		}).finally(() => {
 			input.foregroundControl?.childInterrupts.delete(index);
 			if (input.foregroundControl?.lastAssigned === index) {
@@ -1707,6 +1723,7 @@ async function runParallelPath(data: ExecutionContextData, deps: CallExecutorDep
 				const progress = taskDisallowsFileUpdates(taskText) ? false : behaviorOverrides[i]?.progress;
 				return {
 					agent: t.agent,
+					label: t.label,
 					task: taskText,
 					cwd: t.cwd,
 					...(modelOverrides[i] ? { model: modelOverrides[i] } : {}),
@@ -1983,6 +2000,7 @@ async function runSinglePath(data: ExecutionContextData, deps: CallExecutorDeps)
 			const id = randomUUID();
 			const asyncCtx = buildAsyncContext(ctx, deps, ctx.cwd, data.runtime);
 			return executeAsyncSingle(id, {
+				label: params.label,
 				agent: params.agent!,
 				task: params.context === "fork" ? wrapForkTask(task) : task,
 				agentConfig,
@@ -2030,6 +2048,8 @@ async function runSinglePath(data: ExecutionContextData, deps: CallExecutorDeps)
 	}
 	const interruptController = new AbortController();
 	const foregroundControl = deps.state.foregroundControls.get(runId);
+	const id = createForegroundChild(foregroundControl, params.agent!, params.label, 0);
+	updateForegroundChild(foregroundControl, id, { status: "running" });
 	if (foregroundControl) {
 		foregroundControl.currentAgent = params.agent;
 		foregroundControl.currentIndex = 0;
@@ -2045,29 +2065,30 @@ async function runSinglePath(data: ExecutionContextData, deps: CallExecutorDeps)
 		});
 	}
 
-	const forwardSingleUpdate = onUpdate
-		? (update: AgentToolResult<Details>) => {
-			if (foregroundControl) {
-				const firstProgress = update.details?.progress?.[0];
-				foregroundControl.currentAgent = params.agent;
-				foregroundControl.currentIndex = firstProgress?.index ?? 0;
-				foregroundControl.currentActivityState = firstProgress?.activityState;
-				foregroundControl.lastActivityAt = firstProgress?.lastActivityAt;
-				foregroundControl.currentTool = firstProgress?.currentTool;
-				foregroundControl.currentToolStartedAt = firstProgress?.currentToolStartedAt;
-				foregroundControl.currentPath = firstProgress?.currentPath;
-				foregroundControl.turnCount = firstProgress?.turnCount;
-				foregroundControl.tokens = firstProgress?.tokens;
-				foregroundControl.toolCount = firstProgress?.toolCount;
-				foregroundControl.updatedAt = Date.now();
-			}
-			recordSyncCost(deps.state.grandTotal, runId, update.details?.results?.[0]?.usage?.cost ?? 0);
-			renderGrandTotal(deps.state);
-			onUpdate(update);
+	const forwardSingleUpdate = (update: AgentToolResult<Details>) => {
+		updateForegroundChild(foregroundControl, id, { ...update.details?.progress?.[0], status: "running" });
+		if (foregroundControl) {
+			const firstProgress = update.details?.progress?.[0];
+			foregroundControl.currentAgent = params.agent;
+			foregroundControl.currentIndex = firstProgress?.index ?? 0;
+			foregroundControl.currentActivityState = firstProgress?.activityState;
+			foregroundControl.lastActivityAt = firstProgress?.lastActivityAt;
+			foregroundControl.currentTool = firstProgress?.currentTool;
+			foregroundControl.currentToolStartedAt = firstProgress?.currentToolStartedAt;
+			foregroundControl.currentPath = firstProgress?.currentPath;
+			foregroundControl.turnCount = firstProgress?.turnCount;
+			foregroundControl.tokens = firstProgress?.tokens;
+			foregroundControl.toolCount = firstProgress?.toolCount;
+			foregroundControl.updatedAt = Date.now();
 		}
-		: undefined;
+		recordSyncCost(deps.state.grandTotal, runId, update.details?.results?.[0]?.usage?.cost ?? 0);
+		renderGrandTotal(deps.state);
+		onUpdate?.(update);
+	};
 
 	const r = await runSync(ctx.cwd, agents, params.agent!, task, {
+		id,
+		label: params.label,
 		runtime: data.runtime,
 		cwd: effectiveCwd,
 		signal,
@@ -2099,6 +2120,12 @@ async function runSinglePath(data: ExecutionContextData, deps: CallExecutorDeps)
 		acceptanceContext: { mode: "single" },
 		forwardedFlags: deps.forwardedFlags,
 		executionBackend: deps.config.executionBackend,
+	}).then((result) => {
+		updateForegroundChild(foregroundControl, id, { status: result.interrupted ? "interrupted" : result.exitCode === 0 ? "completed" : "failed", sessionFile: result.sessionFile, error: result.error });
+		return result;
+	}, (error) => {
+		updateForegroundChild(foregroundControl, id, { status: "failed" });
+		throw error;
 	}).finally(() => {
 		foregroundControl?.childInterrupts.delete(0);
 		if (foregroundControl?.lastAssigned === 0) foregroundControl.lastAssigned = undefined;
@@ -2455,6 +2482,7 @@ export function createSubagentExecutor(services: ExecutorDeps): {
 				currentIndex: undefined,
 				currentActivityState: undefined,
 				nestedRoute,
+				children: new Map(),
 				childInterrupts: new Map(),
 				stoppedByIndex: new Set(),
 			};
@@ -2516,9 +2544,12 @@ export function createSubagentExecutor(services: ExecutorDeps): {
 						...(state !== "running" ? { endedAt: now } : {}),
 						lastUpdate: now,
 						...(errorText ? { error: errorText } : {}),
-						...(details?.results.length ? { steps: details.results.map((child) => ({
+						...(details?.results.length ? { steps: details.results.map((child, index) => ({
+							id: child.id,
+							label: child.label,
+							index,
 							agent: child.agent,
-							status: child.interrupted ? "paused" : child.exitCode === 0 ? "complete" : "failed",
+							status: child.interrupted ? "interrupted" : child.exitCode === 0 ? "completed" : "failed",
 							...(child.sessionFile ? { sessionFile: child.sessionFile } : {}),
 							...(child.error ? { error: child.error } : {}),
 						})) } : {}),

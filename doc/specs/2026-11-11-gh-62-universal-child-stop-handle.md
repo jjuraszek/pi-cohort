@@ -2,7 +2,7 @@
 
 **Ticket:** [#62](https://github.com/jjuraszek/pi-cohort/issues/62)
 **Goal:** Every row that draws one subagent starts with a six-character id; `/interrupt-child <id>` and `subagent({ action: "interrupt", id })` stop that subagent and everything below it, at any nesting depth, with no index anywhere in the stop path.
-**Amend-grant:** every later spec amendment in this flow (corrected facts, paths, verification lines, and scope, acceptance-criteria, or public-contract edits alike) applies without asking; only a redraw (changed problem statement, component added, removed, or re-bounded) still stops for you, and the grant never stands in for a spec approval.
+**Amend-grant:** every later spec amendment in this flow (corrected facts, paths, verification lines, and scope, acceptance-criteria, or public-contract edits alike) applies without asking; only a redraw (changed problem statement, component added, removed, or re-bounded) still stops for you, and the grant never stands in for a spec approval.; fund 2 fix rounds
 **Engine:** waves
 **Date:** 2026-11-11
 **Source bases:** pi-cohort `ecabac5` (7.7.3); `@earendil-works/pi-coding-agent` 1.5.0 (the worktree's `node_modules` copy), read-only; installed pi-gauntlet, read-only.
@@ -196,6 +196,8 @@ Merge. The registry stores each run's steps keyed by child id, in `index` order.
 Size. A run record no longer grows with the number of children; its ancestry grows with depth, which `maxSubagentDepth` bounds. A child record is bounded by the field caps of `sanitizeStep` (`:210-234`). A child record that would still exceed the limit is written with its identity fields only (`id`, `agent`, `label`, `status`, `index`).
 
 Foreground publication. A nested foreground run publishes `started` with no steps and `completed` after settlement, and nothing in between (`src/runs/foreground/subagent-executor.ts:2476-2554`); only the background runner emits `updated` (`src/runs/background/subagent-runner.ts:1498-1553`). The owner of a nested foreground run writes a child record from the code that creates a `children` entry and from the code that changes its state - including dynamic `parallel` items materialized mid-chain - not from the `onUpdate` callback, so the records exist with or without a UI. A root foreground run needs no records for its own children: the resolver reads its `children` map in process.
+
+Legacy input. A nested step is admitted to the projected `NestedStepSummary` only when it carries its owner's child id; a pre-upgrade step without that id is omitted from the projected steps, whether pending, running or settled, and has no individual row, completion or child-id stop target. Projection never mints an id, derives one from a run id or index, substitutes the run's id, or renders a tokenless child row. This is an explicit legacy-record compatibility break, not permission to fold or omit valid live entries: all children created by the upgraded owners have ids from creation and remain subject to the universal row-prefix and live-entry rules. Keep valid enclosing run records and independently recorded descendants; do not delete stored legacy artifacts or infer missing child identity. Cover id-less legacy input and mixed legacy/identified steps in `test/unit/nested-events.test.ts`, asserting that valid identified steps and run records survive and no identity is fabricated.
 
 ### Resolving a stop id
 

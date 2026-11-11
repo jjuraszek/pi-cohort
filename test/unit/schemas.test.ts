@@ -110,6 +110,13 @@ try {
 }
 
 describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not available" : undefined }, () => {
+	it("advertises labels for single calls and task items, and reserves index for resume", () => {
+		const props = schemas.SubagentParams.properties as Record<string, any>;
+		assert.equal(props.label?.type, "string");
+		assert.equal(props.tasks.items.properties.label?.type, "string");
+		assert.match(props.index.description, /resume/i);
+	});
+
 	it("includes context field for fresh/fork execution mode", () => {
 		const contextSchema = SubagentParams?.properties?.context;
 		assert.ok(contextSchema, "context schema should exist");
@@ -685,7 +692,7 @@ describe("parallel-item, control, and tasks-item stubs (rounds two-three)", { sk
 
 	it("tasks[] item is a permissive stub", () => {
 		assert.equal(tasksItem.additionalProperties, true);
-		assert.deepEqual(Object.keys(tasksItem.properties).sort(), ["agent", "count", "task"]);
+		assert.deepEqual(Object.keys(tasksItem.properties).sort(), ["agent", "count", "label", "task"]);
 		assert.deepEqual(tasksItem.required, ["agent", "task"]);
 		assert.match(String(tasksItem.description ?? ""), /pi-cohort skill/);
 		// No `label`: TaskParam (subagent-executor.ts) has no such field at this position.

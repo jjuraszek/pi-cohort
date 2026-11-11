@@ -97,10 +97,6 @@ export interface RunSyncDependencies {
 
 const NEVER_ABORTED_SIGNAL = new AbortController().signal;
 
-function failedResult(agent: string, task: string, error: string): SingleResult {
-	return { agent, task, exitCode: 1, messages: [], usage: emptyUsage(), error };
-}
-
 function safeExternalFailure(phase: "startup" | "attempt" | "finish" | "cleanup", error?: unknown): string {
 	const code = externalExecutionDiagnosticCode(error);
 	return `External execution ${phase} failed${code ? ` (${code})` : ""}`;
@@ -659,28 +655,14 @@ export async function runSync(
 	options: RunSyncOptions,
 	dependencies: RunSyncDependencies = {},
 ): Promise<SingleResult> {
+	const failedResult = (agent: string, task: string, error: string): SingleResult => ({
+		id: options.id, label: options.label, agent, task, exitCode: 1, messages: [], usage: emptyUsage(), error,
+	});
 	const agent = agents.find((a) => a.name === agentName);
-	if (!agent) {
-		return {
-			agent: agentName,
-			task,
-			exitCode: 1,
-			messages: [],
-			usage: emptyUsage(),
-			error: `Unknown agent: ${agentName}`,
-		};
-	}
+	if (!agent) return failedResult(agentName, task, `Unknown agent: ${agentName}`);
 	const outputModeValidationError = validateFileOnlyOutputMode(options.outputMode, options.outputPath, `Single run (${agentName})`);
 	if (outputModeValidationError) {
-		return {
-			agent: agentName,
-			task,
-			exitCode: 1,
-			messages: [],
-			usage: emptyUsage(),
-			outputMode: options.outputMode,
-			error: outputModeValidationError,
-		};
+		return { ...failedResult(agentName, task, outputModeValidationError), outputMode: options.outputMode };
 	}
 
 	try {
@@ -717,14 +699,7 @@ export async function runSync(
 	const skillCwd = options.cwd ?? runtimeCwd;
 	const { resolved: resolvedSkills, missing: missingSkills } = resolveSkillsWithFallback(skillNames, skillCwd, runtimeCwd);
 	if (skillNames.some((skill) => skill.trim() === "pi-cohort") && missingSkills.includes("pi-cohort")) {
-		return {
-			agent: agentName,
-			task,
-			exitCode: 1,
-			messages: [],
-			usage: emptyUsage(),
-			error: "Skills not found: pi-cohort",
-		};
+		return failedResult(agentName, task, "Skills not found: pi-cohort");
 	}
 	let systemPrompt = agent.systemPrompt?.trim() || "";
 	if (resolvedSkills.length > 0) {
@@ -855,14 +830,7 @@ export async function runSync(
 		attemptNotes.push(formatModelAttemptNote(attempt, modelsToTry[i + 1]));
 	}
 
-	const result = lastResult ?? {
-		agent: agentName,
-		task,
-		exitCode: 1,
-		messages: [],
-		usage: emptyUsage(),
-		error: "Subagent did not produce a result.",
-	} satisfies SingleResult;
+	const result = lastResult ?? failedResult(agentName, task, "Subagent did not produce a result.");
 
 	let postLoopError: unknown;
 	let preservedAt: string | undefined;

@@ -32,6 +32,7 @@ function createChildSafeState(): SubagentState {
 		grandTotal: emptyGrandTotal(),
 		foregroundRuns: new Map(),
 		foregroundControls: new Map(),
+		retainedNestedRoutes: new Map(),
 		lastForegroundControlId: null,
 		pendingForegroundControlNotices: new Map(),
 		cleanupTimers: new Map(),
@@ -71,29 +72,29 @@ function startNestedControlInboxListener(pi: ExtensionAPI, state: SubagentState)
 							let ok = false;
 							let message = "Control request failed.";
 							try {
-								const control = state.foregroundControls.get(request.targetRunId);
+								const control = state.foregroundControls.get(request.targetId);
 								if (!control) {
-									message = `Nested run ${request.targetRunId} is not active in this fanout child.`;
+									message = `Nested run ${request.targetId} is not active in this fanout child.`;
 								} else if (request.action === "interrupt") {
 									ok = control.interrupt?.() === true;
 									message = ok
-										? `Interrupt requested for nested run ${request.targetRunId}.`
-										: `Nested run ${request.targetRunId} has no active child step to interrupt.`;
+										? `Interrupt requested for nested run ${request.targetId}.`
+										: `Nested run ${request.targetId} has no active child step to interrupt.`;
 								} else if (!request.message?.trim()) {
 									message = "Nested resume requires message.";
 								} else {
-									message = `Nested run ${request.targetRunId} is still active; wait for completion, then resume.`;
+									message = `Nested run ${request.targetId} is still active; wait for completion, then resume.`;
 								}
 							} catch (error) {
 								message = error instanceof Error ? error.message : String(error);
 							}
-							result = { ts: Date.now(), requestId: request.requestId, targetRunId: request.targetRunId, ok, message };
+							result = { ts: Date.now(), requestId: request.requestId, targetId: request.targetId, ok, message };
 						}
 						try {
 							writeNestedControlResult(route, result);
 						} catch (error) {
 							pendingResults.set(request.requestId, result);
-							console.error(`Failed to write nested control result for request '${request.requestId}' targeting '${request.targetRunId}' via inbox '${route.controlInbox}'; keeping request for retry:`, error);
+							console.error(`Failed to write nested control result for request '${request.requestId}' targeting '${request.targetId}' via inbox '${route.controlInbox}'; keeping request for retry:`, error);
 							return;
 						}
 						pendingResults.delete(request.requestId);
