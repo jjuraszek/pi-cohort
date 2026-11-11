@@ -28,7 +28,9 @@ interface RunSyncResult {
 	exitCode: number;
 	error?: string;
 	controlEvents?: Array<{ type?: string; message: string; reason?: string }>;
-	progress: { activityState?: string; status: string };
+	progress: { activityState?: string; status: string; error?: string };
+	modelAttempts?: Array<{ success: boolean }>;
+	interrupted?: boolean;
 }
 
 interface ExecutionModule {
@@ -376,6 +378,49 @@ describe("foreground in-flight turn control", { skip: !available ? "pi packages 
 		assert.notEqual(result.progress.status, "interrupted");
 		assert.ok(result.error?.includes("inFlightSilenceKillMs"), "error must name the cap");
 	});
+
+	for (const scenario of ["active", "short", "ignores SIGTERM"] as const) {
+		it(`maxRuntimeMs caps ${scenario} children with control disabled`, {
+			skip: scenario === "ignores SIGTERM" && process.platform === "win32",
+		}, async () => {
+			const cap = 800;
+			mockPi.onCall({
+				ignoreSigterm: scenario === "ignores SIGTERM",
+				steps: [
+					{ jsonl: [events.messageStart()] },
+					...Array.from({ length: scenario === "short" ? 1 : scenario === "active" ? 25 : 60 }, () => ({
+						delay: 100, jsonl: [events.toolStart("read"), events.toolEnd("read")],
+					})),
+					{ jsonl: [events.assistantMessage("done")] },
+				],
+			});
+			let activityUpdates = 0;
+			const start = performance.now();
+			const result = await runSync(tempDir, makeAgentConfigs(["echo"]), "echo", "Stream", {
+				runId: `runtime-${scenario}`,
+				controlConfig: { enabled: false, maxRuntimeMs: cap },
+				onUpdate: (update) => {
+					if (update.details.progress[0].toolCount > 0) activityUpdates++;
+				},
+			});
+			const elapsed = performance.now() - start;
+			assert.ok(activityUpdates > 0, "real child must emit tool activity before the deadline");
+			assert.equal(result.modelAttempts?.length, 1);
+			if (scenario === "short") {
+				assert.equal(result.exitCode, 0);
+				assert.equal(result.error, undefined);
+			} else {
+				assert.notEqual(result.exitCode, 0);
+				assert.ok(elapsed >= cap, "must not kill before the cap");
+				assert.ok(elapsed < (scenario === "active" ? 2_500 : 5_500), `settled after ${elapsed}ms`);
+				assert.match(result.error!, /maxRuntimeMs=800ms/);
+				assert.equal(result.interrupted, undefined);
+				assert.equal(result.progress.status, "failed");
+				assert.equal(result.progress.error, result.error);
+				assert.equal(result.modelAttempts![0].success, false);
+			}
+		});
+	}
 
 	it("does not kill a turn that keeps emitting events past the kill cap", async () => {
 		mockPi.onCall({

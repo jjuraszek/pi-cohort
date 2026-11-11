@@ -247,6 +247,7 @@ async function main() {
 	const args = process.argv.slice(2);
 	const jsonMode = isJsonMode(args);
 	const response = claimNextResponse(queueDir, args) ?? defaultResponse();
+	if (response.ignoreSigterm) process.on("SIGTERM", () => {});
 	if (response.requireAcceptanceStructuredOrder && taskRequestsAcceptance(args) && !taskIncludesOrdering(args)) {
 		fail("Expected report-then-structured-output ordering sentence.");
 	}

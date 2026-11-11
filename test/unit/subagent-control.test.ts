@@ -352,7 +352,19 @@ describe("resolveControlConfig inFlightSilenceKillMs", () => {
 });
 
 describe("resolveControlConfig maxRuntimeMs", () => {
-	for (const invalid of [0, -1, 1.5, "123", null, NaN]) {
+	it("resolves maxRuntimeMs with call-time, settings, default precedence", () => {
+		for (const [settings, override, expected] of [
+			[undefined, undefined, 14_400_000],
+			[2_000, undefined, 2_000],
+			[2_000, 1_000, 1_000],
+			[2_000, 3_000_000_000, 3_000_000_000],
+		] as const) {
+			const config = resolveControlConfig({ maxRuntimeMs: settings }, { enabled: false, maxRuntimeMs: override });
+			assert.equal(config.maxRuntimeMs, expected, "cap ignores enabled and silence thresholds");
+		}
+	});
+
+	for (const invalid of [0, -1, 1.5, "123", null, NaN, Infinity]) {
 		it(`ignores non-positive-integer maxRuntimeMs (${String(invalid)})`, () => {
 			assert.equal(resolveControlConfig(
 				{ maxRuntimeMs: 2_000 },

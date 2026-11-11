@@ -143,6 +143,7 @@ export type ControlNotificationChannel = "event" | "async";
 
 export interface ControlConfig {
 	enabled?: boolean;
+	maxRuntimeMs?: number;
 	needsAttentionAfterMs?: number;
 	activeNoticeAfterMs?: number;
 	inFlightSilenceCeilingMs?: number;
@@ -156,6 +157,7 @@ export interface ControlConfig {
 
 export interface ResolvedControlConfig {
 	enabled: boolean;
+	maxRuntimeMs: number;
 	needsAttentionAfterMs: number;
 	activeNoticeAfterMs: number;
 	inFlightSilenceCeilingMs: number;
