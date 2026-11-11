@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [7.7.4] - 2026-11-11
 
 ### Added
 - Foreground children have an absolute `control.maxRuntimeMs` cap, configurable per call or with `subagents.control.maxRuntimeMs` in settings. Existing runs now default to 14400000 ms (4 h), even with attention tracking disabled; capped children return a failure naming the limit. (#61)
