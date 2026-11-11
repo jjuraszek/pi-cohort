@@ -511,17 +511,19 @@ describe("foreground in-flight turn control", { skip: !available ? "pi packages 
 		assert.ok(result.error?.includes("inFlightSilenceKillMs"), "error must name the cap");
 	});
 
-	for (const scenario of ["active", "short", "ignores SIGTERM"] as const) {
-		it(`maxRuntimeMs caps ${scenario} children with control disabled`, {
+	for (const scenario of ["active", "short", "above timer limit", "ignores SIGTERM"] as const) {
+		it(scenario === "above timer limit"
+			? "does not fire a maxRuntimeMs above the 32-bit timer limit early"
+			: `maxRuntimeMs caps ${scenario} children with control disabled`, {
 			skip: scenario === "ignores SIGTERM" && process.platform === "win32",
 		}, async () => {
-			const cap = scenario === "short" ? 15_000 : 2_000;
+			const cap = scenario === "above timer limit" ? 3_000_000_000 : scenario === "short" ? 15_000 : 2_000;
 			const watchdogMs = 15_000;
 			mockPi.onCall({
 				ignoreSigterm: scenario === "ignores SIGTERM",
 				steps: [
 					{ jsonl: [events.messageStart()] },
-					...Array.from({ length: scenario === "short" ? 1 : scenario === "active" ? 300 : 600 }, () => ({
+					...Array.from({ length: scenario === "above timer limit" ? 4 : scenario === "short" ? 1 : scenario === "active" ? 300 : 600 }, () => ({
 						delay: 100, jsonl: [events.toolStart("read"), events.toolEnd("read")],
 					})),
 					{ jsonl: [events.assistantMessage("done")] },
@@ -537,11 +539,10 @@ describe("foreground in-flight turn control", { skip: !available ? "pi packages 
 				},
 			});
 			const elapsed = performance.now() - start;
-			assert.ok(activityUpdates > 0, "real child must emit tool activity before the deadline");
-			assert.equal(result.modelAttempts?.length, 1);
-			if (scenario === "short") {
-				assert.equal(result.exitCode, 0);
+			if (scenario === "short" || scenario === "above timer limit") {
+				assert.equal(result.exitCode, 0, result.error);
 				assert.equal(result.error, undefined);
+				assert.equal(result.interrupted, undefined);
 			} else {
 				assert.notEqual(result.exitCode, 0);
 				assert.ok(elapsed >= cap, "must not kill before the cap");
@@ -552,6 +553,8 @@ describe("foreground in-flight turn control", { skip: !available ? "pi packages 
 				assert.equal(result.progress.error, result.error);
 				assert.equal(result.modelAttempts![0].success, false);
 			}
+			assert.ok(activityUpdates > 0, "real child must emit tool activity before the deadline");
+			assert.equal(result.modelAttempts?.length, 1);
 		});
 	}
 
