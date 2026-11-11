@@ -15,22 +15,24 @@ async function waitFor(predicate: () => boolean, message: string, timeout = 75_0
 	}
 }
 
-for (const scenario of ["parallel", "static", "dynamic", "single", "early", "fallback", "overlap", "mixed", "later-target", "later-whole", "empty", "last-settled", "whole", "structured-static", "structured-dynamic", "mutation", "hidden-error"]) {
-it(`async stop by index pauses only that child (${scenario})`, { skip: process.platform === "win32" ? "requires POSIX signals" : undefined }, async () => {
+for (const scenario of ["parallel", "static", "dynamic", "single", "early", "fallback", "overlap", "mixed", "later-target", "later-whole", "empty", "last-settled", "whole", "structured-static", "structured-dynamic", "mutation", "hidden-error", "runtime-cap"]) {
+it(scenario === "runtime-cap" ? "async child is not capped by maxRuntimeMs" : `async stop by index pauses only that child (${scenario})`, { skip: process.platform === "win32" ? "requires POSIX signals" : undefined }, async () => {
 	const mock = createMockPi();
 	const cwd = createTempDir();
 	mock.install();
 	let resultPath: string | undefined;
 	let pid: number | undefined;
 	try {
-		const single = scenario === "single";
+		const runtimeCap = scenario === "runtime-cap";
+		const completes = scenario === "empty" || runtimeCap;
+		const single = scenario === "single" || runtimeCap;
 		const validation = ["structured-static", "structured-dynamic", "mutation", "hidden-error"].includes(scenario);
 		const structured = scenario.startsWith("structured-");
 		const staticChain = scenario === "static" || (validation && scenario !== "structured-dynamic");
 		const offset = scenario === "dynamic" || scenario === "structured-dynamic" ? 1 : 0;
 		const target = single ? 0 : offset + 1;
 		const whole = ["mixed", "later-whole", "last-settled", "whole"].includes(scenario);
-		const stopped = scenario === "empty" || scenario === "last-settled" ? []
+		const stopped = completes || scenario === "last-settled" ? []
 			: scenario === "whole" ? [2] : single ? [0]
 			: scenario === "overlap" ? [0, 1] : scenario === "later-target" ? [1, 0]
 			: scenario === "mixed" ? [1, 2] : [1 + offset];
@@ -47,7 +49,7 @@ it(`async stop by index pauses only that child (${scenario})`, { skip: process.p
 			foregroundControls: new Map(), lastForegroundControlId: null };
 		const executor = createSubagentExecutor({ captureRuntime: mock.captureRuntime,
 			pi: { events: createEventBus(), getSessionName: () => undefined }, state,
-			resolveConfig: () => ({ control: { enabled: false } }), tempArtifactsDir: cwd,
+			resolveConfig: () => ({ control: runtimeCap ? { enabled: true, maxRuntimeMs: 100 } : { enabled: false } }), tempArtifactsDir: cwd,
 			getSubagentSessionRoot: () => cwd, expandTilde: (p: string) => p,
 			discoverAgents: () => ({ agents: [makeAgent("echo", { completionGuard: scenario === "mutation",
 				...(scenario === "fallback" || scenario === "hidden-error" ? { model: "openai/gpt-5-mini", fallbackModels: ["anthropic/claude-sonnet-4"] } : {}),
@@ -90,7 +92,10 @@ it(`async stop by index pauses only that child (${scenario})`, { skip: process.p
 			assert.match(invalid.content[0].text, /no running child at index 99/);
 			assert.equal(fs.readdirSync(dir).some((name) => name.startsWith("interrupt-request-")), false);
 		}
-		if (scenario === "empty") {
+		if (runtimeCap) {
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			assert.equal(status().steps[0].status, "running", "async child stays running past the 100 ms cap");
+		} else if (scenario === "empty") {
 			signal();
 		} else if (scenario === "last-settled") {
 			await waitFor(() => status().steps[2].status === "complete", "last child settled");
@@ -122,8 +127,14 @@ it(`async stop by index pauses only that child (${scenario})`, { skip: process.p
 			return fs.existsSync(resultPath!);
 		}, "result file");
 		const result = JSON.parse(fs.readFileSync(resultPath, "utf8"));
-		assert.equal(result.state, scenario === "empty" ? "complete" : "paused");
-		if (scenario !== "empty") assert.equal(result.summary, "Paused after interrupt. Waiting for explicit next action.");
+		assert.equal(result.state, completes ? "complete" : "paused");
+		if (!completes) assert.equal(result.summary, "Paused after interrupt. Waiting for explicit next action.");
+		if (runtimeCap) {
+			assert.equal(result.exitCode, 0);
+			assert.equal(result.results[0].success, true);
+			assert.equal(result.results[0].error, undefined);
+			assert.ok(status().steps[0].durationMs >= 1_500, "mock child completes its full script past maxRuntimeMs");
+		}
 		if (staticChain || offset) {
 			assert.equal(mock.callCount(), 3 + offset, "later chain steps must not run");
 			assert.equal(status().steps.at(-1).status, "pending");
