@@ -221,7 +221,7 @@ describe("foreground in-flight turn control", { skip: !available ? "pi packages 
 				mockPi.onCall({
 					taskIncludes: `Capped parallel task ${index}`,
 					steps: [
-						{ jsonl: [events.messageStart()] },
+						{ jsonl: [events.messageStart(), events.toolStart("read"), events.toolEnd("read")] },
 						{ delay: index === 0 ? cap * 2 : siblingDelay, jsonl: [events.assistantMessage(`Completed sibling ${index}`)] },
 					],
 				});
@@ -241,18 +241,19 @@ describe("foreground in-flight turn control", { skip: !available ? "pi packages 
 			});
 			const tasks = [0, 1, 2, 3].map((index) => ({ agent: "echo", task: `Capped parallel task ${index}` }));
 			const controller = new AbortController();
-			let cappedChildFailed = false;
-			let lastSiblingStartedAfterCap: boolean | undefined;
+			let lastSiblingStartedAt: number | undefined;
+			const started = performance.now();
 			const result = await executor.execute(`capped-${mode}`, {
 				...(mode === "top-level" ? { tasks, concurrency: 2 } : { chain: [{ parallel: tasks, concurrency: 2 }] }),
 				async: false, clarify: false, control: { maxRuntimeMs: cap },
 			}, controller.signal, (update) => {
 				for (const progress of update.details?.progress ?? []) {
-					if (progress.index === 0 && progress.status === "failed") cappedChildFailed = true;
-					if (progress.index === 3) lastSiblingStartedAfterCap ??= cappedChildFailed;
+					if (progress.index === 3 && progress.currentTool === "read") lastSiblingStartedAt ??= performance.now();
 				}
 			}, makeMinimalCtx(tempDir));
-			assert.equal(lastSiblingStartedAfterCap, true, "the last sibling must start only after the capped child frees a slot");
+			assert.notEqual(lastSiblingStartedAt, undefined, "the last sibling must emit its startup marker");
+			assert.ok(lastSiblingStartedAt! - started >= cap,
+				`the last sibling started at ${lastSiblingStartedAt! - started}ms, before the ${cap}ms cap`);
 			assert.equal(controller.signal.aborted, false, "a child cap must not abort the caller");
 			assert.equal(mockPi.callCount(), 4, "queued siblings must still start after the cap");
 			assert.equal(result.details.results.length, 4);
