@@ -103,7 +103,7 @@ Add:
 
 ### Config resolution
 
-`resolveControlConfig` resolves `maxRuntimeMs` as `parsePositiveInt(override?.maxRuntimeMs) ?? parsePositiveInt(globalConfig?.maxRuntimeMs) ?? DEFAULT_CONTROL_CONFIG.maxRuntimeMs`. The value is not clamped against the silence fields, has no upper bound, and is not gated on `enabled`. `enabled: false` turns off attention tracking and the silence kill only; the cap still applies. No value disables the cap: zero and negative numbers are ignored like any other invalid value, and a caller who wants no practical limit passes a very large integer.
+`resolveControlConfig` resolves `maxRuntimeMs` as `parsePositiveInt(override?.maxRuntimeMs) ?? parsePositiveInt(globalConfig?.maxRuntimeMs) ?? DEFAULT_CONTROL_CONFIG.maxRuntimeMs`. The value is not clamped against the silence fields, has no upper bound, and is not gated on `enabled`. With `enabled: false`, attention tracking and the ordinary silence kill are disabled, but a foreground child awaiting structured settlement can still be silence-killed and the runtime cap still applies. No value disables the cap: zero and negative numbers are ignored like any other invalid value, and a caller who wants no practical limit passes a very large integer.
 
 The settings key is `subagents.control.maxRuntimeMs`. Settings levels keep replacing the whole `control` object between profile and project (`doc/configuration.md`, `control`); this change adds no merge behavior.
 
