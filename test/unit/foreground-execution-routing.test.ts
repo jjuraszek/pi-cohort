@@ -125,6 +125,49 @@ describe("runSync maxRuntimeMs deadline", () => {
 	});
 });
 
+describe("runSync extended maxRuntimeMs deadline", () => {
+	for (const maxRuntimeMs of [14_400_001, 3_000_000_000, 4_294_967_300]) {
+		it(`runs past four hours and aborts at the call-time cap ${maxRuntimeMs}`, async t => {
+			t.mock.timers.enable({ apis: ["setTimeout"] });
+			const timeouts = t.mock.method(globalThis, "setTimeout");
+			let now = 123_456;
+			const startedAt = now;
+			let calls = 0;
+			const h = dependencies(nativeSelection);
+			h.deps.monotonicNow = () => now;
+			h.deps.runNativeAttempt = async (_cwd, agent, task, _model, options) => {
+				calls++;
+				assert.equal(options.signal?.aborted, false);
+				const checkpoints = [...new Set([
+					14_400_000, 14_400_001, 2_147_483_647, 4_294_967_294, maxRuntimeMs - 1, maxRuntimeMs,
+				])].filter(elapsed => elapsed <= maxRuntimeMs).sort((a, b) => a - b);
+				for (const elapsed of checkpoints) {
+					const advance = startedAt + elapsed - now;
+					now += advance;
+					t.mock.timers.tick(advance);
+					assert.equal(options.signal?.aborted, elapsed === maxRuntimeMs, `abort state at ${elapsed} ms`);
+				}
+				return result(agent, task, { exitCode: 1 });
+			};
+			const output = await runSync("/runtime", [makeAgent("worker")], "worker", "Task", {
+				runId: "extended-cap", acceptance: noAcceptance,
+				controlConfig: resolveControlConfig(undefined, { maxRuntimeMs }),
+			}, h.deps);
+			assert.equal(calls, 1);
+			assert.equal(output.exitCode, 1);
+			assert.equal(output.error, `Subagent killed: ran for ${Math.round(maxRuntimeMs / 1000)}s (exceeded maxRuntimeMs=${maxRuntimeMs}ms).`);
+			assert.equal(output.interrupted, undefined);
+			assert.equal(output.modelAttempts?.length, 1);
+			assert.equal(output.modelAttempts[0].success, false);
+			const delays = timeouts.mock.calls.map(call => call.arguments[1]);
+			const chunks = Math.floor(maxRuntimeMs / 2_147_483_647);
+			assert.deepEqual(delays, [
+				...Array(chunks).fill(2_147_483_647), maxRuntimeMs % 2_147_483_647,
+			]);
+		});
+	}
+});
+
 describe("runSync execution backend routing", () => {
 	it("launches selected A through the actual native path despite process and PATH B", async t => {
 		for (const scenario of ["success", "spawn error", "entry disappeared"] as const) await t.test(scenario, async () => {
