@@ -15,6 +15,7 @@ import { createMockPi } from "../support/mock-pi.ts";
 import { after } from "node:test";
 import type { RunSyncOptions } from "../../src/shared/types.ts";
 import { PiRuntimeLaunchError } from "../../src/runs/shared/pi-spawn.ts";
+import { resolveControlConfig } from "../../src/runs/shared/subagent-control.ts";
 
 const mock = createMockPi();
 mock.install();
@@ -88,6 +89,41 @@ const externalSelection: ExecutionBackendSelectionResult = {
 	diagnostics: [],
 };
 const noAcceptance = { level: "none" as const, reason: "routing test" };
+
+describe("runSync maxRuntimeMs deadline", () => {
+	const cases = [
+		{ name: "no controlConfig", controlConfig: undefined },
+		{ name: "neither settings nor call-time cap", controlConfig: resolveControlConfig() },
+		{ name: "controlConfig without the field", controlConfig: { enabled: false } as RunSyncOptions["controlConfig"] },
+	];
+	for (const scenario of cases) it(`aborts at the default maxRuntimeMs and not before: ${scenario.name}`, async t => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		let now = 123_456;
+		let calls = 0;
+		const h = dependencies(nativeSelection);
+		h.deps.monotonicNow = () => now;
+		h.deps.runNativeAttempt = async (_cwd, agent, task, _model, options) => {
+			calls++;
+			assert.equal(options.signal?.aborted, false);
+			now += 14_399_999;
+			t.mock.timers.tick(14_399_999);
+			assert.equal(options.signal?.aborted, false, "the child survives until one ms before four hours");
+			now++;
+			t.mock.timers.tick(1);
+			assert.equal(options.signal?.aborted, true, "the child is aborted at exactly four hours");
+			return result(agent, task, { exitCode: 1 });
+		};
+		const output = await runSync("/runtime", [makeAgent("worker")], "worker", "Task", {
+			runId: "default-cap", acceptance: noAcceptance, controlConfig: scenario.controlConfig,
+		}, h.deps);
+		assert.equal(calls, 1);
+		assert.equal(output.exitCode, 1);
+		assert.equal(output.error, "Subagent killed: ran for 14400s (exceeded maxRuntimeMs=14400000ms).");
+		assert.equal(output.interrupted, undefined);
+		assert.equal(output.modelAttempts?.length, 1);
+		assert.equal(output.modelAttempts[0].success, false);
+	});
+});
 
 describe("runSync execution backend routing", () => {
 	it("launches selected A through the actual native path despite process and PATH B", async t => {
