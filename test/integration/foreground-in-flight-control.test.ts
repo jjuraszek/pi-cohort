@@ -213,13 +213,15 @@ describe("foreground in-flight turn control", { skip: !available ? "pi packages 
 
 	for (const mode of ["top-level", "chain"] as const) {
 		it(`siblings of a capped parallel child finish (${mode})`, async () => {
-			const cap = 1_500;
+			const cap = 10_000;
+			const siblingDelay = 1_000;
+			assert.ok(cap - siblingDelay >= 5_000, "leave seconds for sibling startup and exit on slow runners");
 			for (const index of [0, 1, 2, 3]) {
 				mockPi.onCall({
 					taskIncludes: `Capped parallel task ${index}`,
 					steps: [
 						{ jsonl: [events.messageStart()] },
-						{ delay: index === 0 ? 6_000 : 1_000, jsonl: [events.assistantMessage(`Completed sibling ${index}`)] },
+						{ delay: index === 0 ? cap * 2 : siblingDelay, jsonl: [events.assistantMessage(`Completed sibling ${index}`)] },
 					],
 				});
 			}
@@ -247,7 +249,7 @@ describe("foreground in-flight turn control", { skip: !available ? "pi packages 
 			assert.equal(result.details.results.length, 4);
 			const [capped, ...siblings] = result.details.results;
 			assert.notEqual(capped.exitCode, 0);
-			assert.match(capped.error, /maxRuntimeMs=1500ms/);
+			assert.match(capped.error, new RegExp(`maxRuntimeMs=${cap}ms`));
 			assert.equal(capped.interrupted, undefined);
 			for (const [index, sibling] of siblings.entries()) {
 				assert.equal(sibling.exitCode, 0);
