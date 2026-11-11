@@ -22,6 +22,7 @@ import {
 } from "../../src/runs/shared/pi-args.ts";
 import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_TOOL_NAME } from "../../src/runs/shared/structured-output.ts";
 import { parentModelFullId } from "../../src/shared/model-info.ts";
+import { parseNestedPathEnv } from "../../src/runs/shared/nested-path.ts";
 
 const originalEnv = {
 	HOME: process.env.HOME,
@@ -38,6 +39,7 @@ const originalEnv = {
 	PI_SUBAGENT_PARENT_CAPABILITY_TOKEN: process.env.PI_SUBAGENT_PARENT_CAPABILITY_TOKEN,
 	PI_SUBAGENT_RUN_ID: process.env.PI_SUBAGENT_RUN_ID,
 	PI_SUBAGENT_PARENT_SESSION_ID: process.env.PI_SUBAGENT_PARENT_SESSION_ID,
+	PI_SUBAGENT_OWNER_PID: process.env.PI_SUBAGENT_OWNER_PID,
 };
 const originalCwd = process.cwd();
 const tempRoots: string[] = [];
@@ -300,7 +302,7 @@ describe("buildPiArgs system prompt mode wiring", () => {
 		assert.equal(extensionArgs.filter((arg) => arg.endsWith(path.join("src", "extension", "fanout-child.ts"))).length, 1);
 	});
 
-	it("clears all fanout routing env values for non-fanout children", () => {
+	it("clears fanout capabilities but retains ancestry for non-fanout children", () => {
 		const { args, env } = buildPiArgs({
 			baseArgs: ["-p"],
 			task: "hello",
@@ -324,12 +326,12 @@ describe("buildPiArgs system prompt mode wiring", () => {
 		assert.equal(env[SUBAGENT_PARENT_RUN_ID_ENV], "");
 		assert.equal(env[SUBAGENT_PARENT_CHILD_INDEX_ENV], "");
 		assert.equal(env[SUBAGENT_PARENT_DEPTH_ENV], "");
-		assert.equal(env[SUBAGENT_PARENT_PATH_ENV], "");
+		assert.deepEqual(JSON.parse(env[SUBAGENT_PARENT_PATH_ENV]!), [{ runId: "should-not-leak", stepIndex: 9 }]);
 		assert.equal(env[SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV], "");
 		assert.ok(!extensionArgs.some((arg) => arg.endsWith(path.join("src", "extension", "fanout-child.ts"))));
 	});
 
-	it("inherits routing env only for authorized fanout children", () => {
+	it("inherits fanout capabilities only for authorized children", () => {
 		process.env[SUBAGENT_PARENT_EVENT_SINK_ENV] = "/tmp/inherited/events";
 		process.env[SUBAGENT_PARENT_CONTROL_INBOX_ENV] = "/tmp/inherited/control";
 		process.env[SUBAGENT_PARENT_ROOT_RUN_ID_ENV] = "inherited-root";
@@ -372,7 +374,7 @@ describe("buildPiArgs system prompt mode wiring", () => {
 		assert.equal(nonFanout.env[SUBAGENT_PARENT_RUN_ID_ENV], "");
 		assert.equal(nonFanout.env[SUBAGENT_PARENT_CHILD_INDEX_ENV], "");
 		assert.equal(nonFanout.env[SUBAGENT_PARENT_DEPTH_ENV], "");
-		assert.equal(nonFanout.env[SUBAGENT_PARENT_PATH_ENV], "");
+		assert.deepEqual(JSON.parse(nonFanout.env[SUBAGENT_PARENT_PATH_ENV]!), [{ runId: "root-run", stepIndex: 0 }, { runId: "owner-run", stepIndex: 1 }, { runId: "owner-run", stepIndex: 4 }]);
 		assert.equal(nonFanout.env[SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV], "");
 	});
 
@@ -513,28 +515,39 @@ describe("buildPiArgs forwarded flags", () => {
 	});
 });
 
+describe("buildPiArgs child ownership", () => {
+	it("sets the spawning pid and keeps six levels of child ancestry even without fanout", () => {
+		const ancestry = Array.from({ length: 5 }, (_, i) => ({ runId: `run-${i}`, childId: `child-${i}`, stepIndex: i, agent: "scout" }));
+		process.env.PI_SUBAGENT_PARENT_PATH = JSON.stringify(ancestry);
+		process.env.PI_SUBAGENT_OWNER_PID = "999999";
+		const { env } = buildPiArgs({ baseArgs: [], task: "look", sessionEnabled: false, inheritProjectContext: false, inheritSkills: false, runId: "run-5", childId: "child-5", childIndex: 5, childAgentName: "scout" });
+		assert.equal(env.PI_SUBAGENT_OWNER_PID, String(process.pid));
+		assert.deepEqual(parseNestedPathEnv(env[SUBAGENT_PARENT_PATH_ENV]), [...ancestry, { runId: "run-5", childId: "child-5", stepIndex: 5, agent: "scout" }]);
+	});
+});
+
 describe("buildPiArgs child session name", () => {
 	const base = { baseArgs: [], task: "hi", sessionEnabled: true, inheritProjectContext: false, inheritSkills: false };
 	const runId = "a1b2c3d4-0000-4000-8000-000000000000";
 	const nameArg = (args: string[]) => args.includes("--name") ? args[args.indexOf("--name") + 1] : undefined;
 
-	it("names the child after its agent, run, and parent session", () => {
-		const { args } = buildPiArgs({ ...base, runId, childAgentName: "scout", childIndex: 0, parentSessionLabel: "P" });
-		assert.equal(nameArg(args), "scout a1b2c3d4 from P");
+	it("names the child after its agent, child id, and parent session", () => {
+		const { args } = buildPiArgs({ ...base, runId, childId: "fedcba98-0000-4000-8000-000000000000", childAgentName: "scout", childIndex: 0, parentSessionLabel: "P" });
+		assert.equal(nameArg(args), "scout fedcba from P");
 		assert.equal(args.at(-1), "Task: hi");
 	});
 
-	it("adds the child index for later children of the same run", () => {
-		const { args } = buildPiArgs({ ...base, runId, childAgentName: "scout", childIndex: 2, parentSessionLabel: "P" });
-		assert.equal(nameArg(args), "scout a1b2c3d4/2 from P");
+	it("uses the child's id rather than its index for later children", () => {
+		const { args } = buildPiArgs({ ...base, runId, childId: "12345678-0000-4000-8000-000000000000", childAgentName: "scout", childIndex: 2, parentSessionLabel: "P" });
+		assert.equal(nameArg(args), "scout 123456 from P");
 	});
 
 	it("omits the parent when none is known", () => {
-		const { args } = buildPiArgs({ ...base, runId, childAgentName: "scout" });
-		assert.equal(nameArg(args), "scout a1b2c3d4");
+		const { args } = buildPiArgs({ ...base, runId, childId: "fedcba98", childAgentName: "scout" });
+		assert.equal(nameArg(args), "scout fedcba");
 	});
 
-	it("does not name a child without an agent and run", () => {
+	it("does not name a child without an agent and child id", () => {
 		assert.equal(nameArg(buildPiArgs({ ...base, childAgentName: "scout", parentSessionLabel: "P" }).args), undefined);
 		assert.equal(nameArg(buildPiArgs({ ...base, runId, parentSessionLabel: "P" }).args), undefined);
 	});

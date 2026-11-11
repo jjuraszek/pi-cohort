@@ -1,7 +1,7 @@
 /**
  * Hermetic integration test for child session identity.
  *
- * Proves the executor names each child `<agent> <run id prefix>[/<index>] from
+ * Proves the executor names each child `<agent> <six-char child id> from
  * <parent session>` and hands it PI_SUBAGENT_PARENT_SESSION_ID through
  * foreground (runSync -> buildPiArgs) and async
  * (executeAsyncSingle/executeAsyncChain -> subagent-runner -> buildPiArgs)
@@ -12,13 +12,14 @@ import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { ASYNC_DIR } from "../../src/shared/types.ts";
 import type { MockPi } from "../support/helpers.ts";
 import { createEventBus, createMockPi, createTempDir, makeAgent, makeMinimalCtx, removeTempDir, tryImport } from "../support/helpers.ts";
 
 interface ExecuteResult {
 	isError?: boolean;
 	content: Array<{ text?: string }>;
-	details: { runId?: string; asyncId?: string };
+	details: { runId?: string; asyncId?: string; results: Array<{ id: string; agent: string }> };
 }
 
 interface ExecutorModule {
@@ -40,7 +41,7 @@ const asyncAvailable = available && asyncMod!.isAsyncAvailable(availabilityMock.
 
 const PARENT_SESSION_ID_ENV = "PI_SUBAGENT_PARENT_SESSION_ID";
 
-async function waitForAsyncResultFile(id: string, timeoutMs = 30_000): Promise<{ results: Array<{ output?: string }> }> {
+async function waitForAsyncResultFile(id: string, timeoutMs = 30_000): Promise<{ results: Array<{ id: string; agent: string; output?: string }> }> {
 	const resultPath = path.join(typesMod!.RESULTS_DIR, `${id}.json`);
 	const deadline = Date.now() + timeoutMs;
 	while (!fs.existsSync(resultPath)) {
@@ -106,26 +107,25 @@ describe("child session identity", { skip: !available ? "pi packages not availab
 		});
 	}
 
-	it("names a foreground child after its agent, run, and named parent", async () => {
+	it("names a foreground child after its agent, child id, and named parent", async () => {
 		mockPi.onCall({ output: "ok" });
 		const result = await makeExecutor().execute("fg", { agent: "scout", task: "look" }, new AbortController().signal, undefined, sessionCtx(tempDir, "P"));
 		assert.equal(result.isError, undefined, result.content[0]?.text);
-		assert.deepEqual(recordedSessionNames(mockPi), [`scout ${result.details.runId!.slice(0, 8)} from P`]);
+		assert.deepEqual(recordedSessionNames(mockPi), [`scout ${result.details.results[0].id.slice(0, 6)} from P`]);
 	});
 
 	it("identifies an unnamed parent by its session id", async () => {
 		mockPi.onCall({ output: "ok" });
 		const result = await makeExecutor().execute("fg-unnamed", { agent: "scout", task: "look" }, new AbortController().signal, undefined, sessionCtx(tempDir, undefined));
 		assert.equal(result.isError, undefined, result.content[0]?.text);
-		assert.deepEqual(recordedSessionNames(mockPi), [`scout ${result.details.runId!.slice(0, 8)} from session-123`]);
+		assert.deepEqual(recordedSessionNames(mockPi), [`scout ${result.details.results[0].id.slice(0, 6)} from session-123`]);
 	});
 
-	it("distinguishes the children of one parallel run by index", async () => {
+	it("distinguishes the children of one parallel run by their own ids", async () => {
 		mockPi.onCall({ output: "ok" });
 		const result = await makeExecutor().execute("fg-parallel", { tasks: [{ agent: "scout", task: "a" }, { agent: "scout", task: "b" }], clarify: false }, new AbortController().signal, undefined, sessionCtx(tempDir, "P"));
 		assert.equal(result.isError, undefined, result.content[0]?.text);
-		const run = result.details.runId!.slice(0, 8);
-		assert.deepEqual(recordedSessionNames(mockPi).sort(), [`scout ${run} from P`, `scout ${run}/1 from P`]);
+		assert.deepEqual(recordedSessionNames(mockPi).sort(), result.details.results.map((child) => `scout ${child.id.slice(0, 6)} from P`).sort());
 	});
 
 	it("names concurrent async children distinguishably", { skip: !asyncAvailable ? "jiti not available" : undefined }, async () => {
@@ -137,8 +137,8 @@ describe("child session identity", { skip: !available ? "pi packages not availab
 			assert.ok(launch.details.asyncId, launch.content[0]?.text);
 			return launch.details.asyncId!;
 		});
-		await Promise.all(ids.map((id) => waitForAsyncResultFile(id)));
-		assert.deepEqual(recordedSessionNames(mockPi).sort(), ids.map((id) => `scout ${id.slice(0, 8)} from P`).sort());
+		const persisted = await Promise.all(ids.map((id) => waitForAsyncResultFile(id)));
+		assert.deepEqual(recordedSessionNames(mockPi).sort(), persisted.flatMap((run) => run.results.map((child) => `${child.agent} ${child.id.slice(0, 6)} from P`)).sort());
 	});
 
 	it("names async chain steps and their parallel members", { skip: !asyncAvailable ? "jiti not available" : undefined }, async () => {
@@ -152,18 +152,20 @@ describe("child session identity", { skip: !available ? "pi packages not availab
 		);
 		const id = launch.details.asyncId;
 		assert.ok(id, launch.content[0]?.text);
-		await waitForAsyncResultFile(id);
-		const run = id.slice(0, 8);
-		assert.deepEqual(recordedSessionNames(mockPi).sort(), [`pa ${run}/1 from P`, `pb ${run}/2 from P`, `step1 ${run} from P`]);
+		const persisted = await waitForAsyncResultFile(id);
+		assert.deepEqual(recordedSessionNames(mockPi).sort(), persisted.results.map((child) => `${child.agent} ${child.id.slice(0, 6)} from P`).sort());
 	});
 
 	it("gives a foreground child its parent's session id, whether or not the parent is named", async () => {
 		for (const name of ["P", undefined]) {
 			mockPi.reset();
-			mockPi.onCall({ echoEnv: [PARENT_SESSION_ID_ENV] });
+			mockPi.onCall({ echoEnv: [PARENT_SESSION_ID_ENV, "PI_SUBAGENT_OWNER_PID", "PI_SUBAGENT_PARENT_PATH"] });
 			const result = await makeExecutor().execute("fg-parent-id", { agent: "scout", task: "look" }, new AbortController().signal, undefined, sessionCtx(tempDir, name));
 			assert.equal(result.isError, undefined, result.content[0]?.text);
 			assert.equal(echoedParentSessionId(result.content[0]?.text), "session-123");
+			const env = JSON.parse(result.content[0]!.text!);
+			assert.equal(env.PI_SUBAGENT_OWNER_PID, String(process.pid));
+			assert.deepEqual(JSON.parse(env.PI_SUBAGENT_PARENT_PATH).at(-1), { runId: result.details.runId, childId: result.details.results[0].id, stepIndex: 0, agent: "scout" });
 		}
 	});
 
@@ -205,11 +207,15 @@ describe("child session identity", { skip: !available ? "pi packages not availab
 	});
 
 	it("gives an async child its parent's session id", { skip: !asyncAvailable ? "jiti not available" : undefined }, async () => {
-		mockPi.onCall({ echoEnv: [PARENT_SESSION_ID_ENV] });
+		mockPi.onCall({ echoEnv: [PARENT_SESSION_ID_ENV, "PI_SUBAGENT_OWNER_PID", "PI_SUBAGENT_PARENT_PATH"] });
 		const launch = await makeExecutor().execute("async-parent-id", { agent: "scout", task: "look", async: true, clarify: false }, new AbortController().signal, undefined, sessionCtx(tempDir, undefined));
 		const id = launch.details.asyncId;
 		assert.ok(id, launch.content[0]?.text);
 		const persisted = await waitForAsyncResultFile(id);
 		assert.equal(echoedParentSessionId(persisted.results[0]?.output), "session-123");
+		const env = JSON.parse(persisted.results[0].output!);
+		const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf-8"));
+		assert.equal(env.PI_SUBAGENT_OWNER_PID, String(status.pid));
+		assert.deepEqual(JSON.parse(env.PI_SUBAGENT_PARENT_PATH).at(-1), { runId: id, childId: persisted.results[0].id, stepIndex: 0, agent: "scout" });
 	});
 });

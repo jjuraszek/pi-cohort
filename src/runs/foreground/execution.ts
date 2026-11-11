@@ -155,6 +155,7 @@ async function runSingleAttempt(
 		cwd: options.cwd ?? runtimeCwd,
 		promptFileStem: agent.name,
 		runId: options.runId,
+		childId: options.id,
 		childAgentName: agent.name,
 		childIndex: options.index ?? 0,
 		parentSessionLabel: options.parentSessionLabel,

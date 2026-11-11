@@ -627,7 +627,7 @@ export interface AsyncStatus {
 	parallelGroups?: AsyncParallelGroupStatus[];
 	workflowGraph?: WorkflowGraphSnapshot;
 	steps?: Array<{
-		id?: string;
+		id: string;
 		agent: string;
 		phase?: string;
 		label?: string;

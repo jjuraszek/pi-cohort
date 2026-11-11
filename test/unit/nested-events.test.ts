@@ -95,6 +95,7 @@ describe("child identities", () => {
 	it("round-trips complete child-bearing ancestry and rejects unsafe ids", () => {
 		const ancestry = Array.from({ length: 6 }, (_, index) => ({ runId: `run-${index}`, childId: `child-${index}`, stepIndex: index }));
 		assert.deepEqual(parseNestedPathEnv(encodeNestedPathEnv(ancestry)), ancestry);
+		assert.deepEqual(sanitizeSummary({ ...child("nested-run", "running", 1), path: ancestry })?.path, ancestry);
 		assert.deepEqual(parseNestedPathEnv(JSON.stringify([{ runId: "../unsafe" }, { runId: "safe", childId: "../unsafe" }])), []);
 	});
 

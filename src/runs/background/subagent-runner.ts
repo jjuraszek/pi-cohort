@@ -48,7 +48,7 @@ import {
 	aggregateParallelOutputs,
 	MAX_PARALLEL_CONCURRENCY,
 } from "../shared/parallel-utils.ts";
-import { buildPiArgs, cleanupTempDir, runDirEnv } from "../shared/pi-args.ts";
+import { buildPiArgs, cleanupTempDir, runDirEnv, SUBAGENT_OWNER_PID_ENV } from "../shared/pi-args.ts";
 import { ChainOutputValidationError, TreeRegistry, outputEntryFromAsyncResult, resolveOutputReferences } from "../shared/chain-outputs.ts";
 import { buildStopRecord, evaluateStopCondition } from "../shared/stop-conditions.ts";
 import { createStructuredOutputRuntime, readStructuredOutput } from "../shared/structured-output.ts";
@@ -828,6 +828,7 @@ async function runSingleStepAttempts(
 					cwd: childCwd,
 					promptFileStem: step.agent,
 					runId: ctx.id,
+					childId: ctx.childId,
 					childAgentName: step.agent,
 					childIndex: ctx.flatIndex,
 					parentSessionLabel: ctx.parentSessionLabel,
@@ -843,6 +844,7 @@ async function runSingleStepAttempts(
 				for (const [k, v] of Object.entries({ ...process.env, ...env, ...getSubagentDepthEnv(step.maxSubagentDepth) })) {
 					if (v !== undefined) mergedEnv[k] = v;
 				}
+				mergedEnv[SUBAGENT_OWNER_PID_ENV] = "";
 				let run: import("./external-attempt.ts").ExternalBackgroundAttemptResult;
 				try {
 					try {
@@ -978,6 +980,7 @@ async function runSingleStepAttempts(
 			cwd: childCwd,
 			promptFileStem: step.agent,
 			runId: ctx.id,
+			childId: ctx.childId,
 			childAgentName: step.agent,
 			childIndex: ctx.flatIndex,
 			parentSessionLabel: ctx.parentSessionLabel,
