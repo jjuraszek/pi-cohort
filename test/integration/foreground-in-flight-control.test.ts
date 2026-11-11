@@ -211,6 +211,53 @@ describe("foreground in-flight turn control", { skip: !available ? "pi packages 
 		});
 	}
 
+	for (const mode of ["top-level", "chain"] as const) {
+		it(`siblings of a capped parallel child finish (${mode})`, async () => {
+			const cap = 1_500;
+			for (const index of [0, 1, 2, 3]) {
+				mockPi.onCall({
+					taskIncludes: `Capped parallel task ${index}`,
+					steps: [
+						{ jsonl: [events.messageStart()] },
+						{ delay: index === 0 ? 6_000 : 1_000, jsonl: [events.assistantMessage(`Completed sibling ${index}`)] },
+					],
+				});
+			}
+			const state = {
+				baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(),
+				grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() },
+				foregroundControls: new Map(), lastForegroundControlId: null,
+			};
+			const executor = executorModule.createSubagentExecutor({
+				captureRuntime: mockPi.captureRuntime,
+				pi: { events: createEventBus(), getSessionName: () => undefined }, state,
+				resolveConfig: () => ({ control: { enabled: false } }),
+				tempArtifactsDir: tempDir, getSubagentSessionRoot: () => tempDir,
+				expandTilde: (value: string) => value,
+				discoverAgents: () => ({ agents: [makeAgent("echo", { completionGuard: false })] }),
+			});
+			const tasks = [0, 1, 2, 3].map((index) => ({ agent: "echo", task: `Capped parallel task ${index}` }));
+			const controller = new AbortController();
+			const result = await executor.execute(`capped-${mode}`, {
+				...(mode === "top-level" ? { tasks, concurrency: 2 } : { chain: [{ parallel: tasks, concurrency: 2 }] }),
+				async: false, clarify: false, control: { maxRuntimeMs: cap },
+			}, controller.signal, undefined, makeMinimalCtx(tempDir));
+			assert.equal(controller.signal.aborted, false, "a child cap must not abort the caller");
+			assert.equal(mockPi.callCount(), 4, "queued siblings must still start after the cap");
+			assert.equal(result.details.results.length, 4);
+			const [capped, ...siblings] = result.details.results;
+			assert.notEqual(capped.exitCode, 0);
+			assert.match(capped.error, /maxRuntimeMs=1500ms/);
+			assert.equal(capped.interrupted, undefined);
+			for (const [index, sibling] of siblings.entries()) {
+				assert.equal(sibling.exitCode, 0);
+				assert.equal(sibling.error, undefined);
+				assert.equal(sibling.interrupted, undefined);
+				assert.equal(sibling.finalOutput, `Completed sibling ${index + 1}`);
+			}
+		});
+	}
+
 	it("whole-run interrupt after the last-started child settles falls through to async without stopping an older sibling", async (t) => {
 		for (const index of [0, 1]) mockPi.onCall({ taskIncludes: `Child task ${index}`, steps: [
 			{ jsonl: [events.messageStart()] },
