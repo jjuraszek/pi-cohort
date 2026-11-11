@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { spawn } from "node:child_process";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -247,6 +248,27 @@ async function main() {
 	const args = process.argv.slice(2);
 	const jsonMode = isJsonMode(args);
 	const response = claimNextResponse(queueDir, args) ?? defaultResponse();
+	if (response.ignoreSigterm) process.on("SIGTERM", () => {});
+	if (response.exitOnSigtermWithOpenStdout) {
+		const { pidFile } = response.exitOnSigtermWithOpenStdout;
+		const holder = spawn(process.execPath, ["--input-type=module", "-e", `
+			const stop = () => process.exit(0);
+			process.on("SIGTERM", stop);
+			process.stdout.on("error", stop);
+			setInterval(() => process.stdout.write("\\n"), 100);
+			setTimeout(stop, 60_000);
+			process.send("ready");
+		`], { stdio: ["ignore", "inherit", "ignore", "ipc"] });
+		fs.writeFileSync(pidFile, String(holder.pid));
+		await new Promise((resolve, reject) => {
+			holder.once("message", resolve);
+			holder.once("error", reject);
+			holder.once("exit", () => reject(new Error("stdout holder exited before readiness")));
+		});
+		holder.disconnect();
+		holder.unref();
+		process.on("SIGTERM", () => process.exit(0));
+	}
 	if (response.requireAcceptanceStructuredOrder && taskRequestsAcceptance(args) && !taskIncludesOrdering(args)) {
 		fail("Expected report-then-structured-output ordering sentence.");
 	}

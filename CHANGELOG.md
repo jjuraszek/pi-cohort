@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Foreground children have an absolute `control.maxRuntimeMs` cap, configurable per call or with `subagents.control.maxRuntimeMs` in settings. Existing runs now default to 14400000 ms (4 h), even with attention tracking disabled; capped children return a failure naming the limit. (#61)
+
+### Fixed
+- Native aborts escalate to SIGKILL after 3 s when the child ignores SIGTERM, instead of treating a sent signal as proof of exit. (#61)
+
 ## [7.7.3] - 2026-11-10
 
 ### Added

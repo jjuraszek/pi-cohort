@@ -10,7 +10,7 @@ import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { execFileSync } from "node:child_process";
+import { ChildProcess, execFileSync } from "node:child_process";
 import type { MockPi } from "../support/helpers.ts";
 import {
 	createEventBus,
@@ -28,7 +28,9 @@ interface RunSyncResult {
 	exitCode: number;
 	error?: string;
 	controlEvents?: Array<{ type?: string; message: string; reason?: string }>;
-	progress: { activityState?: string; status: string };
+	progress: { activityState?: string; status: string; error?: string };
+	modelAttempts?: Array<{ success: boolean }>;
+	interrupted?: boolean;
 }
 
 interface ExecutionModule {
@@ -209,6 +211,150 @@ describe("foreground in-flight turn control", { skip: !available ? "pi packages 
 		});
 	}
 
+	for (const mode of ["top-level", "chain"] as const) {
+		it(`siblings of a capped parallel child finish (${mode})`, async () => {
+			const cap = 10_000;
+			// Two sibling delays span the cap, leaving one running and one queued;
+			// each sibling still has four seconds for startup and exit on slow runners.
+			const siblingDelay = 6_000;
+			for (const index of [0, 1, 2, 3]) {
+				mockPi.onCall({
+					taskIncludes: `Capped parallel task ${index}`,
+					steps: [
+						{ jsonl: [events.messageStart(), events.toolStart("read"), events.toolEnd("read")] },
+						{ delay: index === 0 ? cap * 2 : siblingDelay, jsonl: [events.assistantMessage(`Completed sibling ${index}`)] },
+					],
+				});
+			}
+			const state = {
+				baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(),
+				grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() },
+				foregroundControls: new Map(), lastForegroundControlId: null,
+			};
+			const executor = executorModule.createSubagentExecutor({
+				captureRuntime: mockPi.captureRuntime,
+				pi: { events: createEventBus(), getSessionName: () => undefined }, state,
+				resolveConfig: () => ({ control: { enabled: false } }),
+				tempArtifactsDir: tempDir, getSubagentSessionRoot: () => tempDir,
+				expandTilde: (value: string) => value,
+				discoverAgents: () => ({ agents: [makeAgent("echo", { completionGuard: false })] }),
+			});
+			const tasks = [0, 1, 2, 3].map((index) => ({ agent: "echo", task: `Capped parallel task ${index}` }));
+			const controller = new AbortController();
+			let lastSiblingStartedAt: number | undefined;
+			const started = performance.now();
+			const result = await executor.execute(`capped-${mode}`, {
+				...(mode === "top-level" ? { tasks, concurrency: 2 } : { chain: [{ parallel: tasks, concurrency: 2 }] }),
+				async: false, clarify: false, control: { maxRuntimeMs: cap },
+			}, controller.signal, (update) => {
+				for (const progress of update.details?.progress ?? []) {
+					if (progress.index === 3 && progress.currentTool === "read") lastSiblingStartedAt ??= performance.now();
+				}
+			}, makeMinimalCtx(tempDir));
+			assert.notEqual(lastSiblingStartedAt, undefined, "the last sibling must emit its startup marker");
+			assert.ok(lastSiblingStartedAt! - started >= cap,
+				`the last sibling started at ${lastSiblingStartedAt! - started}ms, before the ${cap}ms cap`);
+			assert.equal(controller.signal.aborted, false, "a child cap must not abort the caller");
+			assert.equal(mockPi.callCount(), 4, "queued siblings must still start after the cap");
+			assert.equal(result.details.results.length, 4);
+			const [capped, ...siblings] = result.details.results;
+			assert.notEqual(capped.exitCode, 0);
+			assert.match(capped.error, new RegExp(`maxRuntimeMs=${cap}ms`));
+			assert.equal(capped.interrupted, undefined);
+			for (const [index, sibling] of siblings.entries()) {
+				assert.equal(sibling.exitCode, 0);
+				assert.equal(sibling.error, undefined);
+				assert.equal(sibling.interrupted, undefined);
+				assert.equal(sibling.finalOutput, `Completed sibling ${index + 1}`);
+			}
+		});
+	}
+
+	it("caps a child at the settings maxRuntimeMs", async () => {
+		const cap = 800;
+		mockPi.onCall({
+			steps: [
+				{ jsonl: [events.messageStart()] },
+				...Array.from({ length: 30 }, () => ({
+					delay: 100, jsonl: [events.toolStart("read"), events.toolEnd("read")],
+				})),
+				{ jsonl: [events.assistantMessage("Must not finish")] },
+			],
+		});
+		const state = {
+			baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(),
+			grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() },
+			foregroundControls: new Map(), lastForegroundControlId: null,
+		};
+		const executor = executorModule.createSubagentExecutor({
+			captureRuntime: mockPi.captureRuntime,
+			pi: { events: createEventBus(), getSessionName: () => undefined }, state,
+			resolveConfig: () => ({ control: { enabled: false, maxRuntimeMs: cap } }),
+			tempArtifactsDir: tempDir, getSubagentSessionRoot: () => tempDir,
+			expandTilde: (value: string) => value,
+			discoverAgents: () => ({ agents: [makeAgent("echo", { completionGuard: false })] }),
+		});
+		const started = performance.now();
+		const result = await executor.execute("settings-cap", {
+			agent: "echo", task: "Stream until capped", async: false, clarify: false, includeProgress: true,
+		}, undefined, undefined, makeMinimalCtx(tempDir));
+		const elapsed = performance.now() - started;
+		assert.equal(mockPi.callCount(), 1);
+		assert.equal(result.isError, true);
+		assert.equal(result.details.results.length, 1);
+		const [child] = result.details.results;
+		assert.notEqual(child.exitCode, 0);
+		assert.match(child.error, /maxRuntimeMs=800ms/);
+		assert.equal(child.interrupted, undefined);
+		assert.ok(result.details.progress[0].toolCount > 0, "settings cap must stop an active child");
+		assert.ok(elapsed >= cap, "settings cap must not fire early");
+		assert.ok(elapsed < 3_000, `settings cap settled after ${elapsed}ms`);
+	});
+
+	for (const [settingsCap, callCap] of [[800, 1_600], [1_600, 800]]) {
+		it(`call-time maxRuntimeMs=${callCap} beats settings=${settingsCap}`, async () => {
+			mockPi.onCall({
+				steps: [
+					{ jsonl: [events.messageStart()] },
+					...Array.from({ length: 40 }, () => ({
+						delay: 100, jsonl: [events.toolStart("read"), events.toolEnd("read")],
+					})),
+					{ jsonl: [events.assistantMessage("Must not finish")] },
+				],
+			});
+			const state = {
+				baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(),
+				grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() },
+				foregroundControls: new Map(), lastForegroundControlId: null,
+			};
+			const executor = executorModule.createSubagentExecutor({
+				captureRuntime: mockPi.captureRuntime,
+				pi: { events: createEventBus(), getSessionName: () => undefined }, state,
+				resolveConfig: () => ({ control: { enabled: false, maxRuntimeMs: settingsCap } }),
+				tempArtifactsDir: tempDir, getSubagentSessionRoot: () => tempDir,
+				expandTilde: (value: string) => value,
+				discoverAgents: () => ({ agents: [makeAgent("echo", { completionGuard: false })] }),
+			});
+			const started = performance.now();
+			const result = await executor.execute("call-cap", {
+				agent: "echo", task: "Stream until capped", async: false, clarify: false, includeProgress: true,
+				control: { maxRuntimeMs: callCap },
+			}, undefined, undefined, makeMinimalCtx(tempDir));
+			const elapsed = performance.now() - started;
+			assert.equal(mockPi.callCount(), 1);
+			assert.equal(result.isError, true);
+			assert.equal(result.details.results.length, 1);
+			const [child] = result.details.results;
+			assert.notEqual(child.exitCode, 0);
+			assert.match(child.error, new RegExp(`maxRuntimeMs=${callCap}ms`));
+			assert.doesNotMatch(child.error, new RegExp(`maxRuntimeMs=${settingsCap}ms`));
+			assert.equal(child.interrupted, undefined);
+			assert.ok(result.details.progress[0].toolCount > 0, "call-time cap must stop an active child");
+			assert.ok(elapsed >= callCap, "call-time cap must not fire early");
+			assert.ok(elapsed < 4_000, `call-time cap settled after ${elapsed}ms`);
+		});
+	}
+
 	it("whole-run interrupt after the last-started child settles falls through to async without stopping an older sibling", async (t) => {
 		for (const index of [0, 1]) mockPi.onCall({ taskIncludes: `Child task ${index}`, steps: [
 			{ jsonl: [events.messageStart()] },
@@ -375,6 +521,116 @@ describe("foreground in-flight turn control", { skip: !available ? "pi packages 
 		assert.ok(controlEvents.some((e) => e.type === "needs_attention"), "needs_attention must be emitted before the kill");
 		assert.notEqual(result.progress.status, "interrupted");
 		assert.ok(result.error?.includes("inFlightSilenceKillMs"), "error must name the cap");
+	});
+
+	for (const scenario of ["active", "short", "above timer limit", "ignores SIGTERM"] as const) {
+		it(scenario === "above timer limit"
+			? "does not fire a maxRuntimeMs above the 32-bit timer limit early"
+			: `maxRuntimeMs caps ${scenario} children with control disabled`, {
+			skip: scenario === "ignores SIGTERM" && process.platform === "win32",
+		}, async () => {
+			const cap = scenario === "above timer limit" ? 3_000_000_000 : scenario === "short" ? 15_000 : 2_000;
+			const watchdogMs = 15_000;
+			mockPi.onCall({
+				ignoreSigterm: scenario === "ignores SIGTERM",
+				steps: [
+					{ jsonl: [events.messageStart()] },
+					...Array.from({ length: scenario === "above timer limit" ? 4 : scenario === "short" ? 1 : scenario === "active" ? 300 : 600 }, () => ({
+						delay: 100, jsonl: [events.toolStart("read"), events.toolEnd("read")],
+					})),
+					{ jsonl: [events.assistantMessage("done")] },
+				],
+			});
+			let activityUpdates = 0;
+			const start = performance.now();
+			const result = await runSync(tempDir, makeAgentConfigs(["echo"]), "echo", "Stream", {
+				runId: `runtime-${scenario}`,
+				controlConfig: { enabled: false, maxRuntimeMs: cap },
+				onUpdate: (update) => {
+					if (update.details.progress[0].toolCount > 0) activityUpdates++;
+				},
+			});
+			const elapsed = performance.now() - start;
+			if (scenario === "short" || scenario === "above timer limit") {
+				assert.equal(result.exitCode, 0, result.error);
+				assert.equal(result.error, undefined);
+				assert.equal(result.interrupted, undefined);
+			} else {
+				assert.notEqual(result.exitCode, 0);
+				assert.ok(elapsed >= cap, "must not kill before the cap");
+				assert.ok(elapsed < watchdogMs, `settled after ${elapsed}ms`);
+				assert.ok(result.error?.includes(`maxRuntimeMs=${cap}ms`));
+				assert.equal(result.interrupted, undefined);
+				assert.equal(result.progress.status, "failed");
+				assert.equal(result.progress.error, result.error);
+				assert.equal(result.modelAttempts![0].success, false);
+			}
+			assert.ok(activityUpdates > 0, "real child must emit tool activity before the deadline");
+			assert.equal(result.modelAttempts?.length, 1);
+		});
+	}
+
+	it("does not signal an exited child whose stdio is still open", {
+		skip: process.platform === "win32" ? "requires POSIX SIGTERM handling" : undefined,
+	}, async t => {
+		const pidFile = path.join(tempDir, "stdout-holder.pid");
+		mockPi.onCall({
+			exitOnSigtermWithOpenStdout: { pidFile },
+			steps: [
+				{ jsonl: [events.toolStart("read")] },
+				{ delay: 60_000, jsonl: [events.assistantMessage("too late")] },
+			],
+		});
+		const controller = new AbortController();
+		const signals: Array<{ signal: NodeJS.Signals | number | undefined; exited: boolean }> = [];
+		const originalKill = ChildProcess.prototype.kill;
+		let child: ChildProcess | undefined;
+		let markExited!: () => void;
+		const exited = new Promise<void>(resolve => { markExited = resolve; });
+		t.mock.method(ChildProcess.prototype, "kill", function (this: ChildProcess, signal) {
+			if (!child) {
+				child = this;
+				this.once("exit", markExited);
+			}
+			signals.push({ signal, exited: this.exitCode !== null || this.signalCode !== null });
+			return originalKill.call(this, signal);
+		});
+		let settled = false;
+		const pending = runSync(tempDir, makeAgentConfigs(["echo"]), "echo", "Hold stdout", {
+			runId: "exited-open-stdio", signal: controller.signal,
+			controlConfig: { enabled: false, maxRuntimeMs: 30_000 },
+			onUpdate: update => {
+				if (update.details.progress[0].toolCount > 0) controller.abort();
+			},
+		}).finally(() => { settled = true; });
+		let watchdog: NodeJS.Timeout;
+		const timedOut = new Promise<never>((_resolve, reject) => {
+			watchdog = setTimeout(() => reject(new Error("child did not exit within 15 seconds")), 15_000);
+		});
+		try {
+			await Promise.race([exited, timedOut, pending.then(() => { throw new Error("settled before exit observation"); })]);
+			assert.equal(child?.exitCode, 0, "the parent exits cleanly on SIGTERM");
+			await new Promise(resolve => setTimeout(resolve, 3_500));
+			assert.equal(settled, false, "inherited stdout must stay open beyond the 3000-ms escalation");
+			assert.deepEqual(signals, [{ signal: "SIGTERM", exited: false }], "the exited parent must receive no SIGKILL");
+		} finally {
+			clearTimeout(watchdog!);
+			controller.abort();
+			try {
+				if (fs.existsSync(pidFile)) {
+					const pid = Number(fs.readFileSync(pidFile, "utf8"));
+					try { process.kill(pid, "SIGKILL"); } catch (error) {
+						if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+					}
+				}
+			} finally {
+				await pending;
+			}
+		}
+		const result = await pending;
+		assert.equal(result.exitCode, 0, "the abort preserves the parent's clean exit");
+		assert.equal(result.error, undefined);
+		assert.equal(result.interrupted, undefined);
 	});
 
 	it("does not kill a turn that keeps emitting events past the kill cap", async () => {

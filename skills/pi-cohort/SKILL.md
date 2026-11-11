@@ -74,7 +74,7 @@ Lifecycle (`queued`, `running`, `paused`, `complete`, `failed`) is separate from
 - `status` (optionally `id`): active runs and their children.
 - Use `interrupt` with optional `id` and zero-based `index` to stop one running child and let its siblings finish; read the [result contracts](../../doc/programmatic-api.md#foreground-stop-by-index) for foreground and background outcomes. Omit `index` for the whole-run pause behavior; use a nested run id only without `index`. Treat bare `interrupt` as excluding hidden nested descendants. Then choose: `resume` with clearer instructions, replace the task, ask the user, or stop.
 - `resume` (`id`, `message`, `index` for multi-child runs): revives a finished, failed, or paused child from its persisted session file as a new child process. A running child cannot be resumed; a child with no `.jsonl` session fails with that reason.
-- Thresholds: `control: { needsAttentionAfterMs, inFlightSilenceCeilingMs, inFlightSilenceKillMs, notifyOn }` beside `tasks`; the kill is `max(inFlightSilenceKillMs, inFlightSilenceCeilingMs + needsAttentionAfterMs)`.
+- Set thresholds with `control: { needsAttentionAfterMs, inFlightSilenceCeilingMs, inFlightSilenceKillMs, maxRuntimeMs, notifyOn }` beside `tasks`; compute the silence kill as `max(inFlightSilenceKillMs, inFlightSilenceCeilingMs + needsAttentionAfterMs)`. Read `reference/config-fields.md` for the independent foreground runtime cap.
 - Long-running async job: its task must instruct it to emit observable progress (log lines, counts, phase names). A silent long job is a defect. Pair it with a monitor, giving it the `Async dir:` from the start message:
 
 ```

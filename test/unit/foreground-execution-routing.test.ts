@@ -15,6 +15,7 @@ import { createMockPi } from "../support/mock-pi.ts";
 import { after } from "node:test";
 import type { RunSyncOptions } from "../../src/shared/types.ts";
 import { PiRuntimeLaunchError } from "../../src/runs/shared/pi-spawn.ts";
+import { resolveControlConfig } from "../../src/runs/shared/subagent-control.ts";
 
 const mock = createMockPi();
 mock.install();
@@ -88,6 +89,350 @@ const externalSelection: ExecutionBackendSelectionResult = {
 	diagnostics: [],
 };
 const noAcceptance = { level: "none" as const, reason: "routing test" };
+
+describe("runSync maxRuntimeMs deadline", () => {
+	const cases = [
+		{ name: "no controlConfig", controlConfig: undefined },
+		{ name: "neither settings nor call-time cap", controlConfig: resolveControlConfig() },
+		{ name: "controlConfig without the field", controlConfig: { enabled: false } as RunSyncOptions["controlConfig"] },
+	];
+	for (const scenario of cases) it(`aborts at the default maxRuntimeMs and not before: ${scenario.name}`, async t => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		let now = 123_456;
+		let calls = 0;
+		const h = dependencies(nativeSelection);
+		h.deps.monotonicNow = () => now;
+		h.deps.runNativeAttempt = async (_cwd, agent, task, _model, options) => {
+			calls++;
+			assert.equal(options.signal?.aborted, false);
+			now += 14_399_999;
+			t.mock.timers.tick(14_399_999);
+			assert.equal(options.signal?.aborted, false, "the child survives until one ms before four hours");
+			now++;
+			t.mock.timers.tick(1);
+			assert.equal(options.signal?.aborted, true, "the child is aborted at exactly four hours");
+			return result(agent, task, { exitCode: 1 });
+		};
+		const output = await runSync("/runtime", [makeAgent("worker")], "worker", "Task", {
+			runId: "default-cap", acceptance: noAcceptance, controlConfig: scenario.controlConfig,
+		}, h.deps);
+		assert.equal(calls, 1);
+		assert.equal(output.exitCode, 1);
+		assert.equal(output.error, "Subagent killed: ran for 14400s (exceeded maxRuntimeMs=14400000ms).");
+		assert.equal(output.interrupted, undefined);
+		assert.equal(output.modelAttempts?.length, 1);
+		assert.equal(output.modelAttempts[0].success, false);
+	});
+});
+
+describe("runSync maxRuntimeMs cleanup", () => {
+	for (const scenario of ["early clean success", "thrown native attempt"] as const) {
+		it(`cleans up after ${scenario}`, async t => {
+			t.mock.timers.enable({ apis: ["setTimeout"] });
+			let now = 0;
+			let derivedSignal: AbortSignal | undefined;
+			const caller = new AbortController();
+			const originalError = new Error("native attempt failed");
+			const h = dependencies(nativeSelection);
+			h.deps.monotonicNow = () => now;
+			h.deps.runNativeAttempt = async (_cwd, agent, task, _model, options) => {
+				derivedSignal = options.signal;
+				assert.ok(derivedSignal);
+				assert.notStrictEqual(derivedSignal, caller.signal);
+				now = 250;
+				t.mock.timers.tick(250);
+				assert.equal(derivedSignal.aborted, false);
+				if (scenario === "thrown native attempt") throw originalError;
+				return result(agent, task);
+			};
+			const pending = runSync("/runtime", [makeAgent("worker")], "worker", "Task", {
+				runId: "cleanup-cap", acceptance: noAcceptance, signal: caller.signal,
+				controlConfig: resolveControlConfig(undefined, { maxRuntimeMs: 1000 }),
+			}, h.deps);
+			if (scenario === "thrown native attempt") {
+				await assert.rejects(pending, error => {
+					assert.strictEqual(error, originalError);
+					return true;
+				});
+			} else {
+				const output = await pending;
+				assert.equal(output.exitCode, 0);
+				assert.equal(output.error, undefined);
+				assert.equal(output.interrupted, undefined);
+				assert.equal(output.finalOutput, "done");
+			}
+			assert.ok(derivedSignal);
+			assert.equal(derivedSignal.aborted, false);
+			now = 1001;
+			t.mock.timers.tick(751);
+			assert.equal(derivedSignal.aborted, false, "the cleared cap timer cannot abort a settled attempt");
+			caller.abort();
+			assert.equal(caller.signal.aborted, true);
+			assert.equal(derivedSignal.aborted, false, "the removed listener cannot forward a later caller abort");
+		});
+	}
+});
+
+describe("runSync deadline continuity", () => {
+	it("keeps the original deadline across a fallback attempt", async t => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		let now = 0;
+		let calls = 0;
+		const h = dependencies(nativeSelection);
+		h.deps.monotonicNow = () => now;
+		h.deps.runNativeAttempt = async (_cwd, agent, task, _model, options) => {
+			calls++;
+			if (calls === 1) {
+				now = 600;
+				t.mock.timers.tick(600);
+				assert.equal(options.signal?.aborted, false);
+				return result(agent, task, { exitCode: 1, error: "rate limit exceeded" });
+			}
+			now = 999;
+			t.mock.timers.tick(399);
+			assert.equal(options.signal?.aborted, false, "fallback survives until the original deadline minus one ms");
+			now = 1000;
+			t.mock.timers.tick(1);
+			assert.equal(options.signal?.aborted, true, "fallback is aborted at the original deadline");
+			return result(agent, task, { exitCode: 1 });
+		};
+		const output = await runSync("/runtime", [makeAgent("worker", {
+			model: "one/model", fallbackModels: ["two/model"],
+		})], "worker", "Task", {
+			runId: "fallback-cap", acceptance: noAcceptance,
+			controlConfig: resolveControlConfig(undefined, { maxRuntimeMs: 1000 }),
+		}, h.deps);
+		assert.equal(calls, 2);
+		assert.deepEqual(output.attemptedModels, ["one/model", "two/model"]);
+		assert.deepEqual(output.modelAttempts?.map(attempt => attempt.success), [false, false]);
+		assert.equal(output.error, "Subagent killed: ran for 1s (exceeded maxRuntimeMs=1000ms).");
+	});
+
+	it("a wall-clock change does not move the cap deadline", async t => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		let wallNow = 7_200_000;
+		t.mock.method(Date, "now", () => wallNow);
+		let now = 0;
+		const h = dependencies(nativeSelection);
+		h.deps.monotonicNow = () => now;
+		h.deps.runNativeAttempt = async (_cwd, agent, task, _model, options) => {
+			now = 500;
+			t.mock.timers.tick(500);
+			const beforeJump = Date.now();
+			wallNow = beforeJump - 3_600_000;
+			assert.equal(Date.now(), beforeJump - 3_600_000);
+			now = 999;
+			t.mock.timers.tick(499);
+			assert.equal(options.signal?.aborted, false);
+			now = 1000;
+			t.mock.timers.tick(1);
+			assert.equal(options.signal?.aborted, true, "a backwards Date jump cannot postpone the monotonic deadline");
+			return result(agent, task, { exitCode: 1 });
+		};
+		const output = await runSync("/runtime", [makeAgent("worker")], "worker", "Task", {
+			runId: "wall-clock-cap", acceptance: noAcceptance,
+			controlConfig: resolveControlConfig(undefined, { maxRuntimeMs: 1000 }),
+		}, h.deps);
+		assert.equal(output.error, "Subagent killed: ran for 1s (exceeded maxRuntimeMs=1000ms).");
+	});
+
+	for (const scenario of ["caller abort", "interrupt"] as const) {
+		it(`leaves ${scenario === "interrupt" ? "an interrupt" : "a caller abort"} before the cap unchanged`, async t => {
+			t.mock.timers.enable({ apis: ["setTimeout"] });
+			let now = 0;
+			const stop = new AbortController();
+			const h = dependencies(nativeSelection);
+			h.deps.monotonicNow = () => now;
+			h.deps.runNativeAttempt = async (_cwd, agent, task, _model, options) => {
+				now = 500;
+				t.mock.timers.tick(500);
+				stop.abort();
+				assert.equal(options.signal?.aborted, scenario === "caller abort");
+				assert.equal(options.interruptSignal?.aborted, scenario === "interrupt" ? true : undefined);
+				now = 1500;
+				t.mock.timers.tick(1000);
+				assert.equal(options.signal?.aborted, scenario === "caller abort", "the cap must not signal a previously interrupted child");
+				return result(agent, task, scenario === "caller abort"
+					? { exitCode: 1, error: "caller cancelled", finalOutput: "partial work" }
+					: { interrupted: true, finalOutput: "interrupted work" });
+			};
+			const output = await runSync("/runtime", [makeAgent("worker")], "worker", "Task", {
+				runId: "cancel-before-cap", acceptance: noAcceptance,
+				...(scenario === "caller abort" ? { signal: stop.signal } : { interruptSignal: stop.signal }),
+				controlConfig: resolveControlConfig(undefined, { maxRuntimeMs: 1000 }),
+			}, h.deps);
+			assert.equal(output.exitCode, scenario === "caller abort" ? 1 : 0);
+			assert.equal(output.error, scenario === "caller abort" ? "caller cancelled" : undefined);
+			assert.equal(output.interrupted, scenario === "interrupt" ? true : undefined);
+			assert.equal(output.finalOutput, scenario === "caller abort" ? "partial work" : "interrupted work");
+			assert.equal(output.modelAttempts?.[0].success, scenario === "interrupt");
+		});
+	}
+});
+
+describe("runSync extended maxRuntimeMs deadline", () => {
+	for (const maxRuntimeMs of [14_400_001, 3_000_000_000, 4_294_967_300]) {
+		it(`runs past four hours and aborts at the call-time cap ${maxRuntimeMs}`, async t => {
+			t.mock.timers.enable({ apis: ["setTimeout"] });
+			const timeouts = t.mock.method(globalThis, "setTimeout");
+			let now = 123_456;
+			const startedAt = now;
+			let calls = 0;
+			const h = dependencies(nativeSelection);
+			h.deps.monotonicNow = () => now;
+			h.deps.runNativeAttempt = async (_cwd, agent, task, _model, options) => {
+				calls++;
+				assert.equal(options.signal?.aborted, false);
+				const checkpoints = [...new Set([
+					14_400_000, 14_400_001, 2_147_483_647, 4_294_967_294, maxRuntimeMs - 1, maxRuntimeMs,
+				])].filter(elapsed => elapsed <= maxRuntimeMs).sort((a, b) => a - b);
+				for (const elapsed of checkpoints) {
+					const advance = startedAt + elapsed - now;
+					now += advance;
+					t.mock.timers.tick(advance);
+					assert.equal(options.signal?.aborted, elapsed === maxRuntimeMs, `abort state at ${elapsed} ms`);
+				}
+				return result(agent, task, { exitCode: 1 });
+			};
+			const output = await runSync("/runtime", [makeAgent("worker")], "worker", "Task", {
+				runId: "extended-cap", acceptance: noAcceptance,
+				controlConfig: resolveControlConfig(undefined, { maxRuntimeMs }),
+			}, h.deps);
+			assert.equal(calls, 1);
+			assert.equal(output.exitCode, 1);
+			assert.equal(output.error, `Subagent killed: ran for ${Math.round(maxRuntimeMs / 1000)}s (exceeded maxRuntimeMs=${maxRuntimeMs}ms).`);
+			assert.equal(output.interrupted, undefined);
+			assert.equal(output.modelAttempts?.length, 1);
+			assert.equal(output.modelAttempts[0].success, false);
+			const delays = timeouts.mock.calls.map(call => call.arguments[1]);
+			const chunks = Math.floor(maxRuntimeMs / 2_147_483_647);
+			assert.deepEqual(delays, [
+				...Array(chunks).fill(2_147_483_647), maxRuntimeMs % 2_147_483_647,
+			]);
+		});
+	}
+});
+
+describe("runSync external maxRuntimeMs", () => {
+	const capError = "Subagent killed: ran for 1s (exceeded maxRuntimeMs=1000ms).";
+	const diagnostic = "Process termination could not be confirmed; manual cleanup may be required.";
+	const cases = ["interrupted", "partial output", "thrown interruption", "retryable failure", "clean success"] as const;
+	for (const scenario of cases) it(`settles an external attempt at the cap: ${scenario}`, async t => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		let now = 123_456;
+		let calls = 0;
+		const caller = new AbortController();
+		const removeListener = t.mock.method(caller.signal, "removeEventListener");
+		const h = dependencies(externalSelection);
+		h.deps.monotonicNow = () => now;
+		delete h.deps.runExternalAttempt;
+		h.owner.runAttempt = async input => {
+			calls++;
+			assert.strictEqual(input.signal, h.ownerOptions[0].signal);
+			assert.notStrictEqual(input.signal, caller.signal);
+			now += 999;
+			t.mock.timers.tick(999);
+			assert.equal(input.signal?.aborted, false);
+			now++;
+			t.mock.timers.tick(1);
+			assert.equal(input.signal?.aborted, true);
+			assert.equal(caller.signal.aborted, false, "the cap belongs to the child, not its caller");
+			if (scenario === "thrown interruption") throw Object.assign(new Error(diagnostic), { interrupted: true });
+			if (scenario === "clean success") return successAttemptResult();
+			if (scenario === "retryable failure") return {
+				...successAttemptResult(), outcome: "failed", exit: { code: 1, signal: null }, error: "rate limit exceeded",
+			};
+			return {
+				...successAttemptResult(), outcome: "interrupted", interrupted: true,
+				finalOutput: scenario === "partial output" ? "partial work" : "", error: diagnostic,
+			};
+		};
+		const output = await runSync("/runtime", [makeAgent("worker", {
+			model: "one/model", fallbackModels: ["two/model"], completionGuard: false,
+		})], "worker", "Task", {
+			runId: "external-cap", sessionFile: path.join(mock.dir, "external-cap.jsonl"), signal: caller.signal,
+			acceptance: noAcceptance, controlConfig: resolveControlConfig(undefined, { enabled: false, maxRuntimeMs: 1000 }),
+		}, h.deps);
+		const succeeded = scenario === "clean success";
+		assert.equal(calls, 1, "a capped failure must not start a fallback model");
+		assert.equal(h.nativeCalls(), 0);
+		assert.equal(output.exitCode, succeeded ? 0 : 1);
+		assert.equal(output.interrupted, undefined);
+		assert.equal(output.error, succeeded ? undefined : `${capError}\n${scenario === "retryable failure" ? "rate limit exceeded" : diagnostic}`);
+		if (scenario === "interrupted" || scenario === "thrown interruption") assert.equal(output.finalOutput, undefined);
+		if (scenario === "partial output") assert.equal(output.finalOutput, "partial work");
+		if (scenario !== "thrown interruption") {
+			assert.equal(output.progress?.status, succeeded ? "completed" : "failed");
+			assert.equal(output.progress?.error, output.error);
+		}
+		assert.deepEqual(output.attemptedModels, ["one/model"]);
+		assert.equal(output.modelAttempts?.length, 1);
+		assert.equal(output.modelAttempts[0].success, succeeded);
+		assert.equal(output.modelAttempts[0].error, output.error);
+		assert.deepEqual(h.finishes, [succeeded ? "delivered" : "retained"]);
+		assert.equal(output.executionSurface?.retained, !succeeded);
+		assert.equal(removeListener.mock.calls.length, 1);
+		assert.equal(removeListener.mock.calls[0].arguments[0], "abort");
+	});
+
+	for (const phase of ["startup", "ready"] as const) it(`rewrites external ${phase} failure after the cap`, async t => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		let now = 0;
+		const h = dependencies(externalSelection);
+		h.deps.monotonicNow = () => now;
+		h.deps.createExternalOwner = async options => {
+			h.ownerOptions.push(options);
+			const failAtCap = () => {
+				now = 1000;
+				t.mock.timers.tick(1000);
+				assert.equal(options.signal.aborted, true);
+				throw new Error("private startup details");
+			};
+			if (phase === "startup") failAtCap();
+			Object.defineProperty(h.owner, "ready", { get: failAtCap });
+			return h.owner;
+		};
+		const output = await runSync("/runtime", [makeAgent("worker")], "worker", "Task", {
+			runId: "startup-cap", acceptance: noAcceptance,
+			controlConfig: resolveControlConfig(undefined, { maxRuntimeMs: 1000 }),
+		}, h.deps);
+		assert.equal(output.exitCode, 1);
+		assert.equal(output.error, `${capError}\nExternal execution startup failed`);
+		assert.equal(output.interrupted, undefined);
+		assert.equal(output.modelAttempts, undefined);
+		assert.equal(h.attempts.length, 0);
+		assert.equal(h.nativeCalls(), 0);
+		assert.deepEqual(h.finishes, phase === "ready" ? ["retained"] : []);
+	});
+
+	for (const settlement of ["pending", "late rejection", "same-turn rejection"] as const) {
+		it(`caps backend selection with ${settlement}`, async t => {
+			t.mock.timers.enable({ apis: ["setTimeout"] });
+			let now = 0;
+			let rejectSelection!: (error: Error) => void;
+			const h = dependencies(externalSelection);
+			h.deps.monotonicNow = () => now;
+			h.deps.selectBackend = () => new Promise((_resolve, reject) => { rejectSelection = reject; });
+			const pending = runSync("/runtime", [makeAgent("worker")], "worker", "Task", {
+				runId: "selection-cap", acceptance: noAcceptance,
+				controlConfig: resolveControlConfig(undefined, { maxRuntimeMs: 1000 }),
+			}, h.deps);
+			now = 1000;
+			t.mock.timers.tick(1000);
+			if (settlement === "same-turn rejection") rejectSelection(new Error("selection failed"));
+			const output = await pending;
+			assert.equal(output.exitCode, 1);
+			assert.equal(output.error, capError);
+			assert.equal(h.ownerOptions.length, 0);
+			assert.equal(h.attempts.length, 0);
+			assert.equal(h.nativeCalls(), 0);
+			if (settlement === "late rejection") {
+				rejectSelection(new Error("late selection failure"));
+				await new Promise(resolve => setImmediate(resolve));
+			}
+		});
+	}
+});
 
 describe("runSync execution backend routing", () => {
 	it("launches selected A through the actual native path despite process and PATH B", async t => {
