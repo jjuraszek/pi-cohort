@@ -351,6 +351,25 @@ describe("resolveControlConfig inFlightSilenceKillMs", () => {
 	});
 });
 
+describe("resolveControlConfig maxRuntimeMs", () => {
+	for (const invalid of [0, -1, 1.5, "123", null, NaN]) {
+		it(`ignores non-positive-integer maxRuntimeMs (${String(invalid)})`, () => {
+			assert.equal(resolveControlConfig(
+				{ maxRuntimeMs: 2_000 },
+				{ maxRuntimeMs: invalid as never },
+			).maxRuntimeMs, 2_000, "invalid call-time value falls through to settings");
+			assert.equal(resolveControlConfig(
+				undefined,
+				{ maxRuntimeMs: invalid as never },
+			).maxRuntimeMs, 14_400_000, "invalid call-time value without settings falls through to default");
+			assert.equal(resolveControlConfig(
+				{ maxRuntimeMs: invalid as never },
+				{ maxRuntimeMs: invalid as never },
+			).maxRuntimeMs, 14_400_000, "invalid values at both levels fall through to default");
+		});
+	}
+});
+
 describe("shouldSilenceKill", () => {
 	const base = { startedAt: 0, now: 10_000, killMs: 5_000 };
 
