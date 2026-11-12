@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [8.0.0] - 2026-11-12
 
 ### Fixed
 - Descendant signal failures no longer disappear from background paused results or status. Stops still reach later descendants and preserve sibling outputs; native silence termination retains both the policy reason and the incomplete-stop diagnostic. (#62)
