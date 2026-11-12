@@ -6,7 +6,10 @@ import * as path from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { TEMP_ROOT_DIR, type SubagentState } from "../../src/shared/types.ts";
 import { listStopTargets, resolveSubagentRunId, updateBackgroundStopInventory } from "../../src/runs/background/run-id-resolver.ts";
-import { createNestedRoute, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
+import { createNestedRoute, nestedRouteEnv, projectNestedEvents, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
+import { registerForegroundInterrupt, stopForegroundTarget, type ForegroundControl } from "../../src/runs/shared/stop-control.ts";
+import { startNestedControlInboxListener } from "../../src/extension/fanout-child.ts";
+import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
 
 const routeRoots: string[] = [];
 
@@ -163,24 +166,74 @@ describe("subagent run id resolver", () => {
 		}
 	});
 
-	it("resolves every child from event projection, including the seventeenth row", () => {
+	it("resolves and stops all 17 maximum-field projected children without stopping siblings", async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-stop-ids-"));
 		const route = nested("projection-root", "projection-run");
+		const env = nestedRouteEnv(route);
+		const savedEnv = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
+		Object.assign(process.env, env);
+		const ids = Array.from({ length: 17 }, (_, index) => `child-${String(index).padStart(2, "0")}`);
+		const sessionFile = "s".repeat(2048);
+		const currentPath = "p".repeat(2048);
+		const stops = ids.map(() => 0);
+		const control: ForegroundControl = { runId: "projection-run", mode: "parallel", startedAt: 1, updatedAt: 1,
+			nestedRoute: route, children: new Map(ids.map((id, index) => [id, { agent: "worker", index, state: "running" }])) };
+		control.interrupt = (id) => stopForegroundTarget(control, id);
+		for (const [index, id] of ids.entries()) registerForegroundInterrupt(control, id, () => {
+			stops[index]++;
+			control.children.get(id)!.state = "interrupted";
+			return true;
+		});
+		const ownerState = stateWithForeground(control.runId);
+		ownerState.foregroundControls.set(control.runId, control);
+		const timer = startNestedControlInboxListener({} as any, ownerState);
+		const state = stateWithNestedRoute(route);
+		const executor = createSubagentExecutor({ state, captureRuntime: () => { throw new Error("stop routing must not launch a child"); },
+			pi: { events: { emit() {}, on() { return () => {}; } }, getSessionName: () => "parent" } as any,
+			resolveConfig: () => ({ maxSubagentDepth: 2, control: {} } as any), tempArtifactsDir: root,
+			getSubagentSessionRoot: () => root, expandTilde: (value) => value, discoverAgents: () => ({ agents: [] }),
+		});
 		try {
-			for (let index = 0; index < 16; index++) writeNestedEvent(route, {
-				type: "subagent.nested.child", ts: 200 + index, runId: "projection-run", index,
-				id: `child-${String(index).padStart(2, "0")}`, agent: "worker", status: "running",
-			});
-			const deps = { target: "interrupt" as const, asyncDirRoot: root, nested: { routes: [route] } };
-			assert.equal(resolveSubagentRunId("child-00", deps)?.id, "child-00");
-			writeNestedEvent(route, { type: "subagent.nested.child", ts: 216, runId: "projection-run", index: 16,
-				id: "child-16", agent: "worker", status: "running" });
-			for (let index = 0; index < 17; index++) {
-				const id = `child-${String(index).padStart(2, "0")}`;
-				assert.equal(resolveSubagentRunId(id, deps)?.id, id);
+			assert.ok(timer, "the owned child control listener must be active");
+			const deps = { state, target: "interrupt" as const, asyncDirRoot: root, nested: { routes: [route] } };
+			for (const [index, id] of ids.entries()) {
+				writeNestedEvent(route, { type: "subagent.nested.child", ts: 200 + index, runId: control.runId,
+					index, id, agent: "worker", status: "running", sessionFile, currentPath });
+				if (index === 15) assert.equal(resolveSubagentRunId(ids[0], deps)?.id, ids[0]);
+			}
+			const steps = projectNestedEvents(route).children[0].steps!;
+			assert.deepEqual(steps.map((step) => step.id), ids);
+			for (const step of steps) {
+				assert.equal(step.sessionFile, sessionFile);
+				assert.equal(step.currentPath, currentPath);
+				assert.equal(step.status, "running");
 			}
 			assert.throws(() => resolveSubagentRunId("child-", deps), /Ambiguous stop id.*child:/);
-		} finally { fs.rmSync(root, { recursive: true, force: true }); }
+			for (const [index, id] of ids.entries()) {
+				const resolved = resolveSubagentRunId(id, deps)!;
+				assert.equal(resolved.id, id);
+				assert.equal(resolved.kind, "child");
+				assert.equal(resolved.owner.kind, "nested", "the caller must route through the projection, not the owner's live map");
+				const result = await executor.execute(`stop-${index}`, { action: "interrupt", id }, undefined, undefined, {
+					cwd: root, hasUI: false,
+					sessionManager: { getSessionId: () => "test", getSessionFile: () => undefined, getSessionName: () => undefined },
+				} as any);
+				assert.notEqual(result.isError, true, JSON.stringify(result.content));
+				assert.equal(stops[index], 1, `${id} must stop`);
+				assert.deepEqual(stops, ids.map((_, sibling) => sibling <= index ? 1 : 0), `${id} must not stop unrelated siblings`);
+				for (const [sibling, siblingId] of ids.entries()) {
+					assert.equal(control.children.get(siblingId)!.state, sibling <= index ? "interrupted" : "running");
+					assert.equal(Boolean(control.children.get(siblingId)!.stopRequested), sibling <= index);
+				}
+				assert.notEqual(control.stopping, true);
+			}
+		} finally {
+			if (timer) clearInterval(timer);
+			for (const [key, value] of Object.entries(savedEnv)) {
+				if (value === undefined) delete process.env[key]; else process.env[key] = value;
+			}
+			fs.rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	it("prefers a live nested async owner over its event projection without duplicate matches", () => {
