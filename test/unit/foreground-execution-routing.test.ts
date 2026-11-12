@@ -375,6 +375,45 @@ describe("runSync external maxRuntimeMs", () => {
 		assert.ok(removeListener.mock.calls.every(call => call.arguments[0] === "abort"));
 	});
 
+	for (const scenario of [
+		{ phase: "creation", stop: "cap" },
+		{ phase: "ready", stop: "cap" },
+		{ phase: "ready", stop: "caller" },
+	] as const) {
+		it(`normalizes admission refusal after external ${scenario.phase} fulfills following ${scenario.stop}`, async t => {
+			t.mock.timers.enable({ apis: ["setTimeout"] });
+			let now = 0;
+			const caller = new AbortController();
+			const h = dependencies(externalSelection);
+			h.deps.monotonicNow = () => now;
+			h.deps.createExternalOwner = async options => {
+				h.ownerOptions.push(options);
+				const stopDuringStartup = async () => {
+					if (scenario.stop === "caller") caller.abort();
+					now = 1000;
+					t.mock.timers.tick(1000);
+					assert.equal(options.signal.aborted, true);
+				};
+				if (scenario.phase === "creation") await stopDuringStartup();
+				else Object.defineProperty(h.owner, "ready", { get: stopDuringStartup });
+				return h.owner;
+			};
+			const output = await runSync("/runtime", [makeAgent("worker", { model: "one/model", fallbackModels: ["two/model"] })], "worker", "Task", {
+				runId: "external-startup-refusal", acceptance: noAcceptance, signal: caller.signal,
+				controlConfig: resolveControlConfig(undefined, { maxRuntimeMs: 1000 }),
+			}, h.deps);
+			assert.equal(output.exitCode, scenario.stop === "cap" ? 1 : 0);
+			assert.equal(output.error, scenario.stop === "cap" ? capError : undefined);
+			assert.equal(output.interrupted, scenario.stop === "cap" ? undefined : true);
+			assert.equal(output.modelAttempts, undefined);
+			assert.equal(h.ownerOptions.length, 1);
+			assert.equal(h.attempts.length, 0);
+			assert.equal(h.nativeCalls(), 0);
+			assert.deepEqual(h.finishes, ["retained"]);
+			assert.deepEqual(output.executionSurface, { handle, retained: true });
+		});
+	}
+
 	for (const phase of ["startup", "ready"] as const) it(`rewrites external ${phase} failure after the cap`, async t => {
 		t.mock.timers.enable({ apis: ["setTimeout"] });
 		let now = 0;

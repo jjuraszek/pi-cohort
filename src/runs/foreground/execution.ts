@@ -834,7 +834,10 @@ async function runOwnedSync(
 		let externalOwner: ExternalExecution | undefined;
 		const childId = `child-${options.index ?? 0}`;
 		const refused = refusedLaunch(agentName, task, options);
-		if (refused) return refused;
+		if (refused) {
+			rewriteCappedResult(refused);
+			return refused;
+		}
 		if (backendSelection.selection.kind === "external") {
 			try {
 				externalOwner = await (dependencies.createExternalOwner ?? createExternalExecution)({
@@ -856,7 +859,10 @@ async function runOwnedSync(
 		const modelsToTry = candidates.length > 0 ? candidates : [undefined];
 		if (!lastResult) for (let i = 0; i < modelsToTry.length; i++) {
 			lastResult = refusedLaunch(agentName, task, options);
-			if (lastResult) break;
+			if (lastResult) {
+				rewriteCappedResult(lastResult);
+				break;
+			}
 			const candidate = modelsToTry[i];
 			if (candidate) attemptedModels.push(candidate);
 			const outputSnapshot = captureSingleOutputSnapshot(options.outputPath);
