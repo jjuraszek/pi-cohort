@@ -256,7 +256,7 @@ describe("async status helpers", () => {
 			assert.equal(runs[0]?.steps[0]?.activityState, undefined);
 
 			const text = formatAsyncRunList(runs, "Paused async runs");
-			assert.match(text, /run-paused \| paused/);
+			assert.match(text, /run-pa \| paused/);
 			assert.match(text, /worker \| complete/);
 			assert.doesNotMatch(text, /paused\/paused/);
 		} finally {
@@ -344,13 +344,18 @@ describe("async status helpers", () => {
 				chainStepCount: 1,
 				parallelGroups: [{ start: 0, count: 3, stepIndex: 0 }],
 				steps: [
-					{ agent: "scout", status: "running", durationMs: 12_000 },
-					{ agent: "reviewer", status: "running", durationMs: 11_000 },
-					{ agent: "worker", status: "pending" },
+					{ id: "scout1-full", agent: "scout", label: "audit", status: "running", durationMs: 12_000 },
+					{ id: "review-full", agent: "reviewer", status: "running", durationMs: 11_000 },
+					{ id: "worker-full", agent: "worker", status: "pending" },
 				],
 			});
-			const text = formatAsyncRunList(listAsyncRuns(root, { states: ["running"] }));
-			assert.match(text, /run-parallel \| running .*\| parallel \| 2 agents running · 0\/3 done/);
+			const runs = listAsyncRuns(root, { states: ["running"] });
+			const text = formatAsyncRunList(runs);
+			assert.match(text, /^run-pa \| running .*\| parallel \| 2 agents running · 0\/3 done/m);
+			assert.match(text, /^  scout1 1\. scout - audit \| running/m);
+			assert.match(text, /^  review 2\. reviewer \| running/m);
+			assert.match(text, /^  worker 3\. worker \| pending/m);
+			assert.doesNotMatch(text, /scout1-full|review-full|worker-full/);
 			assert.doesNotMatch(text, /step 1\/1/);
 			assert.doesNotMatch(text, /parallel group/);
 		} finally {
@@ -377,7 +382,7 @@ describe("async status helpers", () => {
 				],
 			});
 			const text = formatAsyncRunList(listAsyncRuns(root, { states: ["failed"] }));
-			assert.match(text, /run-parallel-failed \| failed \| parallel \| 0\/3 done · 2 failed · 1 paused/);
+			assert.match(text, /run-pa \| failed \| parallel \| 0\/3 done · 2 failed · 1 paused/);
 			assert.doesNotMatch(text, /0 agents running/);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });

@@ -28,6 +28,8 @@ Implement-local Task 2 maintenance provenance: leg `jjuraszek/pi-cohort`, checko
 
 Implement-local Task 3 ownership maintenance provenance: leg `jjuraszek/pi-cohort`, checkout `/Users/jacek/repos/pi-cohort/.worktrees/gh-62-universal-child-stop-handle`, HEAD `9030d3027c22ff8373a69979fb3be78b7f903108`, initial status empty with no staged files; parent In-flight: none. Both committed home originals were read before edits with home-relative `HEAD:doc/plans/2026-11-11-gh-62-universal-child-stop-handle.md` and `HEAD:doc/specs/2026-11-11-gh-62-universal-child-stop-handle.md`. Admit only those spec/plan paths. Preserve the leg declaration and all six unchanged Tests command/baseline bullets byte-for-byte, including historical revisions and Task 5's pass-via suffix. No changed command or missing/invalid evidence requires execution; no tests, endpoint-tree equivalence, restamping or full refresh ran for this ownership clarification. Reported intermediate Task 3 evidence from `wave3-task3-retry1.md`: its exact unchanged Tests command exited 1, `tests 167`, `pass 161`, `fail 6`; five nested-control cases still send `targetRunId` to the already-migrated `targetId` protocol and one chain test expects the old run/index session name. The report identifies an isolated snapshot but no execution SHA; do not attribute its failure to this clean home HEAD or replace historical passing evidence with a fabricated measurement. These six failures have no resolving execution evidence and remain assigned to Task 3's existing implementation gate, with fixture, ownership and session-name repairs below. Completed Tasks 1-2, task titles, waves and historical evidence are preserved; their anchor shifts do not reopen them. Parent stamping, integrated tests, review and final verification remain mandatory.
 
+Implement-local Task 6 retained-widget amendment provenance: leg `jjuraszek/pi-cohort`, checkout `/Users/jacek/repos/pi-cohort/.worktrees/gh-62-universal-child-stop-handle`, execution revision `eb7e7e29080ead466397ef5721d4558e663b7c56` plus explicitly admitted staged repairs, not clean HEAD. Both committed home originals were read before edits with home-relative `HEAD:doc/plans/2026-11-11-gh-62-universal-child-stop-handle.md` and `HEAD:doc/specs/2026-11-11-gh-62-universal-child-stop-handle.md`. Initial and pre/post-run status inventories were identical: staged `M` on `src/runs/background/async-status.ts`, `src/runs/background/run-status.ts`, `src/runs/foreground/subagent-executor.ts`, `src/runs/shared/nested-render.ts`, `src/tui/render-helpers.ts`, `src/tui/render.ts`, `test/integration/async-status.test.ts`, `test/integration/render-widget.test.ts`, `test/unit/render-helpers.test.ts`, `test/unit/run-status.test.ts`, `test/unit/widget-nested-render.test.ts`. Admit these exact paths and the home spec/plan paths only; no unknown dirt, generated repository artifacts or moved HEAD appeared. Only the changed Task 6 Tests command ran: `env -u PI_CODING_AGENT_DIR node --import ./test/support/isolate-test-env.mjs --import ./test/support/register-loader.mjs --test test/unit/widget-nested-render.test.ts test/unit/render-helpers.test.ts test/unit/run-status.test.ts test/integration/render-widget.test.ts test/integration/async-status.test.ts test/integration/async-job-tracker.test.ts`, exact rather than derived, exit 0, 110 executed/passed, 0 failed/cancelled/skipped, 4667.758958 ms. Preserve the original leg declaration and all five unchanged command/baseline bullets byte-for-byte, including Task 5's pass-via suffix; no endpoint equivalence, restamping or full refresh. Historical Task 6 evidence remains its original 0/75 at `f67a5af`. This baseline precedes the new delivered-widget regressions and does not resolve the delivery gap evidenced at `src/runs/background/async-job-tracker.ts:39-40,113-118` and `src/extension/index.ts:518-520`; those repairs remain Task 6 work. Task 5 ownership and route semantics remain unchanged; all other task changes are anchor offsets only. Parent stamping, integrated tests, review and final verification remain mandatory.
+
 The scoped commands below use the package's isolated node:test runner; integration loading adds `register-loader.mjs`. `package.json` defines the full-suite entrypoint and shared AGENTS check; no linter or formatter is configured. Each code task reviews its own imports, tabs and neighboring TypeScript style and runs a scoped whitespace check before committing. Do not install a style tool. The full suite remains a later verify-phase gate, not a task command. All tests are local: no paid provider or external service is authorized.
 
 Rows and session names remain exactly six characters, including collisions, as the spec's approved default states. Completion alone extends to a shortest unique prefix. This is not a new unresolved decision. Task 7 follows the installed forge-skill authoring rules when editing the consumer skill: imperative voice and minimal targeted edits.
@@ -111,7 +113,7 @@ No release, package bump, backend protocol redesign, sibling changes or predeces
 Leg: jjuraszek/pi-cohort
 
 **TDD scenario:** Modifying tested code - run existing tests, add record regressions, implement, rerun.
-**Spec:** doc/specs/2026-11-11-gh-62-universal-child-stop-handle.md § "Inventory" L120, § "Inventory" L125-L127, § "Inventory" L133-L135, § "Inventory" L137, § "Inventory" L139-L141, § "Inventory" L147, § "Identity" L155-L159, § "Live records" L189-L200, § "Live records" L202, § "Tests" L313-L315, § "Acceptance criteria" L67-L72
+**Spec:** doc/specs/2026-11-11-gh-62-universal-child-stop-handle.md § "Inventory" L120, § "Inventory" L125-L127, § "Inventory" L133-L135, § "Inventory" L137, § "Inventory" L139-L141, § "Inventory" L147, § "Identity" L155-L159, § "Live records" L189-L200, § "Live records" L202, § "Tests" L315-L317, § "Acceptance criteria" L67-L72
 
 **Files:**
 - Modify: `src/shared/types.ts`
@@ -167,7 +169,7 @@ Depends on Wave 1: child identity exists before attempts are launched.
 Leg: jjuraszek/pi-cohort
 
 **TDD scenario:** Modifying tested code plus a new real-process regression.
-**Spec:** doc/specs/2026-11-11-gh-62-universal-child-stop-handle.md § "Inventory" L129, § "Inventory" L133-L135, § "Inventory" L144, § "Identity" L161, § "No zombies" L255-L257, § "Errors and edge cases" L299-L301, § "Tests" L315, § "Tests" L327-L329, § "Out of scope" L350
+**Spec:** doc/specs/2026-11-11-gh-62-universal-child-stop-handle.md § "Inventory" L129, § "Inventory" L133-L135, § "Inventory" L144, § "Identity" L161, § "No zombies" L257-L259, § "Errors and edge cases" L301-L303, § "Tests" L317, § "Tests" L329-L331, § "Out of scope" L352
 
 **Files:**
 - Modify: `src/runs/shared/pi-args.ts`
@@ -207,7 +209,7 @@ Follow-up ownership: Task 2 owns the required background-step id and complete-pa
 - [ ] With the local testkit assert owner socket close terminates an external attempt and explicit attempt interruption still uses `abort` then `shutdown`. Retain `backend.close(handle, "explicit_cleanup")` fallback. Task 4 tests child-id background routing; do not redesign `runChildHost` or the execution protocol.
 - [ ] Run Tests green; review imports/tabs and run `git diff --check -- src/runs/shared/pi-args.ts src/runs/shared/subagent-prompt-runtime.ts src/runs/foreground/execution.ts src/runs/foreground/external-single-attempt.ts src/runs/background/subagent-runner.ts src/shared/types.ts test/unit/pi-args.test.ts test/unit/subagent-prompt-runtime.test.ts test/unit/nested-events.test.ts test/integration/child-session-name.test.ts test/integration/foreground-external-execution.test.ts test/integration/owner-gone-exit.test.ts`. Stage these paths, including `src/shared/types.ts` and `test/unit/nested-events.test.ts`, preserving the existing staged wave repairs, and commit with `git commit -m "Exit native children when their owner disappears (#62)"`.
 
-Contract seams: `src/runs/shared/pi-args.ts:89-90`, `id: string`, `AgentProgress`, `SingleResult`, `AsyncStatus["steps"][number]`, `NestedStepSummary`, `label?: string`, `src/shared/types.ts`, `label`, `src/shared/types.ts:623`, `childId?: string`, `NestedPathEntry`, `NestedRunAddress.path`, `sanitizeNestedPath`, `encodeNestedPathEnv`, `parseNestedPathEnv`, `sanitizeInternalSummary`, `src/runs/shared/pi-args.ts:199-219`, `src/runs/foreground/external-single-attempt.ts:77`, `children: Map<string, { agent: string; label?: string; index: number; state: "pending" | "running" | "completed" | "failed" | "interrupted"; stopRequested?: true; interrupt?: () => boolean }>`, `childInterrupts`, `stopping?: true`, `src/runs/shared/pi-args.ts:144-146`, `executionBackend`, `auto`, `doc/configuration.md:150-161`, `src/runs/foreground/external-single-attempt.ts:77-113`, `src/runs/background/subagent-runner.ts:804, 956`, `src/execution-backend/child-host-runtime.ts:64`, `interruptSignal`, `src/runs/shared/external-execution.ts:275-336`, `test/unit/nested-events.test.ts`, `test/integration/background-external-execution.test.ts`. Accepted risks: pid reuse can evade death detection; Windows self-SIGTERM exits without cleanup.
+Contract seams: `src/runs/shared/pi-args.ts:89-90`, `id: string`, `AgentProgress`, `SingleResult`, `AsyncStatus["steps"][number]`, `NestedStepSummary`, `label?: string`, `src/shared/types.ts`, `label`, `src/shared/types.ts:623`, `childId?: string`, `NestedPathEntry`, `NestedRunAddress.path`, `sanitizeNestedPath`, `encodeNestedPathEnv`, `parseNestedPathEnv`, `sanitizeInternalSummary`, `src/runs/shared/pi-args.ts:199-219`, `src/runs/foreground/external-single-attempt.ts:77`, `children: Map<string, { agent: string; label?: string; index: number; state: "pending" | "running" | "completed" | "failed" | "interrupted"; stopRequested?: true; interrupt?: () => boolean }>`, `childInterrupts`, `stopping?: true`, `src/runs/shared/pi-args.ts:144-146`, `executionBackend`, `auto`, `doc/configuration.md:150-161`, `src/runs/foreground/external-single-attempt.ts:77-113`, `src/runs/background/subagent-runner.ts:804, 956`, `process.env`, `src/execution-backend/child-host-runtime.ts:64`, `interruptSignal`, `src/runs/shared/external-execution.ts:275-336`, `test/unit/nested-events.test.ts`, `test/integration/background-external-execution.test.ts`. Accepted risks: pid reuse can evade death detection; Windows self-SIGTERM exits without cleanup.
 
 ## Wave 3 - Foreground ownership and target resolution
 
@@ -217,7 +219,7 @@ Depends on Waves 1-2: records and spawn ancestry are available. Introduce the re
 Leg: jjuraszek/pi-cohort
 
 **TDD scenario:** Modifying tested code - migrate stop scenarios from indices to child ids.
-**Spec:** doc/specs/2026-11-11-gh-62-universal-child-stop-handle.md § "Inventory" L120, § "Inventory" L122-L124, § "Inventory" L133-L135, § "Inventory" L136-L138, § "Inventory" L142-L143, § "Inventory" L145, § "Inventory" L151, § "Identity" L161, § "Resolving a stop id" L206-L218, § "Resolving a stop id" L222, § "Stopping a target" L226-L247, § "No zombies" L253, § "No zombies" L259, § "Predecessor scope" L269, § "Paid or external actions" L273, § "Errors and edge cases" L277-L291, § "Errors and edge cases" L295, § "Errors and edge cases" L303-L304, § "Tests" L309-L312, § "Tests" L318-L320, § "Acceptance criteria" L80, § "Out of scope" L345
+**Spec:** doc/specs/2026-11-11-gh-62-universal-child-stop-handle.md § "Inventory" L120, § "Inventory" L122-L124, § "Inventory" L133-L135, § "Inventory" L136-L138, § "Inventory" L142-L143, § "Inventory" L145, § "Inventory" L151, § "Identity" L161, § "Resolving a stop id" L206-L218, § "Resolving a stop id" L224, § "Stopping a target" L228-L249, § "No zombies" L255, § "No zombies" L261, § "Predecessor scope" L271, § "Paid or external actions" L275, § "Errors and edge cases" L279-L293, § "Errors and edge cases" L297, § "Errors and edge cases" L305-L306, § "Tests" L311-L314, § "Tests" L320-L322, § "Acceptance criteria" L80, § "Out of scope" L347
 
 **Files:**
 - Create: `src/runs/shared/stop-control.ts`
@@ -273,7 +275,7 @@ Depends on Wave 3: consume its shared stop module and full-target request transp
 Leg: jjuraszek/pi-cohort
 
 **TDD scenario:** Modifying tested code - update request transport tests and add race regressions.
-**Spec:** doc/specs/2026-11-11-gh-62-universal-child-stop-handle.md § "Inventory" L122-L124, § "Inventory" L133-L135, § "Inventory" L136-L138, § "Inventory" L142-L143, § "Inventory" L145, § "Stopping a target" L226-L247, § "No zombies" L253, § "No zombies" L257, § "No zombies" L259, § "Predecessor scope" L269, § "Paid or external actions" L273, § "Errors and edge cases" L302-L304, § "Tests" L316, § "Tests" L329-L331, § "Out of scope" L347-L348
+**Spec:** doc/specs/2026-11-11-gh-62-universal-child-stop-handle.md § "Inventory" L122-L124, § "Inventory" L133-L135, § "Inventory" L136-L138, § "Inventory" L142-L143, § "Inventory" L145, § "Stopping a target" L228-L249, § "No zombies" L255, § "No zombies" L259, § "No zombies" L261, § "Predecessor scope" L271, § "Paid or external actions" L275, § "Errors and edge cases" L304-L306, § "Tests" L318, § "Tests" L331-L333, § "Out of scope" L349-L350
 
 **Files:**
 - Modify: `src/runs/background/subagent-runner.ts`
@@ -314,7 +316,7 @@ Depends on Waves 3-4: foreground/background targets share the resolver and stop 
 Leg: jjuraszek/pi-cohort
 
 **TDD scenario:** Modifying tested code - retain authorization and run-only status/resume semantics.
-**Spec:** doc/specs/2026-11-11-gh-62-universal-child-stop-handle.md § "Inventory" L121, § "Inventory" L136-L138, § "Inventory" L139-L141, § "Inventory" L148, § "Resolving a stop id" L206-L218, § "Resolving a stop id" L220, § "`/interrupt-child <id>`" L263-L265, § "Errors and edge cases" L277-L291, § "Errors and edge cases" L303-L304, § "Tests" L308, § "Tests" L314, § "Tests" L317, § "Tests" L321, § "Tests" L332, § "Out of scope" L345
+**Spec:** doc/specs/2026-11-11-gh-62-universal-child-stop-handle.md § "Inventory" L121, § "Inventory" L136-L138, § "Inventory" L139-L141, § "Inventory" L148, § "Resolving a stop id" L206-L218, § "Resolving a stop id" L220, § "`/interrupt-child <id>`" L265-L267, § "Errors and edge cases" L279-L293, § "Errors and edge cases" L305-L306, § "Tests" L310, § "Tests" L316, § "Tests" L319, § "Tests" L323, § "Tests" L334, § "Out of scope" L347
 
 **Files:**
 - Modify: `src/runs/background/run-id-resolver.ts`
@@ -324,7 +326,7 @@ Leg: jjuraszek/pi-cohort
 - Modify: `test/unit/run-id-resolver.test.ts`
 - Modify: `test/integration/async-job-tracker.test.ts`
 - Modify: `test/integration/slash-commands.test.ts`
-- Modify: `test/integration/indexed-interrupt-errors.test.ts`
+- Delete: `test/integration/indexed-interrupt-errors.test.ts`
 - Create: `test/integration/interrupt-id-errors.test.ts`
 - Test: `test/unit/run-id-resolver.test.ts`
 - Test: `test/integration/async-job-tracker.test.ts`
@@ -361,7 +363,7 @@ Depends on Waves 1 and 5: stable identity, projected children and retained route
 Leg: jjuraszek/pi-cohort
 
 **TDD scenario:** Modifying tested code - row-level assertions before rendering changes.
-**Spec:** doc/specs/2026-11-11-gh-62-universal-child-stop-handle.md § "Inventory" L125-L127, § "Inventory" L128, § "Inventory" L139-L141, § "Inventory" L146, § "Rows" L165, § "Rows" L176-L179, § "Rows" L181, § "Rows" L183, § "Rows" L185, § "Resolving a stop id" L220, § "Tests" L322-L326, § "Acceptance criteria" L67-L72
+**Spec:** doc/specs/2026-11-11-gh-62-universal-child-stop-handle.md § "Inventory" L125-L127, § "Inventory" L128, § "Inventory" L139-L141, § "Inventory" L146, § "Rows" L165, § "Rows" L176-L179, § "Rows" L181, § "Rows" L183, § "Rows" L185, § "Resolving a stop id" L220, § "Resolving a stop id" L222, § "Tests" L324-L328, § "Acceptance criteria" L67-L72
 
 **Files:**
 - Modify: `src/tui/render.ts`
@@ -370,33 +372,41 @@ Leg: jjuraszek/pi-cohort
 - Modify: `src/runs/background/run-status.ts`
 - Modify: `src/runs/background/async-status.ts`
 - Modify: `src/runs/foreground/subagent-executor.ts`
+- Modify: `src/runs/background/async-job-tracker.ts`
+- Modify: `src/extension/index.ts`
 - Modify: `test/unit/widget-nested-render.test.ts`
 - Modify: `test/unit/render-helpers.test.ts`
 - Modify: `test/unit/run-status.test.ts`
 - Modify: `test/integration/render-widget.test.ts`
 - Modify: `test/integration/async-status.test.ts`
+- Modify: `test/integration/async-job-tracker.test.ts`
 - Test: `test/unit/widget-nested-render.test.ts`
 - Test: `test/unit/render-helpers.test.ts`
 - Test: `test/unit/run-status.test.ts`
 - Test: `test/integration/render-widget.test.ts`
 - Test: `test/integration/async-status.test.ts`
+- Test: `test/integration/async-job-tracker.test.ts`
 
 **Tests:**
-- `env -u PI_CODING_AGENT_DIR node --import ./test/support/isolate-test-env.mjs --import ./test/support/register-loader.mjs --test test/unit/widget-nested-render.test.ts test/unit/render-helpers.test.ts test/unit/run-status.test.ts test/integration/render-widget.test.ts test/integration/async-status.test.ts`
-- baseline: f67a5af pass
-- via: `renderSubagentResult`, `renderSingleCompact`, `renderMultiCompact`, `formatNestedWidgetLines`, `fitWidgetLineBudget`, `formatNestedRunLines`, `formatRunHeader`, `formatStepLine`, `stepLineLabel`
+- `env -u PI_CODING_AGENT_DIR node --import ./test/support/isolate-test-env.mjs --import ./test/support/register-loader.mjs --test test/unit/widget-nested-render.test.ts test/unit/render-helpers.test.ts test/unit/run-status.test.ts test/integration/render-widget.test.ts test/integration/async-status.test.ts test/integration/async-job-tracker.test.ts`
+- baseline: eb7e7e29080ead466397ef5721d4558e663b7c56 pass
+- via: `renderSubagentResult`, `renderSingleCompact`, `renderMultiCompact`, `formatNestedWidgetLines`, `fitWidgetLineBudget`, `formatNestedRunLines`, `formatRunHeader`, `formatStepLine`, `stepLineLabel`, `createAsyncJobTracker`, `renderWidget`, `tool_result`
 
 Decision: distinguish row metadata from detail text in builders, not regex-parsing rendered strings. Budgets may remove details and settled-only rows, not live rows. Exactly six characters applies even to settled/colliding ids.
+
+Decision: Task 6 owns retained-root widget delivery as well as rendering. The tracker already projects and prunes authorized retained routes at `src/runs/background/async-job-tracker.ts:113-118`, but `rerenderWidget` at `:39-40` passes jobs alone; `src/extension/index.ts:518-520` also gates on jobs and refreshes jobs alone. Feed retained-root projections through those existing delivery paths without changing Task 5's route lifetime, resolution, process-created authorization or polling startup. Reuse the existing widget builders and cadence, not a new poller or route registry.
 
 - [ ] Run Tests. Add exact first-token assertions for single/tasks/chain outputs with one/two foreground runs, live/pending/settled rows, nested/widget/status surfaces and no full UUID. Title/detail lines receive no stop token.
 - [ ] Add live/result label tests for all five shapes, dynamic interpolation and group-label separation. Cover deeper than two levels/twelve lines, detail-before-settled folding and more live rows than budget. Preserve collapsed counts.
 - [ ] Add in-flight foreground `onUpdate` test, attachment by last ancestry child id, changes before settlement and no polling after return. Run new tests red.
+- [ ] Add delivered-widget regressions in `test/integration/async-job-tracker.test.ts` using `createUiContext` and the registered extension callbacks: inspect rows rendered from the component captured by `setWidget`, not only route maps or render-request counts. A returned root with live descendants must render when `asyncJobs` is empty, with the root's own six-character run-id prefix and each live nested run/child's own prefix. Add a descendant and change its state through nested events; wait for the cadence and assert changed rows are delivered. Add a second retained root and a tracked job; assert coexistence and that invoking the registered `tool_result` handler preserves retained rows, including a retained-only refresh. Settle the first root's last live descendant and assert only that root disappears, then settle the second while the tracked job remains and assert the widget is not cleared; remove the last displayable job and assert the widget clears. Also cover final retained-only settlement clearing the widget. Keep expanded-view/folding and collapsed-count assertions; run Tests red before wiring delivery.
 - [ ] Add foreground `POLL_INTERVAL_MS` projection timer (250 ms), call `updateForegroundNestedProjection`, attach runs to `AgentProgress.children` by `childId`, call `onUpdate` on attached row addition/state change. Stop in finally and retain settle-point projection/final rows. Publication stays owner-driven.
 - [ ] Prefix rows with six id characters then one space. List bullet `- ` is indentation; nested indentation precedes id and the existing `↳` visual marker follows it. Single-agent header is child row; multi-child header is run row. Keep `Agent n/m`/`Step n` as descriptive numbering only.
 - [ ] Update `foregroundStyleWidgetStepLines`, compact rows, `buildSingleWidgetLines`, `widgetChainDetails`, nested run/step renderers and status labels. Title `async subagent ...` is not a row; glyph/mode status line is. Remove bracketed/full run ids and label-first status form; print agent then label, for example `scout - audit auth`.
 - [ ] Builders pass rows/details apart instead of flat `string[]`. Fold details first then settled rows; retain settled ancestors with live descendants and all live rows even above budget. Keep metadata caps/collapsed counts. Expanded foreground draws nested rows; collapsed foreground does not.
 - [ ] Render retained roots as run rows with live nested rows using Task 5 routes. Every row uses its own run/child id, not parent token.
-- [ ] Run Tests green; review style and scoped `git diff --check` over owned paths. Stage explicitly and commit with `git commit -m "Show stop ids on every live and settled child row (#62)"`.
+- [ ] In `src/runs/background/async-job-tracker.ts`, deliver the current retained-root projections alongside jobs through `rerenderWidget` on the existing cadence and every immediate refresh/cleanup path. Detect retained-root additions, visible descendant additions/state changes and removals independently of async job changes; retained-only polling must redraw instead of falling through an unchanged job loop. Preserve existing route projection/pruning, inventory updates, authorization and poller startup. In `src/extension/index.ts`, pass the same retained-root display input during `tool_result` refresh even when no tracked jobs exist, so a jobs-only refresh cannot erase retained roots. Extend `renderWidget` and its builders in `src/tui/render.ts` to consume that input and clear only when neither displayable jobs nor retained roots remain. Keep each root's own six-character run-id prefix, nested run/child rows, expanded-view rules, folding rules and collapsed counts; do not reopen Task 5 or alter resolution/route lifetime.
+- [ ] Run Tests green; review style and scoped `git diff --check` over owned paths, including `src/runs/background/async-job-tracker.ts`, `src/extension/index.ts` and `test/integration/async-job-tracker.test.ts`. Stage explicitly and commit with `git commit -m "Show stop ids on every live and settled child row (#62)"`.
 
 Anchored seams: `src/tui/render.ts`, `:767-806`, `:900-912`, `src/runs/shared/nested-render.ts`, `maxDepth`, `maxLines`, `:70-106`, `src/runs/foreground/subagent-executor.ts:251`, `src/runs/background/run-status.ts:234, 240`, `src/runs/background/async-status.ts:354, 358`, `src/runs/shared/nested-events.ts`, `MAX_DEPTH`, `:170, 232, 262, 291`, `MAX_STEPS`, `:251, 872`, `MAX_CHILDREN`, `:232, 291, 384, 396, 804`, `agents`, `:274`, `MAX_NESTED_PATH_ENTRIES`, `sanitizeNestedPath`, `src/runs/shared/nested-path.ts:4, 26-37`, `steps`, `src/runs/shared/nested-events.ts:249-252, 857-872`, `src/runs/foreground/subagent-executor.ts:2476-2533`, `### Live records`, `src/runs/shared/nested-render.ts:88`, `src/runs/background/async-status.ts:339-344`, `src/runs/background/async-status.ts:301`, `src/runs/background/run-status.ts:231`, `subagent.nested.child`, `children?: NestedRunSummary[]`, `AgentProgress`, `### Rows`, `retainedNestedRoutes`, `SubagentState`, `### Resolving a stop id`, `src/runs/background/run-status.ts:52-62`, `src/runs/background/async-status.ts`, `src/tui/render.ts:874-875`, `AsyncJobState`, `nestedChildren`, `status`, `src/runs/foreground/subagent-executor.ts:239, 1283, 1840, 1873, 2117, 2147`, `src/runs/shared/nested-events.ts:815-819`, `src/shared/types.ts:979`, `children`, `src/runs/foreground/subagent-executor.ts:2561-2568`, `src/runs/background/async-execution.ts:433`, `src/runs/background/async-job-tracker.ts:236-259`, `hasLiveNestedDescendants`, `src/runs/shared/nested-events.ts:821-829`, `tasks[]`, `parallel`, `label`, `test/unit/schemas.test.ts`.
 
@@ -408,7 +418,7 @@ Depends on Waves 1-6: describe delivered behavior. Dedicated doc-only wave, with
 Leg: jjuraszek/pi-cohort
 
 **TDD scenario:** Trivial change - doc contract review; no executable code.
-**Spec:** doc/specs/2026-11-11-gh-62-universal-child-stop-handle.md § "Inventory" L149, § "Predecessor scope" L269, § "Documentation impact" L338
+**Spec:** doc/specs/2026-11-11-gh-62-universal-child-stop-handle.md § "Inventory" L149, § "Predecessor scope" L271, § "Documentation impact" L340
 
 **Files:**
 - Modify: `README.md`
@@ -490,52 +500,56 @@ Anchored vocabulary: `label`, `doc/specs/2026-11-10-gh-58-interrupt-one-parallel
 | § "Resolving a stop id" L206-L218 | Directory-name runs, lazy mtime child inventory, terminal read once and tracker feed | Task 3, Task 5 |
 | § "Resolving a stop id" L220 | Retain own live routes after root return, cadence reprojection and terminal cleanup | Task 5 |
 | § "Resolving a stop id" L220 | Retained routes feed resolution/completion/sweep and widget rows | Task 5, Task 6 |
-| § "Resolving a stop id" L222 | Bare interrupt selects current foreground or existing background run fallback | Task 3 |
-| § "Stopping a target" L226-L247 | Owner route priority; background targets never use inbox | Task 3, Task 4 |
-| § "Stopping a target" L226-L247 | Valid request required for runner signal; target/run identity determines scope | Task 3, Task 4 |
-| § "Stopping a target" L226-L247 | Owner-only inbox request handling and caller-specific timeout cleanup | Task 3 |
-| § "Stopping a target" L226-L247 | All owner stop causes close admission, signal, sweep then answer | Task 3, Task 4 |
-| § "Stopping a target" L226-L247 | Run stop blocks queued/later work, foreground queued interruption versus background pending/paused | Task 3, Task 4 |
-| § "Stopping a target" L226-L247 | Targeted flags, whole-run all-child signalling, pre-callback latch | Task 3, Task 4 |
-| § "Stopping a target" L226-L247 | Reply failure/deadline never undoes teardown; retry reply without repeated signal | Task 3 |
-| § "Stopping a target" L226-L247 | Sibling outputs and targeted results differ from run stop even after three child stops | Task 3, Task 4 |
-| § "No zombies" L253 | Own-run/full-ancestry admission at launch and runner startup; refusal/paused behavior | Task 3, Task 4 |
-| § "No zombies" L253 | Publish before launch check, prevent late launch races, isolate siblings and allow new-run revival | Task 3, Task 4 |
-| § "No zombies" L255-L257 | Native owner watch, unref poll and forced exit; detached runners excluded; Task 2 keeps the armed deadline through hung session shutdown (F1 follow-up) | Task 2 |
-| § "No zombies" L255-L257 | External empty env masks inheritance; socket ownership and native descendants in local namespace | Task 2 |
-| § "No zombies" L257 | External interrupt channel and explicit cleanup; descendant sweep still applies | Task 4 |
-| § "No zombies" L259 | One post-record sweep sees every queued/running matching detached descendant; queued startup handles no pid | Task 3, Task 4 |
-| § "`/interrupt-child <id>`" L263-L265 | Exactly one token through slash bridge and notifications; no-foreground background reach | Task 5 |
-| § "`/interrupt-child <id>`" L263-L265 | Session-only running completion from memory; global namespace uniqueness and no full UUID | Task 5 |
-| § "Predecessor scope" L269 | Replace stop-address contract but retain sibling/group result contract | Task 3, Task 4, Task 7 |
-| § "Paid or external actions" L273 | Local mock/process/testkit only; no paid or external action | Task 3, Task 4 |
-| § "Errors and edge cases" L277-L291 | Reject before signalling; short/no-match errors preserve typed token and running alternatives | Task 3, Task 5 |
-| § "Errors and edge cases" L277-L291 | Ambiguity lists distinct target kinds and discriminating prefixes, not route kinds | Task 3, Task 5 |
-| § "Errors and edge cases" L277-L291 | Pending rejection, settled-state mappings, missing foreground record and unchanged resume | Task 3, Task 5 |
-| § "Errors and edge cases" L277-L291 | Obsolete index rejection, slash usage and missing live runner error | Task 3, Task 5 |
-| § "Errors and edge cases" L295 | Inbox deadline is unconfirmed, removes own request and never falls back to another signal | Task 3 |
-| § "Errors and edge cases" L299-L301 | Unknown liveness lives; pid reuse accepted; Windows exits without cleanup | Task 2 |
-| § "Errors and edge cases" L302-L304 | Crash-surviving background work stays; stop-time launch races do not | Task 4 |
-| § "Errors and edge cases" L303-L304 | Repeated stopping request accepted without signal; after settlement terminal error | Task 3, Task 5 |
-| § "Errors and edge cases" L302-L304 | Runner duplicate stop is idempotent | Task 4 |
-| § "Errors and edge cases" L303-L304 | Full UUIDs distinct; shared six-character prefix remains ambiguous | Task 3, Task 5 |
-| § "Tests" L308 | Resolver, mixed registry and terminal inventory read-count regressions | Task 5 |
-| § "Tests" L309-L312 | Two-owner nested stop, parent outputs, late/failed reply and real headless publication tests | Task 3 |
-| § "Tests" L313-L315 | Deep live records, 17 large children, ordering and complete ancestry round-trip | Task 1 |
-| § "Tests" L314 | All 17 projected child ids resolve and target their own controls | Task 5 |
-| § "Tests" L315 | Native env carries six ancestry entries intact; Task 2 also asserts sanitizeSummary preserves the complete child-bearing path through sanitizeInternalSummary | Task 2 |
-| § "Tests" L316 | Five-level target and seventeen siblings with detached subtree isolation | Task 4 |
-| § "Tests" L317 | Rename positional error suite and cover no-side-effect lifecycle errors | Task 5 |
-| § "Tests" L318-L320 | Foreground target/run/bare/all-child stops, callback race, concurrency/abort and chain groups | Task 3 |
-| § "Tests" L321 | Slash bridge blocked caller, usage and global-unique/session-local completion | Task 5 |
-| § "Tests" L322-L326 | Row/label matrices, deep folding, in-flight foreground updates and status text | Task 6 |
-| § "Tests" L327-L329 | Child env/name, real owner-death chain and external ownership regressions; invoke session_shutdown after owner death with shutdown hung to prove forced exit (F1) | Task 2 |
-| § "Tests" L329-L331 | Background external channel, all-child signal, pending suppression, signal-without-file and admission races | Task 4 |
-| § "Tests" L332 | Retained routes survive return and disappear only after no live descendants | Task 5 |
-| § "Documentation impact" L338 | README environment/session/stops, commands, renamed API anchors, labels and breaking changelog | Task 7 |
-| § "Out of scope" L345 | Preserve resume index and Revive child | Task 3, Task 5 |
-| § "Out of scope" L346 | No new teardown of tool-spawned OS processes | waived: excluded by spec |
-| § "Out of scope" L347-L348 | Crash survivors remain; pending child cannot be individually cancelled | Task 4 |
-| § "Out of scope" L349 | Gauntlet labels and wave policy remain sibling follow-up | waived: excluded by spec |
-| § "Out of scope" L350 | Backend child correlation unchanged | Task 2 |
-| § "Out of scope" L351 | No positional stop follow-up; replaced by child-id rule | waived: obsolete address excluded by spec |
+| § "Resolving a stop id" L222 | Task 6 owns tracker, extension refresh and tracker regression file alongside rendering; scoped Tests includes tracker regressions | Task 6 |
+| § "Resolving a stop id" L222 | Deliver retained-root projections on cadence and tool_result with no jobs; additions, descendant changes and removals redraw; jobs-only refresh never erases roots | Task 6 |
+| § "Resolving a stop id" L222 | Root and nested rows keep own six-character ids, folding/expanded rules and collapsed counts; preserve process-created authorization, polling startup and Task 5 lifetime/resolution | Task 6 |
+| § "Resolving a stop id" L222 | UI-context delivered-row regressions prove retained-only display, descendant redraws, coexistence, refresh survival, selective removal and final empty clearing | Task 6 |
+| § "Resolving a stop id" L224 | Bare interrupt selects current foreground or existing background run fallback | Task 3 |
+| § "Stopping a target" L228-L249 | Owner route priority; background targets never use inbox | Task 3, Task 4 |
+| § "Stopping a target" L228-L249 | Valid request required for runner signal; target/run identity determines scope | Task 3, Task 4 |
+| § "Stopping a target" L228-L249 | Owner-only inbox request handling and caller-specific timeout cleanup | Task 3 |
+| § "Stopping a target" L228-L249 | All owner stop causes close admission, signal, sweep then answer | Task 3, Task 4 |
+| § "Stopping a target" L228-L249 | Run stop blocks queued/later work, foreground queued interruption versus background pending/paused | Task 3, Task 4 |
+| § "Stopping a target" L228-L249 | Targeted flags, whole-run all-child signalling, pre-callback latch | Task 3, Task 4 |
+| § "Stopping a target" L228-L249 | Reply failure/deadline never undoes teardown; retry reply without repeated signal | Task 3 |
+| § "Stopping a target" L228-L249 | Sibling outputs and targeted results differ from run stop even after three child stops | Task 3, Task 4 |
+| § "No zombies" L255 | Own-run/full-ancestry admission at launch and runner startup; refusal/paused behavior | Task 3, Task 4 |
+| § "No zombies" L255 | Publish before launch check, prevent late launch races, isolate siblings and allow new-run revival | Task 3, Task 4 |
+| § "No zombies" L257-L259 | Native owner watch, unref poll and forced exit; detached runners excluded; Task 2 keeps the armed deadline through hung session shutdown (F1 follow-up) | Task 2 |
+| § "No zombies" L257-L259 | External empty env masks inheritance; socket ownership and native descendants in local namespace | Task 2 |
+| § "No zombies" L259 | External interrupt channel and explicit cleanup; descendant sweep still applies | Task 4 |
+| § "No zombies" L261 | One post-record sweep sees every queued/running matching detached descendant; queued startup handles no pid | Task 3, Task 4 |
+| § "`/interrupt-child <id>`" L265-L267 | Exactly one token through slash bridge and notifications; no-foreground background reach | Task 5 |
+| § "`/interrupt-child <id>`" L265-L267 | Session-only running completion from memory; global namespace uniqueness and no full UUID | Task 5 |
+| § "Predecessor scope" L271 | Replace stop-address contract but retain sibling/group result contract | Task 3, Task 4, Task 7 |
+| § "Paid or external actions" L275 | Local mock/process/testkit only; no paid or external action | Task 3, Task 4 |
+| § "Errors and edge cases" L279-L293 | Reject before signalling; short/no-match errors preserve typed token and running alternatives | Task 3, Task 5 |
+| § "Errors and edge cases" L279-L293 | Ambiguity lists distinct target kinds and discriminating prefixes, not route kinds | Task 3, Task 5 |
+| § "Errors and edge cases" L279-L293 | Pending rejection, settled-state mappings, missing foreground record and unchanged resume | Task 3, Task 5 |
+| § "Errors and edge cases" L279-L293 | Obsolete index rejection, slash usage and missing live runner error | Task 3, Task 5 |
+| § "Errors and edge cases" L297 | Inbox deadline is unconfirmed, removes own request and never falls back to another signal | Task 3 |
+| § "Errors and edge cases" L301-L303 | Unknown liveness lives; pid reuse accepted; Windows exits without cleanup | Task 2 |
+| § "Errors and edge cases" L304-L306 | Crash-surviving background work stays; stop-time launch races do not | Task 4 |
+| § "Errors and edge cases" L305-L306 | Repeated stopping request accepted without signal; after settlement terminal error | Task 3, Task 5 |
+| § "Errors and edge cases" L304-L306 | Runner duplicate stop is idempotent | Task 4 |
+| § "Errors and edge cases" L305-L306 | Full UUIDs distinct; shared six-character prefix remains ambiguous | Task 3, Task 5 |
+| § "Tests" L310 | Resolver, mixed registry and terminal inventory read-count regressions | Task 5 |
+| § "Tests" L311-L314 | Two-owner nested stop, parent outputs, late/failed reply and real headless publication tests | Task 3 |
+| § "Tests" L315-L317 | Deep live records, 17 large children, ordering and complete ancestry round-trip | Task 1 |
+| § "Tests" L316 | All 17 projected child ids resolve and target their own controls | Task 5 |
+| § "Tests" L317 | Native env carries six ancestry entries intact; Task 2 also asserts sanitizeSummary preserves the complete child-bearing path through sanitizeInternalSummary | Task 2 |
+| § "Tests" L318 | Five-level target and seventeen siblings with detached subtree isolation | Task 4 |
+| § "Tests" L319 | Rename positional error suite and cover no-side-effect lifecycle errors | Task 5 |
+| § "Tests" L320-L322 | Foreground target/run/bare/all-child stops, callback race, concurrency/abort and chain groups | Task 3 |
+| § "Tests" L323 | Slash bridge blocked caller, usage and global-unique/session-local completion | Task 5 |
+| § "Tests" L324-L328 | Row/label matrices, deep folding, in-flight foreground updates and status text | Task 6 |
+| § "Tests" L329-L331 | Child env/name, real owner-death chain and external ownership regressions; invoke session_shutdown after owner death with shutdown hung to prove forced exit (F1) | Task 2 |
+| § "Tests" L331-L333 | Background external channel, all-child signal, pending suppression, signal-without-file and admission races | Task 4 |
+| § "Tests" L334 | Retained routes survive return and disappear only after no live descendants | Task 5 |
+| § "Documentation impact" L340 | README environment/session/stops, commands, renamed API anchors, labels and breaking changelog | Task 7 |
+| § "Out of scope" L347 | Preserve resume index and Revive child | Task 3, Task 5 |
+| § "Out of scope" L348 | No new teardown of tool-spawned OS processes | waived: excluded by spec |
+| § "Out of scope" L349-L350 | Crash survivors remain; pending child cannot be individually cancelled | Task 4 |
+| § "Out of scope" L351 | Gauntlet labels and wave policy remain sibling follow-up | waived: excluded by spec |
+| § "Out of scope" L352 | Backend child correlation unchanged | Task 2 |
+| § "Out of scope" L353 | No positional stop follow-up; replaced by child-id rule | waived: obsolete address excluded by spec |

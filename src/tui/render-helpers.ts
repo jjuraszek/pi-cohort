@@ -35,6 +35,33 @@ export function pad(s: string, len: number): string {
 	return s + " ".repeat(Math.max(0, len - vis));
 }
 
+export type RenderLine = { text: string; kind: "detail" | "settled" | "live" };
+
+export function detailLine(text: string): RenderLine {
+	return { text, kind: "detail" };
+}
+
+export function targetLine(text: string, live: boolean): RenderLine {
+	return { text, kind: live ? "live" : "settled" };
+}
+
+export function budgetLines(lines: RenderLine[], budget: number): RenderLine[] {
+	let excess = Math.max(0, lines.length - budget);
+	const removed = new Set<number>();
+	for (const kind of ["detail", "settled"] as const) {
+		for (let index = lines.length - 1; index >= 0 && excess > 0; index--) {
+			if (lines[index]!.kind !== kind) continue;
+			removed.add(index);
+			excess--;
+		}
+	}
+	return lines.filter((_, index) => !removed.has(index));
+}
+
+export function stopId(id: string | undefined): string {
+	return id?.slice(0, 6) ?? "";
+}
+
 export function row(content: string, width: number, theme: Theme): string {
 	const innerW = width - 2;
 	const singleLine = content.replace(/[\r\n]+/g, " ").replace(/\t/g, "  ");

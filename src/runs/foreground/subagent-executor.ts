@@ -14,6 +14,7 @@ import { resolveExecutionAgentScope } from "../../agents/agent-scope.ts";
 import { handleManagementAction } from "../../agents/agent-management.ts";
 import { buildDoctorReport } from "../../extension/doctor.ts";
 import { clearPendingForegroundControlNotices } from "../../extension/control-notices.ts";
+import { POLL_INTERVAL_MS } from "../../shared/types.ts";
 import { runSync } from "./execution.ts";
 import { formatInterruptedCleanup } from "../../shared/formatters.ts";
 import { recordSyncCost, renderGrandTotal, sumNestedCost } from "../../extension/grand-total.ts";
@@ -243,12 +244,14 @@ function foregroundStatusResult(control: SubagentState["foregroundControls"] ext
 	}
 	const activity = formatForegroundActivity(control);
 	const lines = [
+		`${control.runId.slice(0, 6)} ${control.mode} running`,
 		`Run: ${control.runId}`,
 		"State: running",
 		`Mode: ${control.mode}`,
 		control.currentAgent ? `Current: ${control.currentAgent}${control.currentIndex !== undefined ? ` step ${control.currentIndex + 1}` : ""}` : undefined,
 		activity ? `Activity: ${activity}` : undefined,
 	].filter((line): line is string => Boolean(line));
+	for (const child of control.children.values()) lines.push(`${child.id.slice(0, 6)} ${child.agent}${child.label ? ` - ${child.label}` : ""} ${child.state}`);
 	lines.push(...formatNestedRunStatusLines(control.nestedChildren, { indent: "", commandHints: true, maxLines: 20 }));
 	if (nestedWarning) lines.push(`Warning: ${nestedWarning}`);
 	return { content: [{ type: "text", text: lines.join("\n") }], details: { mode: "management", results: [] } };
@@ -2351,8 +2354,36 @@ export function createSubagentExecutor(services: ExecutorDeps): {
 		const childSessionFileForIndex = (idx: number, cwd: string) =>
 			sessionFileForIndex(idx, cwd) ?? path.join(sessionDirForIndex(idx), "session.jsonl");
 
+		let latestUpdate: AgentToolResult<Details> | undefined;
+		const projectUpdate = (update: AgentToolResult<Details>, settled = false): AgentToolResult<Details> => {
+			if (!update.details || !foregroundControl) return update;
+			const details = { ...update.details, runId };
+			const childrenFor = (id: string) => (foregroundControl.nestedChildren ?? []).filter((child) => child.path?.at(-1)?.childId === id);
+			const progress = new Map((details.progress ?? []).map((entry) => [entry.id, { ...entry, children: childrenFor(entry.id) }]));
+			for (const [id, child] of foregroundControl.children) {
+				if (child.state === "pending" && !progress.has(id)) {
+					progress.set(id, { id, label: child.label, index: child.index, agent: child.agent, status: "pending", task: "", toolCount: 0, tokens: 0, durationMs: 0, children: childrenFor(id) });
+				}
+			}
+			details.progress = [...progress.values()];
+			details.results = details.results.map((result, index) => {
+				const current = result.progress ?? progress.get(result.id) ?? latestUpdate?.details?.results.find((entry) => entry.id === result.id)?.progress;
+				const projected = {
+					id: result.id, index, agent: result.agent, task: result.task, toolCount: 0, tokens: 0, durationMs: 0,
+					...current,
+					status: settled ? (result.exitCode === 0 && !result.interrupted ? "completed" as const : "failed" as const) : current?.status ?? "running" as const,
+					children: childrenFor(result.id),
+				};
+				return { ...result, progress: projected };
+			});
+			return { ...update, details };
+		};
 		const onUpdateWithContext = onUpdate
-			? (r: AgentToolResult<Details>) => onUpdate(withForkContext(r, effectiveParams.context))
+			? (update: AgentToolResult<Details>) => {
+				latestUpdate = update;
+				if (foregroundControl) updateForegroundNestedProjection(foregroundControl);
+				onUpdate(withForkContext(projectUpdate(update), effectiveParams.context));
+			}
 			: undefined;
 
 		const execData: ExecutionContextData = {
@@ -2462,6 +2493,20 @@ export function createSubagentExecutor(services: ExecutorDeps): {
 		if (signal?.aborted) stopOnAbort();
 		else signal?.addEventListener("abort", stopOnAbort, { once: true });
 		let nestedForegroundStarted = false;
+		const nestedProjectionTimer = foregroundControl ? setInterval(() => {
+			const previous = JSON.stringify(foregroundControl.nestedChildren);
+			try {
+				updateForegroundNestedProjection(foregroundControl);
+			} catch (error) {
+				console.error("Failed to refresh nested foreground status:", error);
+				return;
+			}
+			updateNestedStopInventory(foregroundControl.nestedRoute!, foregroundControl.nestedChildren ?? []);
+			if (latestUpdate && onUpdate && JSON.stringify(foregroundControl.nestedChildren) !== previous) {
+				onUpdate(withForkContext(projectUpdate(latestUpdate), effectiveParams.context));
+			}
+		}, POLL_INTERVAL_MS) : undefined;
+		nestedProjectionTimer?.unref();
 		try {
 			const asyncResult = runAsyncPath(execData, deps);
 			if (asyncResult) return withForkContext(asyncResult, effectiveParams.context);
@@ -2469,26 +2514,31 @@ export function createSubagentExecutor(services: ExecutorDeps): {
 				writeNestedForegroundEvent("subagent.nested.started");
 				nestedForegroundStarted = true;
 			}
+			const finish = (result: AgentToolResult<Details>) => {
+				if (foregroundControl) updateForegroundNestedProjection(foregroundControl);
+				return withForkContext(projectUpdate(result, true), effectiveParams.context);
+			};
 			if (hasChain && effectiveParams.chain) {
 				const result = await runChainPath(execData, deps);
 				writeNestedForegroundEvent("subagent.nested.completed", result);
-				return withForkContext(result, effectiveParams.context);
+				return finish(result);
 			}
 			if (hasTasks && effectiveParams.tasks) {
 				const result = await runParallelPath(execData, deps);
 				writeNestedForegroundEvent("subagent.nested.completed", result);
-				return withForkContext(result, effectiveParams.context);
+				return finish(result);
 			}
 			if (hasSingle) {
 				const result = await runSinglePath(execData, deps);
 				writeNestedForegroundEvent("subagent.nested.completed", result);
-				return withForkContext(result, effectiveParams.context);
+				return finish(result);
 			}
 		} catch (error) {
 			const errorResult = toExecutionErrorResult(effectiveParams, error);
 			if (nestedForegroundStarted) writeNestedForegroundEvent("subagent.nested.completed", errorResult);
 			return errorResult;
 		} finally {
+			if (nestedProjectionTimer) clearInterval(nestedProjectionTimer);
 			signal?.removeEventListener("abort", stopOnAbort);
 			if (foregroundControl) {
 				clearPendingForegroundControlNotices(deps.state, runId);

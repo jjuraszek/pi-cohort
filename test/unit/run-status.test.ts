@@ -261,7 +261,7 @@ describe("async run status inspection", () => {
 			const text = textContent(result);
 			assert.equal(result.isError, undefined);
 			assert.match(text, /Step 1: orchestrator running/);
-			assert.match(text, /↳ reviewer \[nested-status-child\] running \| tool read/);
+			assert.match(text, /nested ↳ reviewer running \| tool read/);
 			assert.match(text, /Status: subagent\(\{ action: "status", id: "nested-status-child" \}\)/);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
@@ -294,7 +294,7 @@ describe("async run status inspection", () => {
 				pid: 54321,
 				startedAt: 150,
 				lastUpdate: 150,
-				steps: [{ agent: "reviewer", status: "running", startedAt: 150 }],
+				steps: [{ id: "review-child", agent: "reviewer", status: "running", startedAt: 150 }],
 			}, null, 2), "utf-8");
 			writeNestedEvent(route, {
 				type: "subagent.nested.updated",
@@ -324,7 +324,7 @@ describe("async run status inspection", () => {
 
 			const text = textContent(result);
 			assert.equal(result.isError, undefined);
-			assert.match(text, /↳ reviewer \[nested-stale\] failed/);
+			assert.match(text, /nested ↳ reviewer failed/);
 			assert.match(text, /1\. reviewer failed \| error: Async runner process 54321 exited or disappeared/);
 			assert.ok(fs.existsSync(path.join(resultsDir, "nested", "run-stale-nested-root", "nested-stale.json")));
 		} finally {
@@ -410,7 +410,7 @@ describe("async run status inspection", () => {
 					state: "running",
 					mode: "single",
 					agent: "validator",
-					steps: [{ agent: "leaf", status: "running", currentTool: "grep" }],
+					steps: [{ id: "leaf01-child", agent: "leaf", status: "running", currentTool: "grep" }],
 					lastUpdate: 150,
 				},
 			});
@@ -514,10 +514,10 @@ describe("async run status inspection", () => {
 				chainStepCount: 3,
 				parallelGroups: [{ start: 1, count: 2, stepIndex: 1 }],
 				steps: [
-					{ agent: "scout", status: "complete", startedAt: 100 },
-					{ agent: "reviewer", status: "running", startedAt: 100 },
-					{ agent: "auditor", status: "pending" },
-					{ agent: "writer", status: "pending" },
+					{ id: "scout1-full", agent: "scout", label: "prepare", status: "complete", startedAt: 100 },
+					{ id: "review-full", agent: "reviewer", label: "audit", status: "running", startedAt: 100 },
+					{ id: "audit1-full", agent: "auditor", status: "pending" },
+					{ id: "write1-full", agent: "writer", status: "pending" },
 				],
 			}, null, 2), "utf-8");
 
@@ -529,10 +529,12 @@ describe("async run status inspection", () => {
 			});
 
 			const text = textContent(result);
-			assert.match(text, /Step 1\/3: scout complete/);
-			assert.match(text, /Step 2\/3 Agent 1\/2: reviewer running/);
-			assert.match(text, /Step 2\/3 Agent 2\/2: auditor pending/);
-			assert.match(text, /Step 3\/3: writer pending/);
+			assert.match(text, /^run-ch chain running/m);
+			assert.match(text, /^scout1 Step 1\/3: scout - prepare complete/m);
+			assert.match(text, /^review Step 2\/3 Agent 1\/2: reviewer - audit running/m);
+			assert.match(text, /^audit1 Step 2\/3 Agent 2\/2: auditor pending/m);
+			assert.match(text, /^write1 Step 3\/3: writer pending/m);
+			assert.doesNotMatch(text, /review-full|audit1-full|write1-full|scout1-full/);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}

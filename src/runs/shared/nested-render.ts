@@ -1,3 +1,5 @@
+import { hasLiveNestedDescendants } from "./nested-events.ts";
+import { budgetLines, detailLine, stopId, targetLine, type RenderLine } from "../../tui/render-helpers.ts";
 import { formatDuration, formatTokens, shortenPath } from "../../shared/formatters.ts";
 import { formatActivityLabel } from "../../shared/status-format.ts";
 import type { ActivityState, NestedRunSummary, NestedStepSummary } from "../../shared/types.ts";
@@ -41,9 +43,9 @@ export function formatNestedAggregate(children: NestedRunSummary[] | undefined):
 }
 
 function nestedRunLabel(run: NestedRunSummary): string {
-	if (run.agent) return run.agent;
+	if (run.agent) return run.label ? `${run.agent} - ${run.label}` : run.agent;
 	if (run.agents?.length) return run.agents.length === 1 ? run.agents[0]! : `${run.agents.slice(0, 2).join(", ")}${run.agents.length > 2 ? ` +${run.agents.length - 2}` : ""}`;
-	return run.id;
+	return run.mode ?? "nested run";
 }
 
 function formatNestedActivity(input: {
@@ -68,41 +70,28 @@ function formatNestedActivity(input: {
 }
 
 function formatNestedRunLines(children: NestedRunSummary[] | undefined, options: { indent: string; maxDepth: number; maxLines: number; commandHints?: boolean }): string[] {
-	const lines: string[] = [];
+	const lines: RenderLine[] = [];
 	const append = (items: NestedRunSummary[] | undefined, depth: number, indent: string): void => {
-		if (!items?.length || lines.length >= options.maxLines) return;
-		if (depth > options.maxDepth) {
-			const aggregate = formatNestedAggregate(items);
-			if (aggregate && lines.length < options.maxLines) lines.push(`${indent}↳ ${aggregate}`);
-			return;
-		}
-		for (let index = 0; index < items.length; index++) {
-			const child = items[index]!;
-			if (lines.length >= options.maxLines) {
-				const aggregate = formatNestedAggregate(items.slice(index));
-				if (aggregate) lines[lines.length - 1] = `${indent}↳ ${aggregate}`;
-				return;
-			}
+		if (!items?.length) return;
+		const aggregate = formatNestedAggregate(depth > options.maxDepth ? items.filter((child) => !hasLiveNestedDescendants([child])) : []);
+		if (aggregate) lines.push(detailLine(`${indent}↳ ${aggregate}`));
+		for (const child of items) {
+			if (depth > options.maxDepth && !hasLiveNestedDescendants([child])) continue;
 			const activity = child.state === "running" ? formatNestedActivity(child) : undefined;
 			const error = child.error ? ` | error: ${child.error}` : "";
-			lines.push(`${indent}↳ ${nestedRunLabel(child)} [${child.id}] ${child.state}${activity ? ` | ${activity}` : ""}${error}`);
-			if (options.commandHints && lines.length < options.maxLines) lines.push(`${indent}  Status: subagent({ action: "status", id: "${child.id}" })`);
-			if (depth === options.maxDepth) {
-				const aggregate = formatNestedAggregate([...(child.steps?.flatMap((step) => step.children ?? []) ?? []), ...(child.children ?? [])]);
-				if (aggregate && lines.length < options.maxLines) lines.push(`${indent}  ↳ ${aggregate}`);
-				continue;
-			}
+			lines.push(targetLine(`${indent}${stopId(child.id)} ↳ ${nestedRunLabel(child)} ${child.state}${activity ? ` | ${activity}` : ""}${error}`, hasLiveNestedDescendants([child])));
+			if (options.commandHints) lines.push(detailLine(`${indent}  Status: subagent({ action: "status", id: "${child.id}" })`));
 			for (const [stepIndex, step] of (child.steps ?? []).entries()) {
-				if (lines.length >= options.maxLines) return;
+				if (depth > options.maxDepth && step.status !== "running" && step.status !== "pending" && !hasLiveNestedDescendants(step.children)) continue;
 				const stepActivity = step.status === "running" ? formatNestedActivity(step) : undefined;
-				lines.push(`${indent}  ${stepIndex + 1}. ${step.agent} ${step.status}${stepActivity ? ` | ${stepActivity}` : ""}${step.error ? ` | error: ${step.error}` : ""}`);
-				append(step.children, depth + 1, `${indent}    `);
+				lines.push(targetLine(`${indent}  ${stopId(step.id)} ↳ ${stepIndex + 1}. ${step.agent}${step.label ? ` - ${step.label}` : ""} ${step.status}${stepActivity ? ` | ${stepActivity}` : ""}${step.error ? ` | error: ${step.error}` : ""}`, step.status === "running" || step.status === "pending" || hasLiveNestedDescendants(step.children)));
+				append(step.children, depth + 1, `${options.indent}${"  ".repeat(Math.min(depth + 2, 3))}`);
 			}
-			append(child.children, depth + 1, `${indent}  `);
+			append(child.children, depth + 1, `${options.indent}${"  ".repeat(Math.min(depth + 1, 3))}`);
 		}
 	};
 	append(children, 0, options.indent);
-	return lines;
+	return budgetLines(lines, options.maxLines).map((line) => line.text);
 }
 
 export function formatNestedRunStatusLines(children: NestedRunSummary[] | undefined, options: { indent?: string; maxDepth?: number; maxLines?: number; commandHints?: boolean } = {}): string[] {

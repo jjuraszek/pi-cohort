@@ -16,7 +16,7 @@ import {
 import { readStatus } from "../../shared/utils.ts";
 import { normalizeParallelGroups } from "./parallel-groups.ts";
 import { reconcileAsyncRun, reconcileNestedAsyncDescendants } from "./stale-run-reconciler.ts";
-import { hasLiveNestedDescendants, projectNestedEvents, updateAsyncJobNestedProjection } from "../shared/nested-events.ts";
+import { hasLiveNestedDescendants, projectNestedEvents, readNestedRegistry, updateAsyncJobNestedProjection } from "../shared/nested-events.ts";
 import { updateBackgroundStopInventory, updateNestedStopInventory } from "./run-id-resolver.ts";
 
 interface AsyncJobTrackerOptions {
@@ -29,6 +29,7 @@ interface AsyncJobTrackerOptions {
 
 export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: SubagentState, asyncDirRoot: string, options: AsyncJobTrackerOptions = {}): {
 	ensurePoller: () => void;
+	rerenderWidget: (ctx: ExtensionContext) => void;
 	handleStarted: (data: unknown) => void;
 	handleComplete: (data: unknown) => void;
 	resetJobs: (ctx?: ExtensionContext) => void;
@@ -36,8 +37,15 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 	const completionRetentionMs = options.completionRetentionMs ?? 10000;
 	const pollIntervalMs = options.pollIntervalMs ?? POLL_INTERVAL_MS;
 	const resultsDir = options.resultsDir ?? RESULTS_DIR;
+	const retainedRoots = () => Array.from(state.retainedNestedRoutes?.values() ?? [])
+		.filter((route) => !state.asyncJobs.has(route.rootRunId))
+		.map((route) => ({ rootRunId: route.rootRunId, children: readNestedRegistry(route).children }))
+		.filter((root) => hasLiveNestedDescendants(root.children));
+	let retainedRenderKey = "[]";
 	const rerenderWidget = (ctx: ExtensionContext, jobs = Array.from(state.asyncJobs.values())) => {
-		renderWidget(ctx, jobs);
+		const roots = retainedRoots();
+		retainedRenderKey = JSON.stringify(roots);
+		renderWidget(ctx, jobs, roots);
 		ctx.ui.requestRender?.();
 	};
 	const cancelCleanup = (asyncId: string) => {
@@ -129,7 +137,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 				return;
 			}
 
-			let widgetChanged = false;
+			let widgetChanged = JSON.stringify(retainedRoots()) !== retainedRenderKey;
 			for (const job of state.asyncJobs.values()) {
 				const widgetStateBefore = widgetRenderKey(job);
 				let nestedRefreshFailed = false;
@@ -187,6 +195,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 						job.turnCount = status.turnCount ?? job.turnCount;
 						job.toolCount = status.toolCount ?? job.toolCount;
 						job.mode = status.mode;
+						Object.assign(job, { workflowGraph: status.workflowGraph });
 						job.currentStep = status.currentStep ?? job.currentStep;
 						job.chainStepCount = status.chainStepCount ?? job.chainStepCount;
 						job.startedAt = status.startedAt ?? job.startedAt;
@@ -325,5 +334,5 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 		}
 	};
 
-	return { ensurePoller, handleStarted, handleComplete, resetJobs };
+	return { ensurePoller, rerenderWidget, handleStarted, handleComplete, resetJobs };
 }

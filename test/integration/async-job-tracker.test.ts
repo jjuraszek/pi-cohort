@@ -86,7 +86,7 @@ async function waitForCondition(predicate: () => boolean, timeoutMs = 5_000, int
 	}
 }
 
-function createUiContext() {
+function createUiContext(expanded = false) {
 	const widgets: unknown[] = [];
 	let renderRequests = 0;
 	const ctx = {
@@ -94,7 +94,12 @@ function createUiContext() {
 		ui: {
 			theme: {
 				fg: (_theme: string, text: string) => text,
+				bold: (text: string) => text,
 			},
+			getToolsExpanded: () => expanded,
+			setToolsExpanded() {},
+			setStatus() {},
+			notify() {},
 			setWidget: (_key: string, value: unknown) => {
 				widgets.push(value);
 			},
@@ -108,6 +113,10 @@ function createUiContext() {
 		get widgets() {
 			return widgets;
 		},
+		text() {
+			const widget = widgets.at(-1);
+			return typeof widget === "function" ? widget(undefined, ctx.ui.theme).render(180).join("\n") : "";
+		},
 		get renderRequests() {
 			return renderRequests;
 		},
@@ -115,6 +124,58 @@ function createUiContext() {
 }
 
 describe("async job tracker", { skip: !available ? "pi packages not available" : undefined }, () => {
+	it("delivers retained roots with jobs and clears only after the last visible entry settles", async () => {
+		const root = createTempDir();
+		const routes = [createNestedRoute("rootaa-first"), createNestedRoute("rootbb-second")];
+		const state = createState();
+		const ui = createUiContext(true);
+		state.lastUiContext = ui.ctx as never;
+		const tracker = trackerMod!.createAsyncJobTracker(createEventRecorder().pi, state, root, { pollIntervalMs: 10, completionRetentionMs: 20 });
+		const emit = (index: number, status: string, ts: number) => {
+			const route = routes[index];
+			writeNestedEvent(route, { type: "subagent.nested.updated", ts, parentRunId: route.rootRunId,
+				child: { id: `run00${index}-nested`, parentRunId: route.rootRunId, depth: 1, path: [{ runId: route.rootRunId }], state: status, agent: "worker" } });
+		};
+		try {
+			emit(0, "running", 1);
+			state.retainedNestedRoutes.set(routes[0].rootRunId, routes[0]);
+			tracker.ensurePoller();
+			await waitForCondition(() => ui.text().includes("rootaa"));
+			assert.match(ui.text(), /^\s*rootaa /m);
+			assert.match(ui.text(), /^\s*run000 ↳/m);
+			writeNestedEvent(routes[0], { type: "subagent.nested.child", ts: 2, runId: "run000-nested", id: "leafaa-child", index: 0, agent: "worker", label: "late work", status: "running" });
+			await waitForCondition(() => ui.text().includes("leafaa"));
+			assert.match(ui.text(), /^\s*leafaa ↳.*worker - late work.*running/m);
+			emit(1, "running", 1);
+			state.retainedNestedRoutes.set(routes[1].rootRunId, routes[1]);
+			const jobDir = path.join(root, "jobccc-tracked");
+			fs.mkdirSync(jobDir);
+			fs.writeFileSync(path.join(jobDir, "status.json"), JSON.stringify({ runId: "jobccc-tracked", state: "running", pid: process.pid, startedAt: Date.now(), lastUpdate: Date.now() }));
+			tracker.handleStarted({ id: "jobccc-tracked", asyncDir: jobDir });
+			await waitForCondition(() => ui.text().includes("rootbb"));
+			for (const id of ["rootaa", "rootbb", "jobccc"]) assert.match(ui.text(), new RegExp(`^\\s*${id} `, "m"));
+			writeNestedEvent(routes[0], { type: "subagent.nested.child", ts: 3, runId: "run000-nested", id: "leafaa-child", index: 0, agent: "worker", label: "late work", status: "completed" });
+			await waitForCondition(() => ui.text().includes("late work · completed"));
+			assert.match(ui.text(), /late work · completed/);
+			emit(0, "complete", 4);
+			await waitForCondition(() => !ui.text().includes("rootaa"));
+			assert.doesNotMatch(ui.text(), /rootaa/);
+			assert.match(ui.text(), /rootbb/);
+			emit(1, "complete", 2);
+			await waitForCondition(() => !ui.text().includes("rootbb"));
+			assert.doesNotMatch(ui.text(), /rootbb/);
+			assert.match(ui.text(), /jobccc/);
+			fs.writeFileSync(path.join(jobDir, "status.json"), JSON.stringify({ runId: "jobccc-tracked", state: "complete", startedAt: 1, lastUpdate: 2 }));
+			tracker.handleComplete({ id: "jobccc-tracked", success: true });
+			await waitForCondition(() => ui.widgets.at(-1) === undefined);
+			assert.equal(ui.widgets.at(-1), undefined);
+		} finally {
+			tracker.resetJobs(); if (state.poller) clearInterval(state.poller);
+			for (const route of routes) removeTempDir(path.dirname(route.eventSink));
+			removeTempDir(root);
+		}
+	});
+
 	it("polls only retained routes and drops them after the last live descendant settles", async () => {
 		const root = createTempDir("pi-retained-route-");
 		const route = createNestedRoute("returned-root");
@@ -175,7 +236,8 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 					registerShortcut() {}, registerMessageRenderer() {}, registerTool() {},
 					sendMessage() {}, getSessionName: () => undefined,
 				} as never);
-				const ctx = makeMinimalCtx(root);
+				const ui = createUiContext(true);
+				const ctx = { ...makeMinimalCtx(root), ...ui.ctx };
 				ctx.sessionManager.getEntries = () => [];
 				callbacks.get("session_start")!({}, ctx);
 				const requestChannel = caller === "slash" ? "subagent:slash:request" : "prompt-template:subagent:request";
@@ -221,12 +283,26 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 				}
 				const response = await completed;
 				assert.notEqual(response.isError, true);
+				await waitForCondition(() => ui.text().includes(runId.slice(0, 6)));
+				assert.match(ui.text(), new RegExp(`^\\s*${runId.slice(0, 6)} `, "m"));
+				assert.match(ui.text(), /^\s*aabbcc ↳/m);
+				callbacks.get("tool_result")!({ toolName: "subagent" }, ctx);
+				assert.match(ui.text(), /^\s*aabbcc ↳/m, "retained-only tool refresh preserves rows");
 				writeNestedEvent(route, { type: "subagent.nested.child", ts: 2, runId: "returned-nested-run",
 					id: "ddeeff00-child", index: 1, agent: "echo", label: "late work", status: "running" });
 				const completions = (prefix: string) => commands.get("interrupt-child").getArgumentCompletions(prefix);
 				await waitForCondition(() => completions("ddeeff").length > 0);
 				assert.equal(completions("ddeeff")[0]?.value, "ddeeff");
 				assert.match(completions("ddeeff")[0].label, /late work/);
+				await waitForCondition(() => ui.text().includes("ddeeff"));
+				assert.match(ui.text(), /^\s*ddeeff ↳.*late work/m);
+				const jobDir = path.join(root, "jobddd-tracked");
+				fs.mkdirSync(jobDir);
+				fs.writeFileSync(path.join(jobDir, "status.json"), JSON.stringify({ runId: "jobddd-tracked", state: "running", pid: process.pid, startedAt: Date.now(), lastUpdate: Date.now() }));
+				events.emit("subagent:async-started", { id: "jobddd-tracked", asyncDir: jobDir });
+				callbacks.get("tool_result")!({ toolName: "subagent" }, ctx);
+				assert.match(ui.text(), /^\s*ddeeff ↳/m);
+				assert.match(ui.text(), /^\s*jobddd /m);
 				await t.test("stops a distinct retained background child after the root returns", {
 					skip: process.platform === "win32" ? "requires POSIX background interrupt signals" : undefined,
 				}, async () => {
@@ -268,6 +344,9 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 				await waitForCondition(() => completions("ddeeff").length === 0 && completions("aabbcc").length === 0);
 				assert.deepEqual(completions("ddeeff"), []);
 				assert.deepEqual(completions("aabbcc"), []);
+				await waitForCondition(() => !ui.text().includes("aabbcc"));
+				assert.doesNotMatch(ui.text(), /aabbcc/);
+				assert.match(ui.text(), /jobddd/);
 			} finally {
 				callbacks.get("session_shutdown")?.();
 				if (owner && owner.exitCode === null && owner.signalCode === null) {

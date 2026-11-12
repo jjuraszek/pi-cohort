@@ -1,3 +1,4 @@
+import { stopId } from "../../tui/render-helpers.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
@@ -63,13 +64,14 @@ function stepLineLabel(status: AsyncStatus, index: number): string {
 }
 
 function nestedRunDisplayName(run: NestedRunSummary): string {
-	if (run.agent) return run.agent;
+	if (run.agent) return run.label ? `${run.agent} - ${run.label}` : run.agent;
 	if (run.agents?.length) return run.agents.join(", ");
-	return run.id;
+	return run.mode ?? "nested run";
 }
 
 function formatNestedExactStatus(rootRunId: string, run: NestedRunSummary): string {
 	const lines = [
+		`${stopId(run.id)} ${nestedRunDisplayName(run)} ${run.state}`,
 		`Nested run: ${run.id}`,
 		`Root: ${rootRunId}`,
 		`Parent: ${run.parentRunId}${run.parentStepIndex !== undefined ? ` step ${run.parentStepIndex + 1}` : ""}`,
@@ -89,7 +91,7 @@ function formatNestedExactStatus(rootRunId: string, run: NestedRunSummary): stri
 		lines.push("Steps:");
 		for (const [index, step] of run.steps.entries()) {
 			const activity = step.status === "running" ? formatActivityLabel(step.lastActivityAt, step.activityState) : undefined;
-			lines.push(`  ${index + 1}. ${step.agent} ${step.status}${activity ? `, ${activity}` : ""}${step.error ? `, error: ${step.error}` : ""}`);
+			lines.push(`  ${stopId(step.id)} ${index + 1}. ${step.agent}${step.label ? ` - ${step.label}` : ""} ${step.status}${activity ? `, ${activity}` : ""}${step.error ? `, error: ${step.error}` : ""}`);
 			lines.push(...formatNestedRunStatusLines(step.children, { indent: "    ", commandHints: true }));
 		}
 	}
@@ -210,6 +212,7 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 			const statusActivityText = status.state === "running" ? formatActivityLabel(status.lastActivityAt, status.activityState) : undefined;
 
 			const lines = [
+				`${stopId(status.runId)} ${status.mode} ${status.state}`,
 				`Run: ${status.runId}`,
 				`State: ${status.state}`,
 				statusActivityText ? `Activity: ${statusActivityText}` : undefined,
@@ -228,9 +231,9 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 				const modelText = modelThinking ? ` (${modelThinking})` : "";
 				const errorText = step.error ? `, error: ${step.error}` : "";
 				const acceptanceText = step.acceptance?.status ? `, acceptance: ${step.acceptance.status}` : "";
-				const display = step.label ? `${step.label} (${step.agent})` : step.agent;
+				const display = step.label ? `${step.agent} - ${step.label}` : step.agent;
 				const phase = step.phase ? `[${step.phase}] ` : "";
-				lines.push(`${stepLineLabel(status, index)}: ${phase}${display} ${step.status}${modelText}${stepActivityText ? `, ${stepActivityText}` : ""}${acceptanceText}${errorText}`);
+				lines.push(`${stopId(step.id)} ${stepLineLabel(status, index)}: ${phase}${display} ${step.status}${modelText}${stepActivityText ? `, ${stepActivityText}` : ""}${acceptanceText}${errorText}`);
 				lines.push(...formatNestedRunStatusLines(step.children, { indent: "  ", commandHints: true, maxLines: 20 }));
 				const stepOutputPath = path.join(asyncDir, `output-${index}.log`);
 				if (stepOutputPath !== outputPath && fs.existsSync(stepOutputPath)) lines.push(`  Output: ${stepOutputPath}`);
