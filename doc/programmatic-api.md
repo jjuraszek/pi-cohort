@@ -133,17 +133,19 @@ Agent definitions are not loaded into context by default. Management actions let
 
 `create` uses `config.scope`, not `agentScope`. `config.name` is the local frontmatter name; optional `config.package` registers the runtime name as `{package}.{name}` and is saved as separate `name` and `package` frontmatter. `update` and `delete` use the runtime name and `agentScope` only when the same runtime name exists in multiple scopes. To clear optional string fields, including `package`, set them to `false` or `""`.
 
-### Foreground stop by index
+### Foreground stop by id
 
-To stop one child of a running foreground parallel run without cancelling its siblings:
+To stop one child and its subtree without cancelling its siblings:
 
 ```ts
-subagent({ action: "interrupt", id: "<run-id>", index: 1 })
+subagent({ action: "interrupt", id: "3f9a1c" })
 ```
 
-`index` is the zero-based flat child index, also used by `resume`: a task's index in a top-level parallel run, or its position across all children of a chain, including earlier steps. A non-running index returns an error naming the index and stops nothing. Stopping one child does not trigger `failFast`; the siblings finish before the waiting call returns.
+Use the id at the start of the child's row, not a position. Every child has its own UUID before launch, stable across retries; rows and session names show exactly its first six characters. A run row has its own run id. This applies to single calls, `tasks[]` items after `count` expansion, sequential chain steps, static parallel tasks, and materialized dynamic parallel items. Pending and settled rows keep their ids. Expanded views retain every live nested row at any depth; detail lines and settled rows remain foldable.
 
-When every interrupted child was stopped by index, the foreground result is:
+`interrupt` resolves exact ids or prefixes of at least four characters in one namespace of run and child ids, live and settled. An exact full id wins; otherwise the prefix must match exactly one distinct full id. A six-character collision remains ambiguous even after one match settles; use a longer prefix from the error or slash completion. `status` and `resume` resolve run ids only, without the interrupt minimum length.
+
+A child-id stop does not trigger `failFast`; siblings finish before the waiting call returns. When every interrupted child was stopped by child id, the foreground result is:
 
 | Run shape | Returned result |
 |---|---|
@@ -151,15 +153,37 @@ When every interrupted child was stopped by index, the foreground result is:
 | Static parallel chain step | The chain returns `isError: true` with `Parallel step N failed:` and an `interrupted` failure line. `## Outputs` contains sibling outputs and a `- interrupted` heading for the stopped task, whether or not a `stopOn` condition matched. No later step runs. Only successful, non-interrupted tasks register named outputs. With `worktree: true`, all partial diffs are captured, including the stopped child's, and patch locations appear in the failure text. |
 | Dynamic chain step | The chain returns `isError: true` with `Dynamic step N failed:`, an `interrupted` item line, sibling outputs, and an interrupted heading. The group status is `failed`; no later step runs. The collection in `details.outputs` retains the stopped item's partial text. Dynamic steps do not support `worktree`. |
 
-Task headings and cleanup diagnostics use one-based numbers, not the zero-based request index. Interrupted output headings include the child's error when present; cleanup diagnostics remain visible in the aggregate or chain failure text. A single run or sequential chain step stopped by index still returns its pause notice. Interrupting without `index`, or mixing whole-run and indexed stops in the same step, keeps the existing pause notice instead of the aggregate above.
+Task headings and cleanup diagnostics use one-based numbers. Interrupted output headings include the child's error when present; cleanup diagnostics remain visible in the aggregate or chain failure text. A single call or sequential chain step stopped by child id still returns its pause notice. A run-id stop signals every running child and prevents queued tasks and later chain steps from starting. A queued foreground child settles interrupted without spawning. A run-id stop, a bare `interrupt`, or a mix of run-id and child-id stops keeps the whole-run pause notice instead of the aggregate above. Stopping every child individually by id still produces the targeted result.
 
-### Background stop by index
+### Background stop by id
 
-The same `interrupt` request with `index` targets one child of a running async run, including static parallel and materialized dynamic children. Use the zero-based flat index from status. A non-running index returns an error naming the index and sends no signal. Siblings finish with their own statuses and outputs; the stopped child remains `paused` with `interrupted: true`. The run settles as `paused` with `Paused after interrupt. Waiting for explicit next action.`, and later chain steps do not run. Sibling outputs remain in the async result's `results[]` and are accessible through per-child output paths in `status`, not in the paused summary text. Background results do not use the foreground chain-failure wrapper.
+The same child-id request targets one child of a running async run, including static parallel and materialized dynamic children. Siblings finish with their own statuses and outputs; the stopped child remains `paused` with `interrupted: true`. The run settles as `paused` with `Paused after interrupt. Waiting for explicit next action.`, and later chain steps do not run. Sibling outputs remain in the async result's `results[]` and are accessible through per-child output paths in `status`, not in the paused summary text. Background results do not use the foreground chain-failure wrapper. A run-id stop signals every running child, starts no pending step, and leaves pending steps pending while the run settles paused.
 
-The executor atomically writes `interrupt-request-<index>.json` in the run's async directory before signaling the runner. An omitted index writes `interrupt-request-all.json`; direct nested async interrupts use that same whole-run marker. The runner consumes and deletes all pending request files on each signal, handling indexed stops before a whole-run stop. The filenames carry the target; the body is diagnostic metadata. An empty signal is a no-op, not an implicit whole-run request.
+The executor atomically writes `interrupt-request-<target id>.json` in the run's async directory before signaling the runner. The filename uses the full resolved child or run UUID, for example `interrupt-request-3f9a1c00-0000-4000-8000-000000000001.json`. The JSON body must contain a `targetId` equal to the full id in the filename; the executor also writes `requestedAt` as diagnostic metadata. The runner consumes and deletes request files on the signal, ignoring malformed JSON or a missing or mismatched `targetId`. A signal without a valid request stops nothing. A stop accepted while a child is running but has no interrupt callback latches until callback registration, including a fallback attempt. The runner deduplicates repeated stops so they do not invoke the registered interrupt callback again. This is not API-level repeat acceptance: each accepted async request writes a file and signals the runner, and a child already recorded as `paused` is rejected as `interrupted` by the resolver, even while siblings are still running.
 
-Indexed requests address per-child callbacks. A request received while its running child has no callback waits for that child's next registration, including a model fallback attempt. If the child settles first, the request is discarded without stopping a sibling. A later indexed or whole-run request remains valid after an earlier indexed stop. Whole-run requests retain the legacy last-registered callback: they do not latch across a registration gap or select a different sibling after that slot clears. Repeated whole-run requests are ignored.
+### Subtree stops and ownership
+
+Every owner-stop path, including the waiting call's abort signal and a control-policy kill, closes admission, signals the target, sweeps detached background descendants, then answers. Admission closes with an empty stop record named by the full target id in the root route's `stops/` directory. Before spawning, owners check their run id and every ancestor run and child id against those records. A match refuses foreground launch with `Subagent launch refused: <stop id> is stopping.`; a background runner settles paused without spawning. Launch registration precedes the admission check so the sweep also sees launches racing with the stop. Only ancestry containing the stopped target is suppressed; siblings remain eligible to launch.
+
+Nested background targets use their runner's request file and signal. For a nested foreground target, the caller writes a shared-inbox request carrying the full `targetId`; only the process owning that run or child acts, replies, and removes it. Non-owners leave it untouched. The caller waits up to 1000 ms, then removes only its own request and reports `The owner of <stop id> did not confirm the stop within 1000 ms; the stop may still take effect.` No fallback whole-run signal follows an unanswered request; the owner applies the stop before writing its reply.
+
+Native children receive `PI_SUBAGENT_OWNER_PID` and check owner liveness every 1000 ms. A dead owner triggers SIGTERM and a forced exit 3000 ms later if needed; unknown liveness leaves the child running. A reused pid can mask owner death. External attempts set this variable empty to disable the pid watch across namespaces; their host terminates the active attempt when its socket to the owner closes. An explicit external stop aborts and shuts down the attempt, with bounded backend cleanup as described below. Native descendants watch their immediate owner; detached background descendants are reached by the ancestry sweep.
+
+When a foreground root returns with live nested descendants, this process retains its route for resolution, completion, subtree sweeps, and widget rows until the last descendant settles. Only routes this process created are retained. The stop contract does not cancel arbitrary processes spawned by tools or sweep detached background runs merely because their launching child crashed. `resume` creates a new run id under the caller's ancestry, so the stopped run's record does not prevent revival; resume indexing and the `Revive child` hint remain unchanged.
+
+### Stop errors
+
+Rejections stop nothing and send no signal:
+
+| Input or state | Result |
+|---|---|
+| Id shorter than four characters | `Stop id '<text>' is too short; type at least 4 characters of the id at the start of the row.` |
+| No recorded match | `No running subagent matches '<text>'.` followed by running stop ids and agent names, or `No subagent is running.` |
+| Ambiguous prefix | Every match is listed as `<kind>:<prefix> <name>`, where kind is `run` or `child` and the prefix distinguishes the matches. Settled ids participate. |
+| Pending child | `Subagent <stop id> (<agent>) has not started; stop its run to keep it from starting.` |
+| Settled child on record | `Subagent <stop id> (<agent>) is no longer running: <state>.` Child states are `completed`, `failed`, or `interrupted`; background and nested child statuses `complete` and `paused` are normalized to `completed` and `interrupted` in this error. A returned foreground run's child no longer has a record and gets the no-match error. |
+| `interrupt` with `index` | `interrupt no longer takes an index; pass the id at the start of the child's row.` Use `index` only with `resume`. |
+| Background target without a live runner pid | `No running async run with an interrupt-capable pid was found` |
 
 ## Parameter reference
 
@@ -167,6 +191,7 @@ Indexed requests address per-child callbacks. A request received while its runni
 |---|---|---|---|
 | `agent` | string | - | Agent name for single mode, or target for management actions. |
 | `task` | string | - | Task string for single mode. |
+| `label` | string | - | Single-agent child label, shown as `<agent> - <label>` on live and result rows. |
 | `action` | string | - | `list`, `get`, `create`, `update`, `delete`, `status`, `interrupt`, `resume`, or `doctor`. |
 | `chainName` | string | - | Chain name for management actions. |
 | `config` | object/string | - | Agent or chain config for create/update. |
@@ -174,7 +199,7 @@ Indexed requests address per-child callbacks. A request received while its runni
 | `outputMode` | `"inline" \| "file-only"` | `inline` | Return saved output inline or as a concise saved-file reference. `file-only` requires `output: true` with a configured filename or an explicit output path. |
 | `skill` | `string \| string[] \| false` | agent default | Override skills or disable all. |
 | `model` | string | agent default | Override model. |
-| `tasks` | array | - | Top-level parallel tasks. Supports `agent`, `task`, `cwd`, `count`, `output`, `outputMode`, `reads`, `progress`, `skill`, `model`, and `acceptance`. |
+| `tasks` | array | - | Top-level parallel tasks. Supports `agent`, `task`, `label`, `cwd`, `count`, `output`, `outputMode`, `reads`, `progress`, `skill`, `model`, and `acceptance`. |
 | `concurrency` | number | config or `4` | Top-level parallel concurrency. |
 | `worktree` | boolean | false | Create isolated git worktrees for parallel tasks. An absolute task `output:` is left untouched at the caller-supplied path, outside the worktree; a relative `output:` is redirected instead to `<runDir>/task-<i>/<output>` (surviving teardown, kept out of the captured patch), and one that escapes that per-task directory (e.g. `../report.md`) or normalizes to it (`.`) is rejected at dispatch. `reads:` and the task cwd still resolve inside the worktree. |
 | `chain` | array | - | Sequential, static parallel, and dynamic fanout chain steps. Steps and chain parallel tasks support `phase`, `label`, `as`, `outputSchema`, and `acceptance` in addition to the usual execution fields. Dynamic fanout uses `expand`, one child `parallel` template, and `collect`. |
@@ -191,6 +216,8 @@ Indexed requests address per-child callbacks. A request received while its runni
 | `sessionDir` | string | derived | Override session log directory. |
 | `acceptance` | string/object/false | inferred | An explicit level runs as given; `"auto"` or an unset level uses inference. Use `"attested"`, `"checked"`, `"verified"`, or `"reviewed"`; `none` requires the object form with a `reason`: `{ level: "none", reason: "..." }`. See [orchestration-patterns.md](orchestration-patterns.md#acceptance-gates). |
 | `control` | object | config defaults | Override per-run control thresholds. Supports `needsAttentionAfterMs`, `activeNoticeAfterMs`, `inFlightSilenceCeilingMs`, `inFlightSilenceKillMs`, and `notifyOn`. |
+
+Child labels render as `<agent> - <label>` on live and result rows for single calls, `tasks[]`, sequential chain steps, static parallel tasks, and dynamic parallel items. Dynamic template labels retain item interpolation; a parallel group's own label stays on its group header, not its children.
 
 `context: "fork"` fails fast when the parent session is not persisted, the current leaf is missing, or the branched child session cannot be created. It never silently downgrades to `fresh`. In multi-agent runs, if any requested agent has `defaultContext: fork` and the launch omits `context`, the whole invocation uses forked context; pass `context: "fresh"` when you intentionally want a fresh run.
 
@@ -232,15 +259,15 @@ Status and control actions:
 subagent({ action: "status" })
 subagent({ action: "status", id: "<run-id>" })
 subagent({ action: "status", id: "<nested-run-id>" })
-subagent({ action: "interrupt", id: "<run-id>" })
-subagent({ action: "interrupt", id: "<nested-run-id>" })
+subagent({ action: "interrupt", id: "<child-id-or-prefix>" })
+subagent({ action: "interrupt", id: "<run-id-or-prefix>" })
 subagent({ action: "resume", id: "<run-id>", message: "follow-up question" })
 subagent({ action: "resume", id: "<run-id>", index: 1, message: "follow-up for child 2" })
 subagent({ action: "resume", id: "<nested-run-id>", message: "follow-up for a nested child" })
 subagent({ action: "doctor" })
 ```
 
-`status` resolves exact foreground ids, top-level async ids, and nested run ids before falling back to prefix matching. Nested status shows the root/parent path, nested children, session/artifact paths when known, and nested control commands. Inside child-safe fanout mode, bare `status` requires an id when no local foreground run is active, so children cannot enumerate unrelated top-level async runs. Bare `interrupt` still targets only the visible top-level run; interrupting a nested run requires its explicit nested id.
+`status` resolves exact foreground ids, top-level async ids, and nested run ids before falling back to prefix matching. Nested status shows the root/parent path, nested children, session/artifact paths when known, and nested control commands. Inside child-safe fanout mode, bare `status` requires an id when no local foreground run is active, so children cannot enumerate unrelated top-level async runs. Bare `interrupt` selects the current foreground run, or the background run when no foreground run exists, and stops that run and its subtree. Use an explicit child or nested run id to select a narrower subtree.
 
 An interrupted child remains `paused` with `exitCode: 0`. The existing optional `interrupted` flag is preserved as `true` in public/status and persisted child results, including when external cleanup is uncertain. Accepted interrupted external results keep `error` as a diagnostic, not failure input: it does not trigger model fallback, failed-run promotion, or fail-fast. Clean confirmed pauses keep their existing output without a cleanup error; ordinary non-interrupted failures keep their existing handling.
 

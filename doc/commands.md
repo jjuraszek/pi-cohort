@@ -13,13 +13,15 @@ Back to [README](../README.md).
 | `/parallel agent1 "task1" -> agent2 "task2"` | Run agents in parallel |
 | `/run-chain <chainName> -- <task>` | Launch a saved `.chain.md` or `.chain.json` workflow |
 | `/cohort-doctor` | Show read-only setup diagnostics |
-| `/interrupt-child <index> [run-id]` | Stop one running child without cancelling the waiting call |
+| `/interrupt-child <id>` | Stop the child or run whose row starts with this id, including its subtree |
 
 Launch commands validate agent names locally, support tab completion, and send results back into the conversation.
 
-`/interrupt-child` takes a zero-based nonnegative integer index and an optional run id or prefix. With one foreground run, `/interrupt-child 1` targets that run; with several, omitting the id lists their ids and stops nothing. With no foreground run, the tool's normal run resolution applies, including background runs. Tab completion lists only running foreground children and includes the run id when several runs exist.
+`/interrupt-child` takes exactly one id or id prefix, at least four characters long: `/interrupt-child 3f9a1c`. Use the six-character id at the start of the target's row. A child id stops that child and its subtree; a run id stops the whole run and its subtree. The same resolver reaches foreground, background, and nested targets, including while the calling agent waits. No argument or more than one argument prints `/interrupt-child <id>` and the running stop ids, and stops nothing.
 
-The command reports the tool's response as a notification, including errors for indices with no running child. It does not send a conversation message or steer the calling agent. Foreground parallel siblings finish and their outputs return with the stopped child marked `INTERRUPTED`; see the [foreground](programmatic-api.md#foreground-stop-by-index) and [background](programmatic-api.md#background-stop-by-index) result contracts.
+Tab completion lists this session's running foreground children, tracked background steps, and nested children on authorized or retained routes. Each suggestion shows `<id> <agent>` or `<id> <agent> - <label>` and inserts the shortest unique prefix starting at six characters, distinguishing it from all recorded run and child ids, including settled ones; it never inserts a full UUID. Background children of other sessions resolve when typed but are not listed. Rows and session names keep exactly six characters even on a collision; use completion or a longer prefix from the ambiguity error.
+
+The command reports the tool's response through `ctx.ui.notify`, including lifecycle and resolution errors. It does not send a conversation message or steer the calling agent. Foreground parallel siblings finish and their outputs return with the stopped child marked `INTERRUPTED`; see the [foreground](programmatic-api.md#foreground-stop-by-id) and [background](programmatic-api.md#background-stop-by-id) result contracts.
 
 ### Per-step tasks
 

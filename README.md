@@ -169,19 +169,19 @@ Review and delivery workflows live in pi-gauntlet; pi-cohort ships delegation pr
 
 `context: "fork"` starts a child from a real branched session instead of a fresh one, when it needs the parent's history. Cost across the whole subtree - main loop plus every foreground/background/nested child - rolls up into one `Σ$` total in the footer; see [doc/observability.md](doc/observability.md).
 
-Each child session is named `<agent> <run id prefix>[/<index>] from <parent>`, so `/resume`, terminal titles, and live-session rosters can tell children apart:
+Each child session is named `<agent> <child stop id> from <parent>`. The stop id is exactly the first six characters of the child's UUID, stable across retries and independent of its position:
 
 | Child | Session name |
 |---|---|
-| Single `scout` from a session named `billing reports` | `scout 3f9a2c1e from billing reports` |
-| Third task (index 2) of the same parallel run | `scout 3f9a2c1e/2 from billing reports` |
-| `scout` from an unnamed session | `scout 3f9a2c1e from <parent session id>` |
+| Single `scout` from a session named `billing reports` | `scout 3f9a1c from billing reports` |
+| Third task (index 2) of a parallel run | `scout 7b20de from billing reports` |
+| `scout` from an unnamed session | `scout 3f9a1c from <parent session id>` |
 
-The run id prefix works as the `id` for `subagent` status, interrupt, and resume; the index is the child `index` for resume or interrupt. A nested child names its parent child: `worker 7b41d0aa from scout 3f9a2c1e from billing reports`.
+Every child or run row starts with its own six-character stop id, including pending and settled rows. A nested child names its immediate parent: `worker 7b20de from scout 3f9a1c from billing reports`. Run ids still address `status` and `resume`; `resume` keeps its zero-based child `index` and the `Revive child` hint.
 
-`subagent({ action: "interrupt", id: "3f9a2c1e", index: 1 })` stops only child 1 of a foreground or background parallel run. In the foreground, the waiting call returns sibling outputs with the stopped child marked `INTERRUPTED`; a chain parallel or dynamic step fails without running later steps, retaining sibling outputs and static worktree patches. In the background, siblings finish and retain their statuses and outputs; the stopped child and overall run settle as `paused`, with the existing pause summary. See the [foreground result contract](doc/programmatic-api.md#foreground-stop-by-index) and [background transport](doc/programmatic-api.md#background-stop-by-index).
+`subagent({ action: "interrupt", id: "3f9a1c" })` stops that child and its subtree, not its siblings. A run id stops the whole run and its subtree. In the foreground, a child-id stop returns sibling outputs with the stopped child marked `INTERRUPTED`; a chain parallel or dynamic step fails without running later steps, retaining sibling outputs and static worktree patches. In the background, siblings finish and retain their statuses and outputs; the stopped child and overall run settle as `paused`, with the existing pause summary. See the [foreground result contract](doc/programmatic-api.md#foreground-stop-by-id) and [background transport](doc/programmatic-api.md#background-stop-by-id).
 
-While the calling agent is blocked, type `/interrupt-child 1` to stop child 1 without cancelling the call or steering the agent. With several foreground runs, supply a run id or prefix as the second argument; omitting it lists the run ids instead of stopping a child. Tab completion lists running foreground children. With no foreground run, the command uses the tool's normal run resolution, including background runs. See [command syntax](doc/commands.md#direct-commands).
+While the calling agent is blocked, type `/interrupt-child 3f9a1c` using the id at the start of the row. The command takes exactly one token and reaches foreground, background, and nested targets without steering the agent. Tab completion lists this session's running children with agent names and labels, extending a prefix when needed to distinguish it from every recorded run and child id. Rows and session names remain six characters even on a collision; type the longer prefix from the ambiguity error or use completion. See [command syntax](doc/commands.md#direct-commands).
 
 Every child process also gets these environment variables, stable inputs for other extensions (for example, a session roster linking each child to its parent):
 
@@ -189,7 +189,8 @@ Every child process also gets these environment variables, stable inputs for oth
 |---|---|---|
 | `PI_SUBAGENT_CHILD` | `1` | on every child |
 | `PI_SUBAGENT_CHILD_AGENT` | the child's agent name | when the agent is known |
-| `PI_SUBAGENT_RUN_ID` | the full run id; its prefix appears in the session name | when the run id is known |
+| `PI_SUBAGENT_RUN_ID` | the full run id, distinct from the child's stop id | when the run id is known |
+| `PI_SUBAGENT_OWNER_PID` | the spawning process's pid for the native owner watch; empty disables the watch for external attempts, whose host watches the owner socket | on every child |
 | `PI_SUBAGENT_PARENT_SESSION_ID` | the pi session id of the session that launched the child | on every child; a nested child gets its immediate parent's id, never an inherited ancestor's |
 
 Full reference: agent/chain authoring in [doc/agents-and-chains.md](doc/agents-and-chains.md), exact command syntax in [doc/commands.md](doc/commands.md), the raw tool API in [doc/programmatic-api.md](doc/programmatic-api.md).
