@@ -207,17 +207,17 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 							const activeGroup = status.currentStep !== undefined
 								? groups.find((group) => status.currentStep! >= group.start && status.currentStep! < group.start + group.count)
 								: undefined;
-							const visibleSteps = activeGroup
-								? status.steps.slice(activeGroup.start, activeGroup.start + activeGroup.count).map((step, index) => ({ ...step, index: activeGroup.start + index }))
-								: status.steps.map((step, index) => ({ ...step, index }));
+							job.steps = status.steps.map((step, index) => ({ ...step, index }));
+							const summarySteps = activeGroup
+								? job.steps.slice(activeGroup.start, activeGroup.start + activeGroup.count)
+								: job.steps;
 							job.activeParallelGroup = Boolean(activeGroup);
-							job.agents = visibleSteps.map((step) => step.agent);
-							job.steps = visibleSteps;
+							job.agents = summarySteps.map((step) => step.agent);
 							refreshNestedProjection();
-							job.stepsTotal = visibleSteps.length;
-							job.runningSteps = visibleSteps.filter((step) => step.status === "running").length;
-							job.completedSteps = visibleSteps.filter((step) => step.status === "complete" || step.status === "completed").length;
-							if (status.state === "complete") job.completedSteps = visibleSteps.length;
+							job.stepsTotal = summarySteps.length;
+							job.runningSteps = summarySteps.filter((step) => step.status === "running").length;
+							job.completedSteps = summarySteps.filter((step) => step.status === "complete" || step.status === "completed").length;
+							if (status.state === "complete") job.completedSteps = summarySteps.length;
 						}
 						job.sessionDir = status.sessionDir ?? job.sessionDir;
 						job.outputFile = status.outputFile ?? job.outputFile;

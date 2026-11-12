@@ -415,7 +415,7 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 		}
 	});
 
-	it("adds flat step indexes to polled active parallel group steps", async () => {
+	it("retains all flat step indexes while polling an active parallel group", async () => {
 		const asyncRoot = createTempDir("pi-async-job-tracker-");
 		try {
 			const runDir = path.join(asyncRoot, "run-chain");
@@ -440,7 +440,7 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 						recentOutput: ["reviewer line"],
 					},
 					{ agent: "auditor", status: "running" },
-					{ agent: "writer", status: "pending" },
+					{ id: "abcdef-writer", agent: "writer", status: "pending" },
 				],
 			}), "utf-8");
 
@@ -453,15 +453,19 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 			tracker.resetJobs(ui.ctx as never);
 			tracker.handleStarted({ id: "run-chain", asyncDir: runDir, mode: "chain", agents: ["scout", "reviewer", "auditor", "writer"] });
 
-			await new Promise((resolve) => setTimeout(resolve, 50));
+			await waitForCondition(() => Boolean(state.asyncJobs.get("run-chain")?.steps));
 
 			const job = state.asyncJobs.get("run-chain");
-			assert.deepEqual(job?.steps?.map((step: { index?: number }) => step.index), [1, 2]);
+			assert.deepEqual(job?.steps?.map((step: { index?: number }) => step.index), [0, 1, 2, 3]);
+			assert.deepEqual(job?.steps?.[3], { id: "abcdef-writer", index: 3, agent: "writer", status: "pending" });
 			assert.deepEqual(job?.agents, ["reviewer", "auditor"]);
-			assert.equal(job?.steps?.[0]?.currentTool, "read");
-			assert.equal(job?.steps?.[0]?.currentToolArgs, "src/tui/render.ts");
-			assert.deepEqual(job?.steps?.[0]?.recentTools?.map((tool: { tool: string; args: string }) => ({ tool: tool.tool, args: tool.args })), [{ tool: "grep", args: "async widget" }]);
-			assert.deepEqual(job?.steps?.[0]?.recentOutput, ["reviewer line"]);
+			assert.equal(job?.stepsTotal, 2);
+			assert.equal(job?.runningSteps, 2);
+			assert.equal(job?.completedSteps, 0);
+			assert.equal(job?.steps?.[1]?.currentTool, "read");
+			assert.equal(job?.steps?.[1]?.currentToolArgs, "src/tui/render.ts");
+			assert.deepEqual(job?.steps?.[1]?.recentTools?.map((tool: { tool: string; args: string }) => ({ tool: tool.tool, args: tool.args })), [{ tool: "grep", args: "async widget" }]);
+			assert.deepEqual(job?.steps?.[1]?.recentOutput, ["reviewer line"]);
 		} finally {
 			removeTempDir(asyncRoot);
 		}

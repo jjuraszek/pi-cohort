@@ -530,6 +530,53 @@ describe("subagent async widget rendering", () => {
 		assert.match(text, /step 2\/3 · parallel group: 1 agent running · 1\/2 done/);
 	});
 
+	it("keeps stop-id rows for pending steps outside the polled active parallel group", async (t) => {
+		const fs = await import("node:fs");
+		const path = await import("node:path");
+		const { createAsyncJobTracker } = await import("../../src/runs/background/async-job-tracker.ts");
+		const { createTempDir, removeTempDir, createEventBus } = await import("../support/helpers.ts");
+		const root = createTempDir("pi-widget-pending-");
+		const state = {
+			asyncJobs: new Map(), cleanupTimers: new Map(), retainedNestedRoutes: new Map(), foregroundControls: new Map(),
+			poller: null, resultFileCoalescer: { clear() {} },
+		};
+		const tracker = createAsyncJobTracker({ events: createEventBus() }, state as never, root);
+		const intervals = t.mock.method(globalThis, "setInterval");
+		try {
+			const runDir = path.join(root, "run-chain");
+			fs.mkdirSync(runDir);
+			const steps = [
+				{ id: "aaa000-scout", agent: "scout", status: "complete" },
+				{ id: "bbb111-reviewer", agent: "reviewer", status: "running" },
+				{ id: "ccc222-auditor", agent: "auditor", status: "complete" },
+				{ id: "ddd333-writer", agent: "writer", status: "pending" },
+				{ id: "eee444-editor", agent: "editor", status: "pending" },
+			];
+			fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify({
+				runId: "run-chain", mode: "chain", state: "running", startedAt: Date.now(), lastUpdate: Date.now(),
+				currentStep: 1, chainStepCount: 4, parallelGroups: [{ start: 1, count: 2, stepIndex: 1 }], steps,
+			}));
+			tracker.handleStarted({ id: "run-chain", asyncDir: runDir, mode: "chain", agents: steps.map((step) => step.agent) });
+			assert.equal(intervals.mock.calls.length, 1);
+			intervals.mock.calls[0].arguments[0]();
+
+			const job = state.asyncJobs.get("run-chain");
+			assert.equal(job.activeParallelGroup, true);
+			for (const expanded of [false, true]) {
+				for (const width of [32, 180]) {
+					const text = buildWidgetLines([job], theme, width, expanded).join("\n");
+					for (const step of steps.filter((step) => step.status === "pending" || step.status === "running")) {
+						assert.match(text, new RegExp(`^\\s*${step.id.slice(0, 6)} `, "m"));
+					}
+				}
+			}
+		} finally {
+			tracker.resetJobs();
+			if (state.poller) clearInterval(state.poller);
+			removeTempDir(root);
+		}
+	});
+
 	it("uses logical chain steps after an async chain parallel group finishes", () => {
 		const lines = buildWidgetLines([
 			{
