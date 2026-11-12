@@ -473,11 +473,15 @@ export async function createExternalExecution(
 							try {
 								await wait(controller.shutdown(), "unused host shutdown");
 								await wait(controller.hostExit, "unused host exit");
-							} catch {
+							} catch (error) {
 								endpoint = now() + controlTimeoutMs;
-								await wait(options.backend.close(controller.lease.handle, "explicit_cleanup"), "unused host cleanup");
-								closed = true;
-								await wait(controller.hostExit, "unused host exit");
+								try {
+									await wait(options.backend.close(controller.lease.handle, "explicit_cleanup"), "unused host cleanup");
+									closed = true;
+									await wait(controller.hostExit, "unused host exit");
+								} catch (cleanupError) {
+									throw new AggregateError([error, cleanupError], `unused host shutdown failed: ${error instanceof Error ? error.message : String(error)}; cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`);
+								}
 							}
 						},
 						async () => { try { await wait(releaseObserver(), "observer release"); } finally { controller.dispose(); } },
