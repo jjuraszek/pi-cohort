@@ -6,6 +6,11 @@
 - **Breaking:** `interrupt` takes a child or run id, not `index`; `/interrupt-child <id>` takes exactly one token instead of `<index> [run-id]`. Every child/run row starts with its own six-character id, and completion extends colliding prefixes. Child session names are `<agent> <six-character child id> from <parent>`, without the run-id prefix or positional suffix. `resume` keeps its index and `Revive child` behavior. (#62)
 - Stopping a child stops its subtree, including detached background descendants, without stopping siblings; stopping a run signals every running child and prevents queued launches. Native children exit when their owner dies; external hosts watch the owner socket. Foreground child-id stops preserve sibling outputs and chain failed-group results; background stops retain paused-result semantics. Single-agent calls and `tasks[]` items accept `label`, rendered as `<agent> - <label>` across dispatch shapes. (#62)
 
+## [7.7.6] - 2026-11-12
+
+### Fixed
+- Children that exit successfully after writing their output file no longer fail on earlier tool errors or error-looking bash output when they omit a closing reply, in foreground and both background execution paths.
+
 ## [7.7.5] - 2026-11-12
 
 ### Fixed
