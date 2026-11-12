@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import type { AcceptanceInput, ExtensionConfig, OutputMode, StopCondition } from "../shared/types.ts";
 import { getAgentDir } from "../shared/utils.ts";
 import { KNOWN_FIELDS } from "./agent-serializer.ts";
-import { childSettingsError, type ChildSettings } from "../runs/shared/child-settings.ts";
+import { childSettingsError, userOnlySettingsKey, type ChildSettings } from "../runs/shared/child-settings.ts";
 import { parseChain, parseJsonChain } from "./chain-serializer.ts";
 import { mergeAgentsForScope } from "./agent-selection.ts";
 import { parseFrontmatter } from "./frontmatter.ts";
@@ -24,6 +24,13 @@ class InvalidExecutionBackendSettingError extends Error {
 	constructor(message: string) {
 		super(message);
 		this.name = "InvalidExecutionBackendSettingError";
+	}
+}
+
+class UserOnlyChildSettingError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "UserOnlyChildSettingError";
 	}
 }
 type SystemPromptMode = "append" | "replace";
@@ -437,7 +444,10 @@ function parseBuiltinOverrideEntry(
 
 	if ("settings" in input) {
 		const error = childSettingsError(input.settings, "settings");
-		if (error) throw new Error(`Builtin override '${name}' in '${filePath}' has invalid 'settings': ${error}`);
+		if (error) {
+			const message = `Builtin override '${name}' in '${filePath}' has invalid 'settings': ${error}`;
+			throw userOnlySettingsKey(input.settings) ? new UserOnlyChildSettingError(message) : new Error(message);
+		}
 		override.settings = input.settings as ChildSettings;
 	}
 
@@ -547,8 +557,9 @@ function readMergedProjectSubagentSettings(cwd: string): SubagentSettings {
 		try {
 			levelSettings = readSubagentSettings(settingsPath);
 		} catch (error) {
-			// Invalid backend policy must not silently fall back to native execution.
-			if (error instanceof InvalidExecutionBackendSettingError) {
+			// Invalid backend policy must not silently fall back to native execution,
+			// and a refused child setting must not take the level's other keys down with it.
+			if (error instanceof InvalidExecutionBackendSettingError || error instanceof UserOnlyChildSettingError) {
 				throw error;
 			}
 			const message = error instanceof Error ? error.message : String(error);

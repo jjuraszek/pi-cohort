@@ -12,10 +12,14 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+export function userOnlySettingsKey(value: unknown): string | undefined {
+	return isPlainObject(value) ? USER_ONLY_KEYS.find((key) => key in value) : undefined;
+}
+
 export function childSettingsError(value: unknown, label: string): string | undefined {
 	if (value === undefined) return undefined;
 	if (!isPlainObject(value)) return `${label} must be an object of settings.json keys.`;
-	const userOnly = USER_ONLY_KEYS.find((key) => key in value);
+	const userOnly = userOnlySettingsKey(value);
 	if (userOnly) return `${label}.${userOnly} cannot be overridden for a child: pi takes it only from the user's own settings.json.`;
 	return undefined;
 }

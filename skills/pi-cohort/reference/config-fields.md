@@ -114,9 +114,9 @@ Objects merge key by key at every level; arrays and scalars replace.
 
 Rules:
 
-- Leave `defaultProjectTrust`, `httpProxy`, and `selfUpdateCommand` out: pi takes them only from the user's own `settings.json`, and the call fails before any child starts with `settings.<key> cannot be overridden for a child`.
+- Leave `defaultProjectTrust`, `httpProxy`, and `selfUpdateCommand` out: pi takes them only from the user's own `settings.json`, and the call fails before any child starts with `settings.<key> cannot be overridden for a child`, wherever the override is written, a project `.pi/settings.json` included.
 - Put a key in the project's `.pi/settings.json` to pin it for every session in that project: pi merges project settings over the agent directory, so a project value beats this override.
-- Repeat `settings` at each level of nesting: a child's own children launch with the parent's settings, not the child's override.
+- Repeat `settings` at each level of nesting: a child's own children launch with the top-level session's settings, not the child's override.
 - Put an override that must survive `action: "resume"` in the agent's `settings`: a resumed child gets the agent's override, not the one from the original call.
 - Write a local path in the parent's `settings.json` that climbs out of the agent directory (`../shared/ext.ts`) as an absolute path: pi resolves relative paths against the child's temporary directory.
 

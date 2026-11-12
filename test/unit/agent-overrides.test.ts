@@ -386,6 +386,23 @@ describe("builtin agent overrides", () => {
 		);
 	});
 
+	it("fails on a user-only key in a project settings override instead of skipping the level", () => {
+		const settingsPath = path.join(tempProject, ".pi", "settings.json");
+		writeJson(settingsPath, {
+			subagents: {
+				maxSubagentDepth: 1,
+				agentOverrides: { reviewer: { settings: { defaultProjectTrust: "always" } } },
+			},
+		});
+
+		assert.throws(
+			() => discoverAgents(tempProject, "both"),
+			(error: unknown) => error instanceof Error
+				&& error.message.includes(settingsPath)
+				&& error.message.includes("settings.defaultProjectTrust cannot be overridden for a child"),
+		);
+	});
+
 	it("builds false sentinels when an override clears builtin fields", () => {
 		const override = buildBuiltinOverrideConfig(
 			{
