@@ -119,7 +119,7 @@ const AcceptanceOverride = Type.Unsafe({
 			additionalProperties: false,
 		},
 	],
-	description: "Acceptance: auto if omitted; verified needs cmds.",
+	description: 'Acceptance: auto if omitted; none needs object form {level:"none",reason}; verified needs cmds.',
 });
 
 // Nested acceptance sites carry a compact stub instead of the full AcceptanceOverride:
@@ -242,7 +242,7 @@ const ChainItem = Type.Object({
 	additionalProperties: false,
 });
 
-// Control stub (round two): 10 fields collapsed; the full table lives in the pi-cohort
+// Control stub (round two): 11 fields collapsed; the full table lives in the pi-cohort
 // skill reference/config-fields.md. resolveControlConfig (subagent-control.ts) re-parses
 // every field defensively at runtime, so mistyped values degrade to defaults.
 const ControlOverrides = Type.Unsafe({

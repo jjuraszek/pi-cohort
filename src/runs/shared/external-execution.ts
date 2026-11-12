@@ -64,13 +64,13 @@ export interface ExternalAttemptResult {
 	readonly interrupted: boolean;
 }
 
-export type ExternalExecutionDiagnosticCode = "result_missing";
+export type ExternalExecutionDiagnosticCode = "result_missing" | "session_file_untrusted";
 
-class ExternalExecutionDiagnosticError extends Error {
+export class ExternalExecutionDiagnosticError extends Error {
 	readonly code: ExternalExecutionDiagnosticCode;
 
-	constructor(code: ExternalExecutionDiagnosticCode) {
-		super(code);
+	constructor(code: ExternalExecutionDiagnosticCode, message: string = code) {
+		super(message);
 		this.code = code;
 	}
 }
@@ -126,8 +126,8 @@ function defaultWatchDependencies(): WatchDependencies {
 function ensureTrustedSessionFile(sessionFile: string): void {
 	try {
 		const details = fs.lstatSync(sessionFile);
-		if (!details.isFile() || details.isSymbolicLink()) throw new Error("execution session path must be a regular non-symlink file");
-		if (process.platform !== "win32" && (details.mode & 0o077) !== 0) throw new Error("execution session file must be owner-only");
+		if (!details.isFile() || details.isSymbolicLink()) throw new ExternalExecutionDiagnosticError("session_file_untrusted", "execution session path must be a regular non-symlink file");
+		if (process.platform !== "win32" && (details.mode & 0o077) !== 0) throw new ExternalExecutionDiagnosticError("session_file_untrusted", "execution session file must be owner-only");
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 		createExclusiveSessionFile(sessionFile);

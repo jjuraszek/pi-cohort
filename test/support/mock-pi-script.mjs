@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { spawn } from "node:child_process";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -16,11 +17,18 @@ function listPendingFiles(dir) {
 		.sort();
 }
 
-function claimNextResponse(dir) {
+function claimNextResponse(dir, args) {
 	for (const fileName of listPendingFiles(dir)) {
 		const sourcePath = path.join(dir, fileName);
 		const targetPath = path.join(dir, fileName.replace(/^pending-/, "consumed-"));
 		try {
+			const candidate = JSON.parse(fs.readFileSync(sourcePath, "utf-8"));
+			if (candidate.taskIncludes && !args.some((arg) => {
+				if (arg.includes(candidate.taskIncludes)) return true;
+				if (!arg.startsWith("@")) return false;
+				try { return fs.readFileSync(arg.slice(1), "utf-8").includes(candidate.taskIncludes); }
+				catch { return false; }
+			})) continue;
 			fs.renameSync(sourcePath, targetPath);
 			return JSON.parse(fs.readFileSync(targetPath, "utf-8"));
 		} catch (error) {
@@ -239,7 +247,28 @@ async function main() {
 
 	const args = process.argv.slice(2);
 	const jsonMode = isJsonMode(args);
-	const response = claimNextResponse(queueDir) ?? defaultResponse();
+	const response = claimNextResponse(queueDir, args) ?? defaultResponse();
+	if (response.ignoreSigterm) process.on("SIGTERM", () => {});
+	if (response.exitOnSigtermWithOpenStdout) {
+		const { pidFile } = response.exitOnSigtermWithOpenStdout;
+		const holder = spawn(process.execPath, ["--input-type=module", "-e", `
+			const stop = () => process.exit(0);
+			process.on("SIGTERM", stop);
+			process.stdout.on("error", stop);
+			setInterval(() => process.stdout.write("\\n"), 100);
+			setTimeout(stop, 60_000);
+			process.send("ready");
+		`], { stdio: ["ignore", "inherit", "ignore", "ipc"] });
+		fs.writeFileSync(pidFile, String(holder.pid));
+		await new Promise((resolve, reject) => {
+			holder.once("message", resolve);
+			holder.once("error", reject);
+			holder.once("exit", () => reject(new Error("stdout holder exited before readiness")));
+		});
+		holder.disconnect();
+		holder.unref();
+		process.on("SIGTERM", () => process.exit(0));
+	}
 	if (response.requireAcceptanceStructuredOrder && taskRequestsAcceptance(args) && !taskIncludesOrdering(args)) {
 		fail("Expected report-then-structured-output ordering sentence.");
 	}

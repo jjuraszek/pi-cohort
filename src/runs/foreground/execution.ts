@@ -29,6 +29,7 @@ import {
 } from "../../shared/types.ts";
 import {
 	applyChildEventToLifecycle,
+	DEFAULT_CONTROL_CONFIG,
 	buildControlEvent,
 	deriveActivityState,
 	shouldSilenceKill,
@@ -70,6 +71,7 @@ import {
 	emptyUsage,
 	finalizeSingleAttempt,
 	initializeAttempt,
+	INTERRUPTED_FINAL_OUTPUT,
 	snapshotProgress,
 	snapshotResult,
 	type AttemptSharedInit,
@@ -89,20 +91,20 @@ import {
 export { acceptanceOutputByResult, artifactOutputByResult };
 
 export interface RunSyncDependencies {
+	monotonicNow?: () => number;
 	selectBackend?: (input: ConfiguredSelectionInput) => Promise<ExecutionBackendSelectionResult>;
 	createExternalOwner?: (options: ExternalExecutionOptions) => Promise<ExternalExecution>;
 	runNativeAttempt?: typeof runSingleAttempt;
 	runExternalAttempt?: (input: RunExternalSingleAttemptInput) => Promise<SingleResult>;
 }
 
-const NEVER_ABORTED_SIGNAL = new AbortController().signal;
-
 function failedResult(agent: string, task: string, error: string): SingleResult {
 	return { agent, task, exitCode: 1, messages: [], usage: emptyUsage(), error };
 }
 
-function safeExternalFailure(phase: "startup" | "attempt" | "finish" | "cleanup"): string {
-	return `External execution ${phase} failed`;
+function safeExternalFailure(phase: "startup" | "attempt" | "finish" | "cleanup", error?: unknown): string {
+	const code = externalExecutionDiagnosticCode(error);
+	return `External execution ${phase} failed${code ? ` (${code})` : ""}`;
 }
 
 function sumUsage(target: Usage, source: Usage): void {
@@ -603,7 +605,9 @@ async function runSingleAttempt(
 			const kill = () => {
 				if (processClosed) return;
 				proc.kill("SIGTERM");
-				setTimeout(() => !proc.killed && proc.kill("SIGKILL"), 3000);
+				setTimeout(() => {
+					if (!childExited) trySignalChild(proc, "SIGKILL");
+				}, 3000).unref?.();
 			};
 			if (options.signal.aborted) kill();
 			else {
@@ -619,7 +623,7 @@ async function runSingleAttempt(
 				progress.status = "running";
 				progress.durationMs = Date.now() - startTime;
 				result.interrupted = true;
-				result.finalOutput = "Interrupted. Waiting for explicit next action.";
+				result.finalOutput = INTERRUPTED_FINAL_OUTPUT;
 				progress.activityState = undefined;
 				fireUpdate();
 				trySignalChild(proc, "SIGINT");
@@ -670,320 +674,374 @@ export async function runSync(
 			error: `Unknown agent: ${agentName}`,
 		};
 	}
-	const outputModeValidationError = validateFileOnlyOutputMode(options.outputMode, options.outputPath, `Single run (${agentName})`);
-	if (outputModeValidationError) {
-		return {
-			agent: agentName,
-			task,
-			exitCode: 1,
-			messages: [],
-			usage: emptyUsage(),
-			outputMode: options.outputMode,
-			error: outputModeValidationError,
-		};
-	}
-
-	try {
-		getPiSpawnCommand([], options.runtime);
-	} catch (error) {
-		return failedResult(agentName, task, error instanceof Error ? error.message : String(error));
-	}
-
-	const childCwd = options.cwd ?? runtimeCwd;
-	let backendSelection: ExecutionBackendSelectionResult;
-	try {
-		backendSelection = await (dependencies.selectBackend ?? selectConfiguredExecutionBackend)({
-			cwd: childCwd,
-			userConfig: { executionBackend: options.executionBackend },
-		});
-	} catch (error) {
-		return failedResult(agentName, task, error instanceof Error ? error.message : String(error));
-	}
-
-	const shareEnabled = options.share === true;
-	const effectiveAcceptance = resolveEffectiveAcceptance({
-		explicit: options.acceptance,
-		agentName,
-		task,
-		mode: options.acceptanceContext?.mode ?? "single",
-		async: options.acceptanceContext?.async,
-		dynamic: options.acceptanceContext?.dynamic,
-		dynamicGroup: options.acceptanceContext?.dynamicGroup,
-	});
-	const acceptancePrompt = formatAcceptancePrompt(effectiveAcceptance, { structuredOutput: Boolean(options.structuredOutput) });
-	const taskWithAcceptance = acceptancePrompt ? `${task}\n${acceptancePrompt}` : task;
-	const sessionEnabled = Boolean(options.sessionFile || options.sessionDir) || shareEnabled;
-	const skillNames = options.skills ?? agent.skills ?? [];
-	const skillCwd = options.cwd ?? runtimeCwd;
-	const { resolved: resolvedSkills, missing: missingSkills } = resolveSkillsWithFallback(skillNames, skillCwd, runtimeCwd);
-	if (skillNames.some((skill) => skill.trim() === "pi-cohort") && missingSkills.includes("pi-cohort")) {
-		return {
-			agent: agentName,
-			task,
-			exitCode: 1,
-			messages: [],
-			usage: emptyUsage(),
-			error: "Skills not found: pi-cohort",
-		};
-	}
-	let systemPrompt = agent.systemPrompt?.trim() || "";
-	if (resolvedSkills.length > 0) {
-		const skillInjection = buildSkillInjection(resolvedSkills);
-		systemPrompt = systemPrompt ? `${systemPrompt}\n\n${skillInjection}` : skillInjection;
-	}
-
-	const candidates = buildModelCandidates(
-		options.modelOverride ?? agent.model ?? options.parentModel,
-		agent.fallbackModels,
-		options.availableModels,
-		options.preferredModelProvider,
-	);
-	const effectiveAgent: AgentConfig = { ...agent, thinking: agent.thinking ?? options.parentThinking };
-	const attemptedModels: string[] = [];
-	const modelAttempts: ModelAttempt[] = [];
-	const aggregateUsage = emptyUsage();
-	const attemptNotes: string[] = [];
-	let totalToolCount = 0;
-	let totalDurationMs = 0;
-
-	let artifactPathsResult: ArtifactPaths | undefined;
-	let jsonlPath: string | undefined;
-	if (options.artifactsDir && options.artifactConfig?.enabled !== false) {
-		artifactPathsResult = getArtifactPaths(options.artifactsDir, options.runId, agentName, options.index);
-		ensureArtifactsDir(options.artifactsDir);
-		if (options.artifactConfig?.includeInput !== false) {
-				writeArtifact(artifactPathsResult.inputPath, `# Task for ${agentName}\n\n${taskWithAcceptance}`);
+	const monotonicNow = dependencies.monotonicNow ?? (() => performance.now());
+	const startedAt = monotonicNow();
+	const maxRuntimeMs = options.controlConfig?.maxRuntimeMs ?? DEFAULT_CONTROL_CONFIG.maxRuntimeMs;
+	const controller = new AbortController();
+	const callerSignal = options.signal;
+	const forwardAbort = () => controller.abort();
+	if (callerSignal?.aborted) forwardAbort();
+	else callerSignal?.addEventListener("abort", forwardAbort, { once: true });
+	options = { ...options, signal: controller.signal };
+	let capElapsedMs: number | undefined;
+	let capTimer: NodeJS.Timeout | undefined;
+	let resolveCap!: () => void;
+	const capReached = new Promise<void>((resolve) => { resolveCap = resolve; });
+	const capError = () => `Subagent killed: ran for ${Math.round(capElapsedMs! / 1000)}s (exceeded maxRuntimeMs=${maxRuntimeMs}ms).`;
+	const rewriteCappedResult = (result: SingleResult): boolean => {
+		if (capElapsedMs === undefined || (result.exitCode === 0 && !result.error && !result.interrupted)) return false;
+		result.exitCode = 1;
+		result.interrupted = undefined;
+		result.error = result.error ? `${capError()}\n${result.error}` : capError();
+		if (result.finalOutput === INTERRUPTED_FINAL_OUTPUT) result.finalOutput = undefined;
+		if (result.progress) {
+			result.progress.status = "failed";
+			result.progress.error = result.error;
 		}
-		if (options.artifactConfig?.includeJsonl !== false) {
-			jsonlPath = artifactPathsResult.jsonlPath;
+		return true;
+	};
+	const armCap = () => {
+		capTimer = setTimeout(() => {
+			if (controller.signal.aborted || options.interruptSignal?.aborted) return;
+			const elapsedMs = monotonicNow() - startedAt;
+			if (elapsedMs < maxRuntimeMs) {
+				armCap();
+				return;
+			}
+			capElapsedMs = elapsedMs;
+			resolveCap();
+			controller.abort();
+		}, Math.min(Math.max(0, maxRuntimeMs - (monotonicNow() - startedAt)), 2_147_483_647));
+		capTimer.unref?.();
+	};
+	armCap();
+	try {
+		const outputModeValidationError = validateFileOnlyOutputMode(options.outputMode, options.outputPath, `Single run (${agentName})`);
+		if (outputModeValidationError) {
+			return {
+				agent: agentName,
+				task,
+				exitCode: 1,
+				messages: [],
+				usage: emptyUsage(),
+				outputMode: options.outputMode,
+				error: outputModeValidationError,
+			};
 		}
-	}
 
-	let lastResult: SingleResult | undefined;
-	let externalOwner: ExternalExecution | undefined;
-	const childId = `child-${options.index ?? 0}`;
-	if (backendSelection.selection.kind === "external") {
 		try {
-			externalOwner = await (dependencies.createExternalOwner ?? createExternalExecution)({
-				backend: backendSelection.selection.backend,
-				runtime: options.runtime,
-				runId: options.runId,
-				childId,
-				cwd: childCwd,
-				title: agentName,
-				signal: options.signal ?? NEVER_ABORTED_SIGNAL,
-			});
-			await externalOwner.ready;
+			getPiSpawnCommand([], options.runtime);
 		} catch (error) {
-			lastResult = failedResult(agentName, task, error instanceof PiRuntimeLaunchError ? error.message : safeExternalFailure("startup"));
+			return failedResult(agentName, task, error instanceof Error ? error.message : String(error));
 		}
-	}
 
-	const modelsToTry = candidates.length > 0 ? candidates : [undefined];
-	if (!lastResult) for (let i = 0; i < modelsToTry.length; i++) {
-		const candidate = modelsToTry[i];
-		if (candidate) attemptedModels.push(candidate);
-		const outputSnapshot = captureSingleOutputSnapshot(options.outputPath);
-		const shared = {
-			sessionEnabled,
-			systemPrompt,
-			resolvedSkillNames: resolvedSkills.length > 0 ? resolvedSkills.map((skill) => skill.name) : undefined,
-			skillsWarning: missingSkills.length > 0 ? `Skills not found: ${missingSkills.join(", ")}` : undefined,
-			jsonlPath,
-			artifactPaths: artifactPathsResult,
-			attemptNotes,
-			outputSnapshot,
-			originalTask: task,
-		};
-		let result: SingleResult;
-		let runtimeFailure = false;
-		if (externalOwner) {
+		const childCwd = options.cwd ?? runtimeCwd;
+		let backendSelection: ExecutionBackendSelectionResult;
+		try {
+			const selection = await Promise.race([
+				(dependencies.selectBackend ?? selectConfiguredExecutionBackend)({
+					cwd: childCwd,
+					userConfig: { executionBackend: options.executionBackend },
+				}),
+				capReached.then(() => undefined),
+			]);
+			if (capElapsedMs !== undefined) return failedResult(agentName, task, capError());
+			backendSelection = selection!;
+		} catch (error) {
+			if (capElapsedMs !== undefined) return failedResult(agentName, task, capError());
+			return failedResult(agentName, task, error instanceof Error ? error.message : String(error));
+		}
+
+		const shareEnabled = options.share === true;
+		const effectiveAcceptance = resolveEffectiveAcceptance({
+			explicit: options.acceptance,
+			agentName,
+			task,
+			mode: options.acceptanceContext?.mode ?? "single",
+			async: options.acceptanceContext?.async,
+			dynamic: options.acceptanceContext?.dynamic,
+			dynamicGroup: options.acceptanceContext?.dynamicGroup,
+		});
+		const acceptancePrompt = formatAcceptancePrompt(effectiveAcceptance, { structuredOutput: Boolean(options.structuredOutput) });
+		const taskWithAcceptance = acceptancePrompt ? `${task}\n${acceptancePrompt}` : task;
+		const sessionEnabled = Boolean(options.sessionFile || options.sessionDir) || shareEnabled;
+		const skillNames = options.skills ?? agent.skills ?? [];
+		const skillCwd = options.cwd ?? runtimeCwd;
+		const { resolved: resolvedSkills, missing: missingSkills } = resolveSkillsWithFallback(skillNames, skillCwd, runtimeCwd);
+		if (skillNames.some((skill) => skill.trim() === "pi-cohort") && missingSkills.includes("pi-cohort")) {
+			return {
+				agent: agentName,
+				task,
+				exitCode: 1,
+				messages: [],
+				usage: emptyUsage(),
+				error: "Skills not found: pi-cohort",
+			};
+		}
+		let systemPrompt = agent.systemPrompt?.trim() || "";
+		if (resolvedSkills.length > 0) {
+			const skillInjection = buildSkillInjection(resolvedSkills);
+			systemPrompt = systemPrompt ? `${systemPrompt}\n\n${skillInjection}` : skillInjection;
+		}
+
+		const candidates = buildModelCandidates(
+			options.modelOverride ?? agent.model ?? options.parentModel,
+			agent.fallbackModels,
+			options.availableModels,
+			options.preferredModelProvider,
+		);
+		const effectiveAgent: AgentConfig = { ...agent, thinking: agent.thinking ?? options.parentThinking };
+		const attemptedModels: string[] = [];
+		const modelAttempts: ModelAttempt[] = [];
+		const aggregateUsage = emptyUsage();
+		const attemptNotes: string[] = [];
+		let totalToolCount = 0;
+		let totalDurationMs = 0;
+
+		let artifactPathsResult: ArtifactPaths | undefined;
+		let jsonlPath: string | undefined;
+		if (options.artifactsDir && options.artifactConfig?.enabled !== false) {
+			artifactPathsResult = getArtifactPaths(options.artifactsDir, options.runId, agentName, options.index);
+			ensureArtifactsDir(options.artifactsDir);
+			if (options.artifactConfig?.includeInput !== false) {
+				writeArtifact(artifactPathsResult.inputPath, `# Task for ${agentName}\n\n${taskWithAcceptance}`);
+			}
+			if (options.artifactConfig?.includeJsonl !== false) {
+				jsonlPath = artifactPathsResult.jsonlPath;
+			}
+		}
+
+		let lastResult: SingleResult | undefined;
+		let externalOwner: ExternalExecution | undefined;
+		const childId = `child-${options.index ?? 0}`;
+		if (backendSelection.selection.kind === "external") {
 			try {
-				result = await (dependencies.runExternalAttempt ?? runExternalSingleAttempt)({
-					owner: externalOwner,
-					attemptId: `${childId}-attempt-${i}`,
-					runtimeCwd,
-					agent: effectiveAgent,
-					model: candidate,
-					task: taskWithAcceptance,
-					options,
-					shared,
-				});
-			} catch (error) {
-				runtimeFailure = error instanceof PiRuntimeLaunchError;
-				if (isInterruptedExternalAttemptError(error)) {
-					const code = externalExecutionDiagnosticCode(error);
-					result = {
-						...failedResult(agentName, task, `${error.message}${code ? ` (${code})` : ""}`),
-						exitCode: 0,
-						interrupted: true,
-					};
-				} else {
-					result = failedResult(agentName, task, runtimeFailure ? (error as Error).message : safeExternalFailure("attempt"));
-				}
-			}
-		} else {
-			try {
-				result = await (dependencies.runNativeAttempt ?? runSingleAttempt)(
-					runtimeCwd, effectiveAgent, taskWithAcceptance, candidate, options, shared,
-				);
-			} catch (error) {
-				if (!(error instanceof PiRuntimeLaunchError)) throw error;
-				runtimeFailure = true;
-				result = failedResult(agentName, task, error.message);
-			}
-		}
-		lastResult = result;
-		sumUsage(aggregateUsage, result.usage);
-		totalToolCount += result.progressSummary?.toolCount ?? 0;
-		totalDurationMs += result.progressSummary?.durationMs ?? 0;
-		const attemptSucceeded = result.exitCode === 0 && (result.interrupted || !result.error);
-		const attempt: ModelAttempt = {
-			model: candidate ?? result.model ?? agent.model ?? "default",
-			success: attemptSucceeded,
-			exitCode: result.exitCode,
-			error: result.error,
-			usage: { ...result.usage },
-		};
-		modelAttempts.push(attempt);
-		if (result.interrupted || attemptSucceeded) {
-			break;
-		}
-		if (runtimeFailure || blockedLine(result.error ?? "") || !isRetryableModelFailure(result.error) || i === modelsToTry.length - 1) {
-			break;
-		}
-		attemptNotes.push(formatModelAttemptNote(attempt, modelsToTry[i + 1]));
-	}
-
-	const result = lastResult ?? {
-		agent: agentName,
-		task,
-		exitCode: 1,
-		messages: [],
-		usage: emptyUsage(),
-		error: "Subagent did not produce a result.",
-	} satisfies SingleResult;
-
-	let postLoopError: unknown;
-	let preservedAt: string | undefined;
-	let notPreservedReason = "artifact output disabled";
-	try {
-		result.usage = aggregateUsage;
-		result.attemptedModels = attemptedModels.length > 0 ? attemptedModels : undefined;
-		result.modelAttempts = modelAttempts.length > 0 ? modelAttempts : undefined;
-		result.progressSummary = {
-			toolCount: totalToolCount,
-			tokens: aggregateUsage.input + aggregateUsage.output,
-			durationMs: totalDurationMs,
-		};
-		if (attemptNotes.length > 0 && result.progress) {
-			result.progress.recentOutput = [...attemptNotes, ...result.progress.recentOutput];
-			if (result.progress.recentOutput.length > 50) {
-				result.progress.recentOutput.splice(50);
-			}
-		}
-
-		if (artifactPathsResult && options.artifactConfig?.enabled !== false) {
-			result.artifactPaths = artifactPathsResult;
-			if (options.artifactConfig?.includeOutput !== false) {
-				try {
-					writeArtifact(artifactPathsResult.outputPath, artifactOutputByResult.get(result) ?? result.finalOutput ?? "");
-					preservedAt = artifactPathsResult.outputPath;
-				} catch (error) {
-					const message = error instanceof Error ? error.message : String(error);
-					notPreservedReason = `artifact write failed: ${message}`;
-					throw error;
-				}
-			}
-			if (options.artifactConfig?.includeMetadata !== false) {
-				writeMetadata(artifactPathsResult.metadataPath, {
+				externalOwner = await (dependencies.createExternalOwner ?? createExternalExecution)({
+					backend: backendSelection.selection.backend,
+					runtime: options.runtime,
 					runId: options.runId,
-					agent: agentName,
-					task,
-					exitCode: result.exitCode,
-					usage: result.usage,
-					model: result.model,
-					attemptedModels: result.attemptedModels,
-					modelAttempts: result.modelAttempts,
-					durationMs: result.progressSummary?.durationMs,
-					toolCount: result.progressSummary?.toolCount,
-					error: result.error,
-					skills: result.skills,
-					skillsWarning: result.skillsWarning,
-					timestamp: Date.now(),
+					childId,
+					cwd: childCwd,
+					title: agentName,
+					signal: controller.signal,
 				});
+				await externalOwner.ready;
+			} catch (error) {
+				lastResult = failedResult(agentName, task, error instanceof PiRuntimeLaunchError ? error.message : safeExternalFailure("startup"));
+				rewriteCappedResult(lastResult);
+			}
+		}
+
+		const modelsToTry = candidates.length > 0 ? candidates : [undefined];
+		if (!lastResult) for (let i = 0; i < modelsToTry.length; i++) {
+			const candidate = modelsToTry[i];
+			if (candidate) attemptedModels.push(candidate);
+			const outputSnapshot = captureSingleOutputSnapshot(options.outputPath);
+			const shared = {
+				sessionEnabled,
+				systemPrompt,
+				resolvedSkillNames: resolvedSkills.length > 0 ? resolvedSkills.map((skill) => skill.name) : undefined,
+				skillsWarning: missingSkills.length > 0 ? `Skills not found: ${missingSkills.join(", ")}` : undefined,
+				jsonlPath,
+				artifactPaths: artifactPathsResult,
+				attemptNotes,
+				outputSnapshot,
+				originalTask: task,
+			};
+			let result: SingleResult;
+			let runtimeFailure = false;
+			if (externalOwner) {
+				try {
+					result = await (dependencies.runExternalAttempt ?? runExternalSingleAttempt)({
+						owner: externalOwner,
+						attemptId: `${childId}-attempt-${i}`,
+						runtimeCwd,
+						agent: effectiveAgent,
+						model: candidate,
+						task: taskWithAcceptance,
+						options,
+						shared,
+					});
+				} catch (error) {
+					runtimeFailure = error instanceof PiRuntimeLaunchError;
+					if (isInterruptedExternalAttemptError(error)) {
+						const code = externalExecutionDiagnosticCode(error);
+						result = {
+							...failedResult(agentName, task, `${error.message}${code ? ` (${code})` : ""}`),
+							exitCode: 0,
+							interrupted: true,
+						};
+					} else {
+						result = failedResult(agentName, task, runtimeFailure ? (error as Error).message : safeExternalFailure("attempt", error));
+					}
+				}
+			} else {
+				try {
+					result = await (dependencies.runNativeAttempt ?? runSingleAttempt)(
+						runtimeCwd, effectiveAgent, taskWithAcceptance, candidate, options, shared,
+					);
+				} catch (error) {
+					if (!(error instanceof PiRuntimeLaunchError)) throw error;
+					runtimeFailure = true;
+					result = failedResult(agentName, task, error.message);
+				}
+			}
+			const capped = rewriteCappedResult(result);
+			lastResult = result;
+			sumUsage(aggregateUsage, result.usage);
+			totalToolCount += result.progressSummary?.toolCount ?? 0;
+			totalDurationMs += result.progressSummary?.durationMs ?? 0;
+			const attemptSucceeded = result.exitCode === 0 && (result.interrupted || !result.error);
+			const attempt: ModelAttempt = {
+				model: candidate ?? result.model ?? agent.model ?? "default",
+				success: attemptSucceeded,
+				exitCode: result.exitCode,
+				error: result.error,
+				usage: { ...result.usage },
+			};
+			modelAttempts.push(attempt);
+			if (capped || result.interrupted || attemptSucceeded) {
+				break;
+			}
+			if (runtimeFailure || blockedLine(result.error ?? "") || !isRetryableModelFailure(result.error) || i === modelsToTry.length - 1) {
+				break;
+			}
+			attemptNotes.push(formatModelAttemptNote(attempt, modelsToTry[i + 1]));
+		}
+
+		const result = lastResult ?? {
+			agent: agentName,
+			task,
+			exitCode: 1,
+			messages: [],
+			usage: emptyUsage(),
+			error: "Subagent did not produce a result.",
+		} satisfies SingleResult;
+
+		let postLoopError: unknown;
+		let preservedAt: string | undefined;
+		let notPreservedReason = "artifact output disabled";
+		try {
+			result.usage = aggregateUsage;
+			result.attemptedModels = attemptedModels.length > 0 ? attemptedModels : undefined;
+			result.modelAttempts = modelAttempts.length > 0 ? modelAttempts : undefined;
+			result.progressSummary = {
+				toolCount: totalToolCount,
+				tokens: aggregateUsage.input + aggregateUsage.output,
+				durationMs: totalDurationMs,
+			};
+			if (attemptNotes.length > 0 && result.progress) {
+				result.progress.recentOutput = [...attemptNotes, ...result.progress.recentOutput];
+				if (result.progress.recentOutput.length > 50) {
+					result.progress.recentOutput.splice(50);
+				}
 			}
 
-			if (options.maxOutput) {
+			if (artifactPathsResult && options.artifactConfig?.enabled !== false) {
+				result.artifactPaths = artifactPathsResult;
+				if (options.artifactConfig?.includeOutput !== false) {
+					try {
+						writeArtifact(artifactPathsResult.outputPath, artifactOutputByResult.get(result) ?? result.finalOutput ?? "");
+						preservedAt = artifactPathsResult.outputPath;
+					} catch (error) {
+						const message = error instanceof Error ? error.message : String(error);
+						notPreservedReason = `artifact write failed: ${message}`;
+						throw error;
+					}
+				}
+				if (options.artifactConfig?.includeMetadata !== false) {
+					writeMetadata(artifactPathsResult.metadataPath, {
+						runId: options.runId,
+						agent: agentName,
+						task,
+						exitCode: result.exitCode,
+						usage: result.usage,
+						model: result.model,
+						attemptedModels: result.attemptedModels,
+						modelAttempts: result.modelAttempts,
+						durationMs: result.progressSummary?.durationMs,
+						toolCount: result.progressSummary?.toolCount,
+						error: result.error,
+						skills: result.skills,
+						skillsWarning: result.skillsWarning,
+						timestamp: Date.now(),
+					});
+				}
+
+				if (options.maxOutput) {
+					const config = { ...DEFAULT_MAX_OUTPUT, ...options.maxOutput };
+					const truncationResult = truncateOutput(result.finalOutput ?? "", config, artifactPathsResult.outputPath);
+					if (truncationResult.truncated) result.truncation = truncationResult;
+				}
+			} else if (options.maxOutput) {
 				const config = { ...DEFAULT_MAX_OUTPUT, ...options.maxOutput };
-				const truncationResult = truncateOutput(result.finalOutput ?? "", config, artifactPathsResult.outputPath);
+				const truncationResult = truncateOutput(result.finalOutput ?? "", config);
 				if (truncationResult.truncated) result.truncation = truncationResult;
 			}
-		} else if (options.maxOutput) {
-			const config = { ...DEFAULT_MAX_OUTPUT, ...options.maxOutput };
-			const truncationResult = truncateOutput(result.finalOutput ?? "", config);
-			if (truncationResult.truncated) result.truncation = truncationResult;
+
+			if (options.sessionFile && (existsSync(options.sessionFile) || result.messages?.length)) {
+				result.sessionFile = options.sessionFile;
+			} else if (shareEnabled && options.sessionDir) {
+				const sessionFile = findLatestSessionFile(options.sessionDir);
+				if (sessionFile) result.sessionFile = sessionFile;
+			}
+
+			result.acceptance = await evaluateAcceptance({
+				acceptance: effectiveAcceptance,
+				output: acceptanceOutputByResult.get(result) ?? result.finalOutput ?? "",
+				cwd: options.cwd ?? runtimeCwd,
+			});
+			const acceptanceFailure = acceptanceFailureMessage(result.acceptance);
+			stripAcceptanceReportsFromMessages(result.messages);
+			if (acceptanceFailure && result.acceptance.explicit && result.exitCode === 0 && !result.interrupted) {
+				result.exitCode = 1;
+				result.error = result.error ? `${result.error}\n${acceptanceFailure}` : acceptanceFailure;
+				if (result.progress) {
+					result.progress.status = "failed";
+					result.progress.error = result.error;
+				}
+			}
+		} catch (error) {
+			postLoopError = error;
 		}
 
-		if (options.sessionFile && (existsSync(options.sessionFile) || result.messages?.length)) {
-			result.sessionFile = options.sessionFile;
-		} else if (shareEnabled && options.sessionDir) {
-			const sessionFile = findLatestSessionFile(options.sessionDir);
-			if (sessionFile) result.sessionFile = sessionFile;
-		}
-
-		result.acceptance = await evaluateAcceptance({
-			acceptance: effectiveAcceptance,
-			output: acceptanceOutputByResult.get(result) ?? result.finalOutput ?? "",
-			cwd: options.cwd ?? runtimeCwd,
-		});
-		const acceptanceFailure = acceptanceFailureMessage(result.acceptance);
-		stripAcceptanceReportsFromMessages(result.messages);
-		if (acceptanceFailure && result.acceptance.explicit && result.exitCode === 0 && !result.interrupted) {
-			result.exitCode = 1;
-			result.error = result.error ? `${result.error}\n${acceptanceFailure}` : acceptanceFailure;
-			if (result.progress) {
-				result.progress.status = "failed";
-				result.progress.error = result.error;
+		if (externalOwner) {
+			const delivered = !postLoopError && result.exitCode === 0 && !result.error && !result.interrupted;
+			try {
+				const surface = await externalOwner.finish(delivered ? "delivered" : "retained");
+				result.executionSurface = surface;
+			} catch {
+				result.exitCode = 1;
+				result.error = result.error
+					? `${result.error}\n${safeExternalFailure("finish")}`
+					: safeExternalFailure("finish");
+				result.executionSurface = { handle: externalOwner.surface, retained: true };
+			}
+			if (postLoopError) {
+				result.exitCode = 1;
+				const safeMessage = safeExternalFailure("cleanup");
+				result.error = result.error
+					? `${result.error}\n${safeMessage}`
+					: safeMessage;
+				result.executionSurface ??= { handle: externalOwner.surface, retained: true };
 			}
 		}
-	} catch (error) {
-		postLoopError = error;
-	}
 
-	if (externalOwner) {
-		const delivered = !postLoopError && result.exitCode === 0 && !result.error && !result.interrupted;
-		try {
-			const surface = await externalOwner.finish(delivered ? "delivered" : "retained");
-			result.executionSurface = surface;
-		} catch {
-			result.exitCode = 1;
-			result.error = result.error
-				? `${result.error}\n${safeExternalFailure("finish")}`
-				: safeExternalFailure("finish");
-			result.executionSurface = { handle: externalOwner.surface, retained: true };
+		if (options.outputMode === "file-only"
+			&& (result.exitCode !== 0 || result.outputSaveError)
+			&& !blockedLine(result.error ?? "")) {
+			result.finalOutput = formatFileOnlyFailure({
+				outputPath: options.outputPath,
+				saveError: result.outputSaveError,
+				...(preservedAt !== undefined ? { preservedAt } : { notPreservedReason }),
+			});
+			result.truncation = undefined;
 		}
-		if (postLoopError) {
-			result.exitCode = 1;
-			const safeMessage = safeExternalFailure("cleanup");
-			result.error = result.error
-				? `${result.error}\n${safeMessage}`
-				: safeMessage;
-			result.executionSurface ??= { handle: externalOwner.surface, retained: true };
-		}
-	}
+		if (!externalOwner && postLoopError) throw postLoopError;
 
-	if (options.outputMode === "file-only"
-		&& (result.exitCode !== 0 || result.outputSaveError)
-		&& !blockedLine(result.error ?? "")) {
-		result.finalOutput = formatFileOnlyFailure({
-			outputPath: options.outputPath,
-			saveError: result.outputSaveError,
-			...(preservedAt !== undefined ? { preservedAt } : { notPreservedReason }),
-		});
-		result.truncation = undefined;
+		return result;
+	} finally {
+		if (capTimer) clearTimeout(capTimer);
+		callerSignal?.removeEventListener("abort", forwardAbort);
 	}
-	if (!externalOwner && postLoopError) throw postLoopError;
-
-	return result;
 }

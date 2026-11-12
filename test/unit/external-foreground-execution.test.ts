@@ -228,7 +228,8 @@ describe("external foreground execution owner", () => {
 			second.ready.resolve();
 			const link = path.join(directory, "link.jsonl");
 			fs.symlinkSync(sessionFile, link);
-			await assert.rejects(secondOwner.runAttempt(request({ sessionFile: link })), /regular non-symlink file/);
+			await assert.rejects(secondOwner.runAttempt(request({ sessionFile: link })), (error: unknown) =>
+				/regular non-symlink file/.test((error as Error).message) && externalExecutionDiagnosticCode(error) === "session_file_untrusted");
 			assert.equal(second.starts.length, 0);
 
 			if (process.platform !== "win32") {
@@ -237,7 +238,8 @@ describe("external foreground execution owner", () => {
 				const thirdOwner = await createExternalExecution({ backend: third.backend, runId: "run", childId: "child", cwd: "/work", signal: new AbortController().signal }, thirdDependencies);
 				third.ready.resolve();
 				fs.chmodSync(sessionFile, 0o644);
-				await assert.rejects(thirdOwner.runAttempt(request({ sessionFile })), /owner-only/);
+				await assert.rejects(thirdOwner.runAttempt(request({ sessionFile })), (error: unknown) =>
+					/owner-only/.test((error as Error).message) && externalExecutionDiagnosticCode(error) === "session_file_untrusted");
 				assert.equal(third.starts.length, 0);
 			}
 		} finally {

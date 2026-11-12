@@ -39,11 +39,11 @@ A fork is a branch of the persisted parent session: full history, no filtering. 
 
 ## Acceptance levels
 
-`acceptance.level` unset means `auto`: read-only agents and read-only task wording infer `attested` with `review-findings` + `residual-risks`; other non-write tasks infer `attested` with `manual-notes` + `residual-risks`; write tasks infer `checked`; async write tasks, dynamic fanout, and risky wording (release, migration, security, destructive) infer `reviewed` with a required `reviewer` gate.
+`acceptance.level` unset means `auto`: read-only agents and read-only task wording infer `attested` with `review-findings` + `residual-risks`; other non-write tasks infer `attested` with `manual-notes` + `residual-risks`; write tasks infer `checked`; async write tasks, dynamic fanout, and risky wording (release, migration, security, destructive) infer `reviewed` with a required `reviewer` gate. Set an explicit level to run it as given; use `auto` or leave the level unset for inference.
 
 | Level | Required evidence | Use when |
 |---|---|---|
-| `none` | - | throwaway probe |
+| `none` | - | throwaway probe; requires `{ level: "none", reason: "..." }` |
 | `attested` | `manual-notes`, `residual-risks` (explicit); auto read-only: `review-findings`, `residual-risks` | read-only findings |
 | `checked` | `changed-files`, `tests-added`, `commands-run`, `residual-risks`, `no-staged-files` | ordinary write task |
 | `verified` | `checked` + `validation-output` | runtime must run `verify` commands |
@@ -72,9 +72,9 @@ A child saying "done" is evidence, not verification. `reviewed` means a reviewer
 Lifecycle (`queued`, `running`, `paused`, `complete`, `failed`) is separate from attention. `needs_attention` means no activity past the threshold; it is not a failure.
 
 - `status` (optionally `id`): active runs and their children.
-- `interrupt` (optionally `id`, including a nested run id): cancels the current child turn and leaves the run `paused`. Bare `interrupt` does not reach hidden nested descendants. Then decide: `resume` with clearer instructions, replace the task, ask the user, or stop.
+- Use `interrupt` with optional `id` and zero-based `index` to stop one running child and let its siblings finish; read the [result contracts](../../doc/programmatic-api.md#foreground-stop-by-index) for foreground and background outcomes. Omit `index` for the whole-run pause behavior; use a nested run id only without `index`. Treat bare `interrupt` as excluding hidden nested descendants. Then choose: `resume` with clearer instructions, replace the task, ask the user, or stop.
 - `resume` (`id`, `message`, `index` for multi-child runs): revives a finished, failed, or paused child from its persisted session file as a new child process. A running child cannot be resumed; a child with no `.jsonl` session fails with that reason.
-- Thresholds: `control: { needsAttentionAfterMs, inFlightSilenceCeilingMs, inFlightSilenceKillMs, notifyOn }` beside `tasks`; the kill is `max(inFlightSilenceKillMs, inFlightSilenceCeilingMs + needsAttentionAfterMs)`.
+- Set thresholds with `control: { needsAttentionAfterMs, inFlightSilenceCeilingMs, inFlightSilenceKillMs, maxRuntimeMs, notifyOn }` beside `tasks`; compute the silence kill as `max(inFlightSilenceKillMs, inFlightSilenceCeilingMs + needsAttentionAfterMs)`. Read `reference/config-fields.md` for the independent foreground runtime cap.
 - Long-running async job: its task must instruct it to emit observable progress (log lines, counts, phase names). A silent long job is a defect. Pair it with a monitor, giving it the `Async dir:` from the start message:
 
 ```

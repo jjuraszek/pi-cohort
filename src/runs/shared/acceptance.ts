@@ -127,10 +127,6 @@ export function normalizeAcceptanceInput(input: AcceptanceInput | undefined): Ac
 	return { ...input };
 }
 
-function explicitAcceptanceCanDisable(explicit: AcceptanceConfig): boolean {
-	return explicit.level === "none" && typeof explicit.reason === "string" && explicit.reason.trim().length > 0;
-}
-
 const KNOWN_ACCEPTANCE_KEYS = new Set(["level", "criteria", "evidence", "verify", "review", "stopRules", "reason"]);
 
 export function validateAcceptanceInput(input: unknown, pathLabel = "acceptance"): string[] {
@@ -139,6 +135,7 @@ export function validateAcceptanceInput(input: unknown, pathLabel = "acceptance"
 	if (input === false) return errors;
 	if (typeof input === "string") {
 		if (!VALID_LEVELS.has(input as AcceptanceLevel)) errors.push(`${pathLabel} has invalid level '${input}'.`);
+		if (input === "none") errors.push(`${pathLabel}.reason is required when level is none.`);
 		return errors;
 	}
 	if (!input || typeof input !== "object" || Array.isArray(input)) {
@@ -211,20 +208,13 @@ export function resolveEffectiveAcceptance(input: {
 	const explicit = normalizeAcceptanceInput(input.explicit);
 	const inferred = inferLevel(input);
 	const explicitLevel = normalizeLevel(explicit.level);
-	const level = explicitAcceptanceCanDisable(explicit)
-		? "none"
-		: explicitLevel === "auto"
-			? inferred.level
-			: (LEVEL_RANK[explicitLevel] >= LEVEL_RANK[inferred.level] ? explicitLevel : inferred.level);
+	const level = explicitLevel === "auto" ? inferred.level : explicitLevel;
 	const evidence = unique([...(level === inferred.level ? inferred.evidence : requiredEvidenceForLevel(level)), ...(explicit.evidence ?? [])]);
 	const criteria = normalizeCriteria(
 		(explicit.criteria?.length ? explicit.criteria : inferred.criteria) as Array<string | { id?: string; must?: string; evidence?: AcceptanceEvidenceKind[]; severity?: "required" | "recommended" }>,
 		evidence,
 	);
-	let review = explicit.review !== undefined ? explicit.review : inferred.review;
-	if (level === "reviewed" && explicitLevel !== "auto" && explicitLevel !== "reviewed" && explicit.review === undefined && review && review !== false) {
-		review = { ...review, required: false };
-	}
+	const review = explicit.review !== undefined ? explicit.review : (level === inferred.level ? inferred.review : undefined);
 	return {
 		level,
 		explicit: input.explicit !== undefined,

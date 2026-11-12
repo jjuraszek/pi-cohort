@@ -145,14 +145,20 @@ Review the diff
 
 		assert.deepEqual((parsed.steps[0] as { acceptance?: unknown }).acceptance, { level: "checked", evidence: ["changed-files", "commands-run"] });
 		assert.equal(((parsed.steps[1] as { parallel?: Array<{ acceptance?: unknown }> }).parallel?.[0]?.acceptance), "attested");
-		assert.throws(
-			() => parseJsonChain(JSON.stringify({
-				name: "bad-acceptance",
-				description: "Bad acceptance",
-				chain: [{ agent: "worker", acceptance: { level: "none" } }],
-			}), "project", "/tmp/bad-acceptance.chain.json"),
-			/step 1 acceptance\.reason is required/,
-		);
+		for (const { chain, label } of [
+			{ chain: [{ agent: "worker", acceptance: { level: "none" } }], label: "step 1 acceptance" },
+			{ chain: [{ agent: "worker", task: "t", acceptance: "none" }], label: "step 1 acceptance" },
+			{ chain: [{ parallel: [{ agent: "worker", task: "t", acceptance: "none" }] }], label: "step 1 parallel task 1 acceptance" },
+			{ chain: [
+				{ agent: "scout", task: "t", as: "seed", outputSchema: { type: "object" } },
+				{ expand: { from: { output: "seed", path: "/items" }, maxItems: 2 }, parallel: { agent: "worker", task: "{item}", acceptance: "none" }, collect: { as: "results" } },
+			], label: "step 2 dynamic template acceptance" },
+		]) {
+			assert.throws(
+				() => parseJsonChain(JSON.stringify({ name: "bad-acceptance", description: "Bad acceptance", chain }), "project", "/tmp/bad-acceptance.chain.json"),
+				{ message: `Invalid JSON chain '/tmp/bad-acceptance.chain.json': ${label}.reason is required when level is none.` },
+			);
+		}
 	});
 });
 

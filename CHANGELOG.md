@@ -5,6 +5,30 @@
 ### Fixed
 - A child launched in the parent's own directory, or at the same path in another worktree of its repository, inherits the parent's project-trust decision (`--approve` / `--no-approve`), so a child in a fresh worktree no longer blocks on the trust prompt under an external execution backend or silently drops project settings, packages, and skills under the native one. Every other child decides for itself, and a parent trusted only because its directory has nothing to gate passes nothing on. ([doc/configuration.md](doc/configuration.md#project-trust))
 
+## [7.7.4] - 2026-11-11
+
+### Added
+- Foreground children have an absolute `control.maxRuntimeMs` cap, configurable per call or with `subagents.control.maxRuntimeMs` in settings. Existing runs now default to 14400000 ms (4 h), even with attention tracking disabled; capped children return a failure naming the limit. (#61)
+
+### Fixed
+- Native aborts escalate to SIGKILL after 3 s when the child ignores SIGTERM, instead of treating a sent signal as proof of exit. (#61)
+
+## [7.7.3] - 2026-11-10
+
+### Added
+- `/interrupt-child <index> [run-id]` stops one running child while the calling agent is blocked, with running-child completions and notifications instead of conversation messages. (#58)
+
+### Changed
+- Acceptance now refuses the bare string `"none"` before dispatch; disabling gates requires `{ level: "none", reason: "..." }` (deprecated `false` still works). Explicit levels run as given instead of being raised by inference, which applies only to `auto` or an unset level. Two inputs that passed on 7.7.2 now fail: a saved `*.chain.json` carrying bare `"none"` no longer loads, with the reason-required message under `Chain diagnostics:` in `subagent` `action: "list"` and only `Unknown chain: <name>` from `/run-chain <name>`; explicit `verified` without `verify` commands that was raised to `reviewed` is now rejected with `Acceptance rejected: verified acceptance requires runtime verify commands.` (#55)
+
+### Fixed
+- `interrupt` with a child `index` stops only that child in foreground and background runs. Foreground results include sibling outputs with an interrupted marker; background siblings retain their own statuses and outputs while the run settles as paused. Foreground parallel and dynamic chain steps fail without losing sibling outputs; static worktree steps retain patch locations. (#58)
+
+## [7.7.2] - 2026-11-10
+
+### Fixed
+- A forked subagent (`context: "fork"`) on an external execution backend no longer fails at startup: pi branches the parent session with the default file mode (0644), and the external path refuses any session file readable by group or other, so the fork resolver now sets the branched file to 0600 after its existence and containment checks. The owner-only and regular-file rejections now carry the diagnostic code `session_file_untrusted`, rendered as `External execution attempt failed (session_file_untrusted)` on both the foreground and background paths, instead of the bare phrase. (#56)
+
 ## [7.7.1] - 2026-11-09
 
 ### Fixed

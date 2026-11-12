@@ -1147,7 +1147,26 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.equal(dynamicTemplate.isError, true);
 		assert.match(dynamicTemplate.content[0]?.text ?? "", /chain\[1\]\.parallel\.acceptance has invalid level 'verifed'/);
 
-		// No child was spawned for any rejected input.
+		const noneCases = [
+			{ params: { agent: "echo", task: "t", acceptance: "none" }, labels: ["acceptance"] },
+			{ params: { tasks: [{ agent: "worker", task: "t", acceptance: "none" }] }, labels: ["tasks[0].acceptance"] },
+			{ params: { chain: [{ agent: "worker", task: "t", acceptance: "none" }] }, labels: ["chain[0].acceptance"] },
+			{ params: { chain: [{ parallel: [{ agent: "worker", task: "t", acceptance: "none" }] }] }, labels: ["chain[0].parallel[0].acceptance"] },
+			{ params: { chain: [
+				{ agent: "worker", task: "t", as: "seed", outputSchema: { type: "object" } },
+				{ expand: { from: { output: "seed", path: "/items" }, maxItems: 2 }, parallel: { agent: "worker", task: "{item}", acceptance: "none" }, collect: { as: "results" } },
+			] }, labels: ["chain[1].parallel.acceptance"] },
+			{ params: { acceptance: "none", tasks: [{ agent: "worker", task: "t", acceptance: "none" }] }, labels: ["acceptance", "tasks[0].acceptance"] },
+		];
+		for (const { params, labels } of noneCases) {
+			for (const async of [false, true]) {
+				const result = await run({ ...params, async });
+				assert.equal(result.isError, true);
+				assert.equal(result.content[0]?.text, `Invalid acceptance input:\n${labels.map(label => `- ${label}.reason is required when level is none.`).join("\n")}`);
+				assert.deepEqual(result.details.results, []);
+				assert.equal(fs.readdirSync(mockPi.dir).filter((name) => name.startsWith("call-")).length, 0);
+			}
+		}
 		assert.equal(fs.readdirSync(mockPi.dir).filter((name) => name.startsWith("call-")).length, 0);
 	});
 

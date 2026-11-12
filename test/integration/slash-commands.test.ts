@@ -5,6 +5,9 @@ import * as path from "node:path";
 import { beforeEach, describe, it } from "node:test";
 
 import { ASYNC_DIR } from "../../src/shared/types.ts";
+import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
+import { registerSlashSubagentBridge } from "../../src/slash/slash-bridge.ts";
+import { createMockPi, events as childEvents, makeAgent, makeMinimalCtx } from "../support/helpers.ts";
 
 const SLASH_RESULT_TYPE = "subagent-slash-result";
 const SLASH_SUBAGENT_REQUEST_EVENT = "subagent:slash:request";
@@ -87,6 +90,8 @@ function createState(cwd: string) {
 	return {
 		baseCwd: cwd,
 		currentSessionId: null,
+		foregroundControls: new Map(),
+		lastForegroundControlId: null,
 		asyncJobs: new Map(),
 		grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() },
 		cleanupTimers: new Map(),
@@ -851,6 +856,161 @@ Gather context
 			});
 		});
 	});
+});
+
+
+describe("interrupt-child slash command", () => {
+	function setup(state = createState(process.cwd())) {
+		const commands = new Map<string, RegisteredSlashCommand>();
+		const events = createEventBus();
+		const sent: unknown[] = [];
+		const notifications: Array<{ message: string; type?: string }> = [];
+		const statuses: Array<string | undefined> = [];
+		let rewrites = 0;
+		const pi = {
+			events,
+			registerCommand(name: string, spec: RegisteredSlashCommand) { commands.set(name, spec); },
+			registerShortcut() {},
+			sendMessage(message: unknown) { sent.push(message); },
+		};
+		const ctx = createCommandContext({
+			hasUI: true,
+			notify: (message, type) => notifications.push({ message, type }),
+			setStatus: (key, text) => { assert.equal(key, "subagent-slash"); statuses.push(text); },
+			sessionManager: { getSessionFile: () => "session.jsonl", _rewriteFile: () => { rewrites++; } },
+		});
+		registerSlashCommands!(pi, state);
+		const command = commands.get("interrupt-child");
+		assert.ok(command, "register /interrupt-child");
+		return { command, events, ctx, notifications, statuses, assertNoSteer() {
+			assert.deepEqual(sent, []);
+			assert.equal(rewrites, 0);
+		} };
+	}
+
+	it("/interrupt-child argument handling and running-child completions", async () => {
+		const state = createState(process.cwd());
+		const h = setup(state);
+		const requests: unknown[] = [];
+		h.events.on(SLASH_SUBAGENT_REQUEST_EVENT, (data) => {
+			const { requestId, params } = data as { requestId: string; params: unknown };
+			requests.push(params);
+			h.events.emit(SLASH_SUBAGENT_STARTED_EVENT, { requestId });
+			h.events.emit(SLASH_SUBAGENT_RESPONSE_EVENT, {
+				requestId, result: { content: [{ type: "text", text: "action result" }] }, isError: false,
+			});
+		});
+		for (const args of ["", "-1", "+1", "1.5", "1e2", "abc", "1 run extra"]) {
+			await h.command.handler(args, h.ctx);
+			assert.deepEqual(h.notifications.pop(), { message: "Usage: /interrupt-child <index> [run-id]", type: "error" });
+		}
+		assert.deepEqual(requests, []);
+		assert.deepEqual(h.command.getArgumentCompletions!(""), []);
+		await h.command.handler("1", h.ctx);
+		assert.deepEqual(requests.pop(), { action: "interrupt", index: 1 });
+		state.foregroundControls.set("run-a", { childInterrupts: new Map([[0, () => true], [2, () => true]]) });
+		await h.command.handler("  02  ", h.ctx);
+		assert.deepEqual(requests.pop(), { action: "interrupt", index: 2, id: "run-a" });
+		const values = (prefix: string) => (h.command.getArgumentCompletions!(prefix) as Array<{ value: string }>).map(({ value }) => value);
+		assert.deepEqual(values(""), ["0", "2"]);
+		assert.deepEqual(values("2"), ["2"]);
+		state.foregroundControls.set("run-b", { childInterrupts: new Map([[1, () => true]]) });
+		await h.command.handler("1", h.ctx);
+		assert.deepEqual(requests, []);
+		assert.match(h.notifications.at(-1)!.message, /run-a/);
+		assert.match(h.notifications.at(-1)!.message, /run-b/);
+		assert.deepEqual(values(""), ["0 run-a", "2 run-a", "1 run-b"]);
+		assert.deepEqual(values("1 r"), ["1 run-b"]);
+		state.foregroundControls.get("run-a").childInterrupts.delete(0);
+		assert.deepEqual(values("0"), []);
+		await h.command.handler("1 run-b", h.ctx);
+		assert.deepEqual(requests.pop(), { action: "interrupt", index: 1, id: "run-b" });
+		assert.deepEqual(h.notifications.at(-1), { message: "action result", type: "info" });
+		assert.equal(h.statuses.at(-1), undefined);
+		h.assertNoSteer();
+	});
+
+	it("/interrupt-child reports bridge errors without steering or rewriting the session", async () => {
+		const h = setup();
+		await h.command.handler("1", h.ctx);
+		assert.match(h.notifications.at(-1)!.message, /No slash subagent bridge responded/);
+		assert.equal(h.notifications.at(-1)!.type, "error");
+		const bridge = registerSlashSubagentBridge({
+			events: h.events, getContext: () => h.ctx,
+			execute: async () => { throw new Error("executor unavailable"); },
+		});
+		try {
+			await h.command.handler("1", h.ctx);
+			assert.deepEqual(h.notifications.at(-1), { message: "executor unavailable", type: "error" });
+			assert.equal(h.statuses.at(-1), undefined);
+			h.assertNoSteer();
+		} finally { bridge.dispose(); }
+	});
+
+	for (const explicit of [false, true]) {
+		it(`/interrupt-child stops one child of a blocked foreground run (${explicit ? "prefix" : "implicit"})`, async () => {
+			await withTempProject("pi-slash-interrupt-", async (root) => {
+				const state = createState(root);
+				const h = setup(state);
+				const mock = createMockPi();
+				mock.install();
+				const ctx = makeMinimalCtx(root);
+				const executor = createSubagentExecutor({
+					captureRuntime: mock.captureRuntime,
+					pi: { events: h.events, getSessionName: () => undefined }, state,
+					resolveConfig: () => ({ control: { enabled: false } }),
+					tempArtifactsDir: root, getSubagentSessionRoot: () => root,
+					expandTilde: (value: string) => value,
+					discoverAgents: () => ({ agents: [makeAgent("echo", { completionGuard: false })] }),
+				});
+				const bridge = registerSlashSubagentBridge({ events: h.events, getContext: () => ctx, execute: executor.execute });
+				for (const index of [0, 1, 2]) mock.onCall({ taskIncludes: `Child task ${index}`, steps: [
+					{ jsonl: [childEvents.messageStart()] },
+					{ delay: index === 1 ? 60_000 : 1_500, jsonl: [childEvents.assistantMessage(`Completed child ${index}`)] },
+				] });
+				const controller = new AbortController();
+				let settled = false;
+				const pending = executor.execute("blocked-call", {
+					tasks: [0, 1, 2].map((index) => ({ agent: "echo", task: `Child task ${index}` })), async: false,
+				}, controller.signal, () => {}, ctx).finally(() => { settled = true; });
+				try {
+					const deadline = Date.now() + 5_000;
+					while (mock.callCount() < 3 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+					assert.equal(mock.callCount(), 3);
+					const [runId, control] = [...state.foregroundControls.entries()][0];
+					assert.equal(control.childInterrupts.size, 3);
+					assert.equal(settled, false);
+					const suffix = explicit ? ` ${runId.slice(0, 6)}` : "";
+					await h.command.handler(`99${suffix}`, h.ctx);
+					assert.deepEqual(h.notifications.at(-1), { message: `Foreground run ${runId} has no running child at index 99.`, type: "error" });
+					assert.equal(control.childInterrupts.size, 3);
+					await h.command.handler(`1${suffix}`, h.ctx);
+					assert.deepEqual(h.notifications.at(-1), { message: `Interrupt requested for child 1 of foreground run ${runId}.`, type: "info" });
+					assert.deepEqual([...control.childInterrupts.keys()].sort(), [0, 2]);
+					assert.equal(settled, false, "siblings must still be in flight after the stop request");
+					assert.equal(h.statuses.at(-1), undefined);
+					const result = await pending;
+					assert.equal(controller.signal.aborted, false);
+					assert.notEqual(result.isError, true);
+					assert.equal(result.details.results.length, 3);
+					assert.equal(result.details.results[1].interrupted, true);
+					assert.match(result.content[0].text, /=== Task 2: echo ===\nINTERRUPTED/);
+					for (const index of [0, 2]) {
+						assert.notEqual(result.details.results[index].interrupted, true);
+						assert.equal(result.details.results[index].exitCode, 0);
+						assert.equal(result.details.results[index].finalOutput, `Completed child ${index}`);
+						assert.match(result.content[0].text, new RegExp(`Completed child ${index}`));
+					}
+					h.assertNoSteer();
+				} finally {
+					controller.abort();
+					await pending;
+					bridge.dispose();
+					mock.uninstall();
+				}
+			});
+		});
+	}
 });
 
 

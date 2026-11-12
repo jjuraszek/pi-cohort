@@ -1,5 +1,7 @@
 # External child interrupt teardown and review completion
 
+> **Superseded by:** [doc/specs/2026-11-10-gh-58-interrupt-one-parallel-child.md](./2026-11-10-gh-58-interrupt-one-parallel-child.md) - "Visible state and retained surfaces" section, the visible paused output of a parallel run or chain parallel step, for a stop by index only
+
 **Goal:** Bound external-child interruption and cleanup, report uncertainty honestly, and prevent an interrupted child from satisfying pi-gauntlet's completed-review checks without changing existing dispatch patterns.
 **Amend-grant:** every later spec amendment in this flow (corrected facts, paths, verification lines, and scope, acceptance-criteria, or public-contract edits alike) applies without asking; only a redraw (changed problem statement, component added, removed, or re-bounded) still stops for you, and the grant never stands in for a spec approval.
 **Engine:** waves

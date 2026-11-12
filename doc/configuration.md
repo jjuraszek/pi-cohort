@@ -89,6 +89,7 @@ Defaults to `false`. Forces depth-0 single, parallel, and chain runs into backgr
       "activeNoticeAfterMs": 240000,
       "inFlightSilenceCeilingMs": 600000,
       "inFlightSilenceKillMs": 1800000,
+      "maxRuntimeMs": 14400000,
       "failedToolAttemptsBeforeAttention": 3,
       "notifyOn": ["active_long_running", "needs_attention"],
       "notifyChannels": ["event", "async"]
@@ -97,7 +98,9 @@ Defaults to `false`. Forces depth-0 single, parallel, and chain runs into backgr
 }
 ```
 
-These are the consumer defaults. Optional `activeNoticeAfterTurns` and `activeNoticeAfterTokens` have no defaults and remain unset. Numeric thresholds must be positive integers; invalid thresholds fall back in the consumer. The kill threshold is clamped to at least `inFlightSilenceCeilingMs + needsAttentionAfterMs`. `notifyOn` accepts the two event names shown above; `notifyChannels` accepts `event` and `async`. An empty list disables those notifications. Per-call control overrides take precedence over the resolved settings object; this is separate from whole-object replacement between settings levels.
+These are the consumer defaults. Optional `activeNoticeAfterTurns` and `activeNoticeAfterTokens` have no defaults and remain unset. Numeric thresholds must be positive integers; invalid thresholds fall back in the consumer. The silence-kill threshold is clamped to at least `inFlightSilenceCeilingMs + needsAttentionAfterMs`. `notifyOn` accepts the two event names shown above; `notifyChannels` accepts `event` and `async`. An empty list disables those notifications. Per-call control overrides take precedence over the resolved settings object; this is separate from whole-object replacement between settings levels.
+
+`maxRuntimeMs` defaults to `14400000` ms (4 h) and caps each foreground child from its start regardless of activity; async children are not capped. With `enabled: false`, attention tracking and the ordinary silence kill are disabled, but a foreground child awaiting structured settlement can still be silence-killed and the runtime cap still applies. A capped child returns a failure whose `error` names `maxRuntimeMs` and its value. No value disables the cap: invalid values fall through to settings, then the default; use a very large positive integer for no practical limit. The runtime cap is not clamped against the silence thresholds.
 
 ## `chain`
 
@@ -173,7 +176,7 @@ Accepts:
 - `"native"`: always select native execution, bypassing all registered backends.
 - A registered backend name (e.g. `"cmux"`, `"tmux"`): select that specific backend; fail loudly if unavailable or if detection throws.
 
-The nearest defined `subagents.executionBackend` wins through the settings ladder; when unset, the consumer uses `auto`. Blank, whitespace-only, and invalid-type values fail loudly. Unknown backend names fail at selection time. Diagnostics never echo adapter-provided error text or detection reasons.
+The nearest defined `subagents.executionBackend` wins through the settings ladder; when unset, the consumer uses `auto`. Blank, whitespace-only, and invalid-type values fail loudly. Unknown backend names fail at selection time. Diagnostics never echo adapter-provided error text or detection reasons; an external failure reads `External execution <phase> failed`, with a short code appended when pi-cohort itself detected the cause: `result_missing` (the child exited without a durable result) or `session_file_untrusted` (the child's session file is a symlink, not a regular file, or readable by group/other; forked session files are set owner-only before launch).
 
 **Inspiration:** backend selection adapts vim-dispatch's ordered first-match handler pattern ([`plugin/dispatch.vim#L84-L97`](https://github.com/tpope/vim-dispatch/blob/a2ff28abdb2d89725192db5b8562977d392a4d3f/plugin/dispatch.vim#L84-L97) defines ordered handlers; [`autoload/dispatch.vim#L408-L421`](https://github.com/tpope/vim-dispatch/blob/a2ff28abdb2d89725192db5b8562977d392a4d3f/autoload/dispatch.vim#L408-L421) iterates first-match-wins) without editor-specific lifecycle coupling.
 

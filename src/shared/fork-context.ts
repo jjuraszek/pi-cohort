@@ -77,6 +77,8 @@ export function createForkContextResolver(
 					}
 				}
 				const resolvedFile = assignedDir ? fs.realpathSync.native(sessionFile) : sessionFile;
+				// pi branches with the default umask; external backends refuse a session file with group/other bits.
+				if (process.platform !== "win32") fs.chmodSync(resolvedFile, 0o600);
 				cachedSessionFiles.set(index, resolvedFile);
 				return resolvedFile;
 			} catch (error) {

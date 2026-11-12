@@ -408,16 +408,21 @@ for (const outcome of ["success", "fail", "interrupted", "missing-result", "malf
 	});
 }
 
-for (const scenario of ["fork", "fresh", "missing", "headerless"] as const) {
+for (const scenario of ["fork", "fresh", "missing", "headerless", "untrusted"] as const) {
 	test(`runSingleStep stamps supplied external forks before launch: ${scenario}`, unixOnly, async () => {
 		const tempDir = createTempDir("bg-external-stamp-");
 		const binDir = path.join(tempDir, "bin");
 		fs.mkdirSync(binDir);
-		fs.writeFileSync(path.join(binDir, "pi"), makeFixtureScript("success"), { mode: 0o755 });
+		const argsPath = path.join(tempDir, "pi-args.json");
+		fs.writeFileSync(path.join(binDir, "pi"), makeFixtureScript("success", argsPath), { mode: 0o755 });
 		const sessionFile = path.join(tempDir, "session-0-attempt-0.jsonl");
 		const header = { type: "session", cwd: "/parent-A", parentSession: "parent.jsonl" };
 		const history = '{"type":"message", "id":"history", "parentId":null, "message":{"role":"user","timestamp":0,"content":[{"type":"text","text":"prior"}]}}\n';
 		if (scenario === "fork") fs.writeFileSync(sessionFile, JSON.stringify(header) + "\n" + history, { mode: 0o600 });
+		if (scenario === "untrusted") {
+			fs.writeFileSync(sessionFile, JSON.stringify(header) + "\n" + history, { mode: 0o600 });
+			fs.chmodSync(sessionFile, 0o644);
+		}
 		if (scenario === "headerless") fs.writeFileSync(sessionFile, "{}\n", { mode: 0o600 });
 		const requests: ExecutionSurfaceRequest[] = [];
 		const hosts: ReturnType<typeof spawn>[] = [];
@@ -434,7 +439,7 @@ for (const scenario of ["fork", "fresh", "missing", "headerless"] as const) {
 				sessionEnabled: true, sessionDir: tempDir, id: "stamp", flatIndex: 0, flatStepCount: 1,
 				outputFile: path.join(tempDir, "output.log"),
 				onAttemptStart() {
-					if (scenario === "fork") assert.equal(fs.readFileSync(sessionFile, "utf8"), JSON.stringify({ ...header, cwd: tempDir }) + "\n" + history);
+					if (scenario === "fork" || scenario === "untrusted") assert.equal(fs.readFileSync(sessionFile, "utf8"), JSON.stringify({ ...header, cwd: tempDir }) + "\n" + history);
 					else assert.equal(fs.existsSync(sessionFile), false, "fresh external attempt is not stamped or pre-created");
 				},
 				executionBackendCoordinator: createDetachedExecutionBackendCoordinator({ protocolVersion: 1, registrations: [] }),
@@ -444,6 +449,10 @@ for (const scenario of ["fork", "fresh", "missing", "headerless"] as const) {
 				assert.equal(result.exitCode, 1);
 				assert.match(result.error ?? "", /Failed to stamp session header cwd:/);
 				assert.equal(requests.length, 0);
+			} else if (scenario === "untrusted") {
+				assert.equal(result.exitCode, 1);
+				assert.equal(result.error, "External execution attempt failed (session_file_untrusted)");
+				assert.equal(fs.existsSync(`${argsPath}.count`), false, "an untrusted session file must not start a child");
 			} else {
 				assert.equal(result.exitCode, 0, result.error);
 				assert.equal(requests.length, 1);
@@ -848,7 +857,7 @@ import { registerExecutionBackend } from ${JSON.stringify(pathToFileURL(path.res
 ${cleanupHosts.toString()}
 ${makeBackend.toString()}
 const hosts = [], requests = [], lifecycle = { releases: 0, closes: 0, suppressExitEvidence: ${mode !== "user-abort"} };
-${mode === "user-abort" ? 'const interruptTimer = setInterval(() => { if (fs.existsSync("abort-ready")) { clearInterval(interruptTimer); process.kill(process.pid, "SIGUSR2"); } }, 10);' : ''}
+${mode === "user-abort" ? 'const interruptTimer = setInterval(() => { if (fs.existsSync("abort-ready")) { clearInterval(interruptTimer); fs.writeFileSync("interrupt-request-all.json", JSON.stringify({ requestedAt: Date.now() })); process.kill(process.pid, "SIGUSR2"); } }, 10);' : ''}
 registerExecutionBackend(makeBackend(${JSON.stringify(backendName)}, "", requests, hosts, lifecycle));
 const rename = fs.renameSync;
 let checkedPause = false;
@@ -893,7 +902,7 @@ await import(${JSON.stringify(pathToFileURL(runnerPath).href)});
 				assert.equal(paused.executionSurface.retained, true);
 				assert.equal(paused.modelAttempts.length, 1);
 				assert.equal(paused.modelAttempts[0].success, true);
-				assert.equal(status.steps[pausedIndex].status, "complete");
+				assert.equal(status.steps[pausedIndex].status, "paused");
 				assert.equal(status.steps[pausedIndex].interrupted, undefined);
 				assert.equal(status.steps[pausedIndex].error, paused.error);
 			}

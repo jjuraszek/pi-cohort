@@ -1,5 +1,7 @@
 # Foreground wall-clock kill-cap: SIGTERM a child wedged in unbounded in-flight silence
 
+> **Superseded by:** [doc/specs/2026-11-11-gh-61-foreground-max-runtime-cap.md](./2026-11-11-gh-61-foreground-max-runtime-cap.md) - the rejection of an absolute cap in the "Signal-based, not absolute" decision and the `maxRunMs` line in "Out of scope" only
+
 ## Context
 
 A foreground subagent dispatch can block the orchestrator indefinitely when the

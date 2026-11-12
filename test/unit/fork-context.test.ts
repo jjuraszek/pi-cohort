@@ -120,6 +120,7 @@ describe("createForkContextResolver", () => {
 			}, "fork", { sessionDirForIndex: (index) => path.join(tempDir, `run-${index}`) });
 
 			const parentBytes = fs.readFileSync(parentSessionFile, "utf-8");
+			const parentMode = fs.statSync(parentSessionFile).mode & 0o777;
 			const childSessionFile = resolver.sessionFileForIndex(0, childCwd);
 			assert.ok(childSessionFile);
 			assert.notEqual(childSessionFile, parentSessionFile);
@@ -129,6 +130,10 @@ describe("createForkContextResolver", () => {
 			assert.equal(JSON.parse(parentBytes.split("\n")[0]).cwd, parentCwd);
 			assert.equal(fs.readFileSync(parentSessionFile, "utf-8"), parentBytes);
 			assert.equal(fs.existsSync(childSessionFile), true);
+			if (process.platform !== "win32") {
+				assert.equal(fs.statSync(childSessionFile).mode & 0o077, 0, "forked session file must be owner-only");
+				assert.equal(fs.statSync(parentSessionFile).mode & 0o777, parentMode, "parent session file mode is unchanged");
+			}
 			assert.deepEqual(SessionManager.open(childSessionFile).getBranch(leafId), parent.getBranch(leafId));
 			assert.equal(parent.getSessionFile(), parentSessionFile);
 			assert.equal(parent.getLeafId(), leafId);
@@ -249,6 +254,31 @@ describe("createForkContextResolver", () => {
 				() => resolver.sessionFileForIndex(0, tempDir),
 				/Failed to create forked subagent session: Session manager returned a forked session file that does not exist: .*missing-child\.jsonl/,
 			);
+		} finally {
+			fs.rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("leaves the mode of a branched file outside the assigned session directory unchanged", { skip: process.platform === "win32" }, () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cohort-fork-outside-"));
+		try {
+			const parentSessionFile = path.join(tempDir, "parent.jsonl");
+			const outsideChildSessionFile = path.join(tempDir, "outside-child.jsonl");
+			writeMinimalSessionFile(parentSessionFile, "parent");
+			writeMinimalSessionFile(outsideChildSessionFile, "child");
+			fs.chmodSync(outsideChildSessionFile, 0o644);
+			const resolver = createForkContextResolver({
+				getSessionFile: () => parentSessionFile,
+				getLeafId: () => "leaf-abc",
+			}, "fork", {
+				sessionDirForIndex: (index) => path.join(tempDir, `run-${index}`),
+				openSession: () => ({
+					createBranchedSession: () => outsideChildSessionFile,
+				}),
+			});
+
+			assert.throws(() => resolver.sessionFileForIndex(0, tempDir), /outside assigned session directory/);
+			assert.equal(fs.statSync(outsideChildSessionFile).mode & 0o777, 0o644);
 		} finally {
 			fs.rmSync(tempDir, { recursive: true, force: true });
 		}

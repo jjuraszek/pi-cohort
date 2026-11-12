@@ -133,6 +133,34 @@ Agent definitions are not loaded into context by default. Management actions let
 
 `create` uses `config.scope`, not `agentScope`. `config.name` is the local frontmatter name; optional `config.package` registers the runtime name as `{package}.{name}` and is saved as separate `name` and `package` frontmatter. `update` and `delete` use the runtime name and `agentScope` only when the same runtime name exists in multiple scopes. To clear optional string fields, including `package`, set them to `false` or `""`.
 
+### Foreground stop by index
+
+To stop one child of a running foreground parallel run without cancelling its siblings:
+
+```ts
+subagent({ action: "interrupt", id: "<run-id>", index: 1 })
+```
+
+`index` is the zero-based flat child index, also used by `resume`: a task's index in a top-level parallel run, or its position across all children of a chain, including earlier steps. A non-running index returns an error naming the index and stops nothing. Stopping one child does not trigger `failFast`; the siblings finish before the waiting call returns.
+
+When every interrupted child was stopped by index, the foreground result is:
+
+| Run shape | Returned result |
+|---|---|
+| Top-level parallel | The text includes sibling outputs and `INTERRUPTED` for the stopped child, for example `2/3 succeeded`. `details.results` retains every child; the stopped entry has `exitCode: 0` and `interrupted: true` and does not count as a success. The tool does not set `isError`. |
+| Static parallel chain step | The chain returns `isError: true` with `Parallel step N failed:` and an `interrupted` failure line. `## Outputs` contains sibling outputs and a `- interrupted` heading for the stopped task, whether or not a `stopOn` condition matched. No later step runs. Only successful, non-interrupted tasks register named outputs. With `worktree: true`, all partial diffs are captured, including the stopped child's, and patch locations appear in the failure text. |
+| Dynamic chain step | The chain returns `isError: true` with `Dynamic step N failed:`, an `interrupted` item line, sibling outputs, and an interrupted heading. The group status is `failed`; no later step runs. The collection in `details.outputs` retains the stopped item's partial text. Dynamic steps do not support `worktree`. |
+
+Task headings and cleanup diagnostics use one-based numbers, not the zero-based request index. Interrupted output headings include the child's error when present; cleanup diagnostics remain visible in the aggregate or chain failure text. A single run or sequential chain step stopped by index still returns its pause notice. Interrupting without `index`, or mixing whole-run and indexed stops in the same step, keeps the existing pause notice instead of the aggregate above.
+
+### Background stop by index
+
+The same `interrupt` request with `index` targets one child of a running async run, including static parallel and materialized dynamic children. Use the zero-based flat index from status. A non-running index returns an error naming the index and sends no signal. Siblings finish with their own statuses and outputs; the stopped child remains `paused` with `interrupted: true`. The run settles as `paused` with `Paused after interrupt. Waiting for explicit next action.`, and later chain steps do not run. Sibling outputs remain in the async result's `results[]` and are accessible through per-child output paths in `status`, not in the paused summary text. Background results do not use the foreground chain-failure wrapper.
+
+The executor atomically writes `interrupt-request-<index>.json` in the run's async directory before signaling the runner. An omitted index writes `interrupt-request-all.json`; direct nested async interrupts use that same whole-run marker. The runner consumes and deletes all pending request files on each signal, handling indexed stops before a whole-run stop. The filenames carry the target; the body is diagnostic metadata. An empty signal is a no-op, not an implicit whole-run request.
+
+Indexed requests address per-child callbacks. A request received while its running child has no callback waits for that child's next registration, including a model fallback attempt. If the child settles first, the request is discarded without stopping a sibling. A later indexed or whole-run request remains valid after an earlier indexed stop. Whole-run requests retain the legacy last-registered callback: they do not latch across a registration gap or select a different sibling after that slot clears. Repeated whole-run requests are ignored.
+
 ## Parameter reference
 
 | Param | Type | Default | Description |
@@ -161,8 +189,8 @@ Agent definitions are not loaded into context by default. Management actions let
 | `includeProgress` | boolean | false | Include full progress in result. |
 | `share` | boolean | false | Upload session export to GitHub Gist. |
 | `sessionDir` | string | derived | Override session log directory. |
-| `acceptance` | string/object/false | inferred | Override the run's inferred acceptance gates. Use `"auto"`, `"attested"`, `"checked"`, `"verified"`, `"reviewed"`, or `{ level: "none", reason: "..." }`. See [orchestration-patterns.md](orchestration-patterns.md#acceptance-gates). |
-| `control` | object | config defaults | Override per-run control thresholds. Supports `needsAttentionAfterMs`, `activeNoticeAfterMs`, `inFlightSilenceCeilingMs`, `inFlightSilenceKillMs`, and `notifyOn`. |
+| `acceptance` | string/object/false | inferred | An explicit level runs as given; `"auto"` or an unset level uses inference. Use `"attested"`, `"checked"`, `"verified"`, or `"reviewed"`; `none` requires the object form with a `reason`: `{ level: "none", reason: "..." }`. See [orchestration-patterns.md](orchestration-patterns.md#acceptance-gates). |
+| `control` | object | config defaults | Override per-run control thresholds. Supports `needsAttentionAfterMs`, `activeNoticeAfterMs`, `inFlightSilenceCeilingMs`, `inFlightSilenceKillMs`, `maxRuntimeMs`, and `notifyOn`. |
 
 `context: "fork"` fails fast when the parent session is not persisted, the current leaf is missing, or the branched child session cannot be created. It never silently downgrades to `fresh`. In multi-agent runs, if any requested agent has `defaultContext: fork` and the launch omits `context`, the whole invocation uses forked context; pass `context: "fresh"` when you intentionally want a fresh run.
 
@@ -174,14 +202,15 @@ Sequential and parallel chain tasks accept `agent`, `task`, `phase`, `label`, `a
 
 ## Control configuration
 
-Per-run `control` fields override global thresholds when a task legitimately runs without observable output:
+Per-run `control` fields override settings thresholds for attention tracking, silence kills, and foreground runtime:
 
 | Field | Default | Description |
 |---|---|---|
 | `needsAttentionAfterMs` | `60000` | Emit `needs_attention` when a child shows no activity for this many milliseconds. |
 | `activeNoticeAfterMs` | `240000` | Emit `active_long_running` (calm notice) at this interval while a long-running task continues producing output or while an in-flight turn is running within the silence ceiling. |
 | `inFlightSilenceCeilingMs` | `600000` | While an assistant turn is in flight, a silent stretch under this bound is reported as the calm `active_long_running` state instead of `needs_attention`; silence past it re-escalates to `needs_attention`. Bounds zero-output turns without flagging healthy long thinking/streaming. |
-| `inFlightSilenceKillMs` | `1800000` | Hard cap (foreground only): once an in-flight turn has produced no output for this long, the child is SIGTERMed and the run settles as a failure (non-zero exit, `result.error` naming the cap), feeding the orchestrator's normal failure handling instead of blocking indefinitely on a child wedged inside a tool call. Clamped up to `inFlightSilenceCeilingMs + needsAttentionAfterMs` so the `needs_attention` warning always fires first. Gated on `enabled`. |
+| `inFlightSilenceKillMs` | `1800000` | Hard cap (foreground only): once an in-flight turn has produced no output for this long, the child is SIGTERMed and the run settles as a failure (non-zero exit, `result.error` naming the cap), feeding the orchestrator's normal failure handling instead of blocking indefinitely on a child wedged inside a tool call. Clamped up to `inFlightSilenceCeilingMs + needsAttentionAfterMs` so the `needs_attention` warning fires first when attention tracking is enabled. Ordinary silence kills require `enabled`, but a foreground child awaiting structured settlement can still be silence-killed when `enabled: false`. |
+| `maxRuntimeMs` | `14400000` | Absolute cap (foreground only): terminate each child this many milliseconds after child start regardless of activity, returning a failure with `result.error` naming `maxRuntimeMs` and its value. Not gated on `enabled`. Accepts positive integers with no upper bound or silence-threshold clamp; invalid values fall through to settings, then this default. Async children are not capped. |
 | `notifyOn` | `["active_long_running", "needs_attention"]` | Which activity states trigger notifications: `"needs_attention"`, `"active_long_running"`, or both. |
 
 Example:

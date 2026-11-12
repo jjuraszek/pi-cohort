@@ -47,6 +47,7 @@ export interface StopRecord {
 
 /** One finished task's output as rendered in the chain result's `## Outputs` section. */
 export interface ChainTaskOutputEntry {
+	interrupted?: boolean;
 	stepIndex: number;
 	taskIndex: number;
 	agent: string;
@@ -143,6 +144,7 @@ export type ControlNotificationChannel = "event" | "async";
 
 export interface ControlConfig {
 	enabled?: boolean;
+	maxRuntimeMs?: number;
 	needsAttentionAfterMs?: number;
 	activeNoticeAfterMs?: number;
 	inFlightSilenceCeilingMs?: number;
@@ -156,6 +158,7 @@ export interface ControlConfig {
 
 export interface ResolvedControlConfig {
 	enabled: boolean;
+	maxRuntimeMs: number;
 	needsAttentionAfterMs: number;
 	activeNoticeAfterMs: number;
 	inFlightSilenceCeilingMs: number;
@@ -750,7 +753,10 @@ export interface SubagentState {
 		toolCount?: number;
 		nestedRoute?: NestedRouteInfo;
 		nestedChildren?: NestedRunSummary[];
-		interrupt?: () => boolean;
+		childInterrupts: Map<number, () => boolean>;
+		stoppedByIndex: Set<number>;
+		lastAssigned?: number;
+		interrupt?: (index?: number) => boolean;
 	}>;
 	lastForegroundControlId: string | null;
 	pendingForegroundControlNotices?: Map<string, ReturnType<typeof setTimeout>>;
