@@ -202,9 +202,17 @@ function patchInfoForDiff(diff: WorktreeDiff | undefined): { patchPath?: string;
 }
 
 async function runParallelChainTasks(input: ParallelChainRunInput): Promise<SingleResult[]> {
-	const childIds = input.step.parallel.map((task, index) => createForegroundChild(input.foregroundControl, task.agent, task.label, input.globalTaskIndex + index));
-	const liveResults: (SingleResult | undefined)[] = new Array(childIds.length).fill(undefined);
-	const liveProgress: (AgentProgress | undefined)[] = new Array(childIds.length).fill(undefined);
+	const liveResults: SingleResult[] = input.step.parallel.map((task, index) => {
+		const id = createForegroundChild(input.foregroundControl, task.agent, task.label, input.globalTaskIndex + index);
+		return {
+			id, label: task.label, agent: task.agent, task: task.task ?? "", exitCode: 0, messages: [],
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+			progress: {
+				id, label: task.label, index: input.globalTaskIndex + index, agent: task.agent, task: task.task ?? "",
+				status: "pending", recentTools: [], recentOutput: [], toolCount: 0, tokens: 0, durationMs: 0,
+			},
+		};
+	});
 	const concurrency = input.step.concurrency ?? MAX_CONCURRENCY;
 	const failFast = input.step.failFast ?? false;
 	let aborted = false;
@@ -213,10 +221,16 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 		input.step.parallel,
 		concurrency,
 		async (task, taskIndex) => {
-			const id = childIds[taskIndex];
+			const id = liveResults[taskIndex].id;
+			const settleResult = (result: SingleResult): SingleResult => {
+				const status = result.interrupted ? "interrupted" : result.exitCode === 0 ? "completed" : "failed";
+				result.progress = { ...liveResults[taskIndex].progress!, ...result.progress, status, task: result.task, error: result.error };
+				liveResults[taskIndex] = result;
+				updateForegroundChild(input.foregroundControl, id, { status, sessionFile: result.sessionFile, error: result.error });
+				return result;
+			};
 			if (aborted && failFast) {
-				updateForegroundChild(input.foregroundControl, id, { status: "failed" });
-				return {
+				return settleResult({
 					id,
 					label: task.label,
 					agent: task.agent,
@@ -225,7 +239,7 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 					messages: [],
 					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
 					error: "Skipped due to fail-fast",
-				} as SingleResult;
+				});
 			}
 
 			const taskTemplate = input.parallelTemplates[taskIndex] ?? "{previous}";
@@ -249,8 +263,7 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 			} catch (error) {
 				if (!(error instanceof ChainOutputValidationError)) throw error;
 				if (failFast) aborted = true;
-				updateForegroundChild(input.foregroundControl, id, { status: "failed", error: error.message });
-				return {
+				return settleResult({
 					id,
 					label: task.label,
 					agent: task.agent,
@@ -260,7 +273,7 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 					error: error.message,
 					messages: [],
 					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
-				} as SingleResult;
+				});
 			}
 			taskStr = taskStr.replace(/\{task\}/g, input.originalTask);
 			taskStr = taskStr.replace(/\{previous\}/g, input.prev);
@@ -288,6 +301,7 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 			const structuredRuntime = task.outputSchema
 				? createStructuredOutputRuntime(task.outputSchema, path.join(input.chainDir, "structured-output"))
 				: undefined;
+			liveResults[taskIndex] = { ...liveResults[taskIndex], task: taskStr, progress: { ...liveResults[taskIndex].progress!, task: taskStr, status: "running" } };
 			updateForegroundChild(input.foregroundControl, id, { status: "running" });
 			const unregister = registerForegroundInterrupt(input.foregroundControl, id, () => {
 				if (interruptController.signal.aborted) return false;
@@ -329,7 +343,7 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 				forwardedFlags: input.forwardedFlags,
 				projectTrust: input.projectTrust,
 				onUpdate: (progressUpdate) => {
-						updateForegroundChild(input.foregroundControl, id, { ...progressUpdate.details?.progress?.[0], status: "running" });
+						updateForegroundChild(input.foregroundControl, id, { status: "running", ...progressUpdate.details?.progress?.[0] });
 						const stepResults = progressUpdate.details?.results || [];
 						const stepProgress = progressUpdate.details?.progress || [];
 						if (input.foregroundControl && stepProgress.length > 0) {
@@ -346,10 +360,12 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 							input.foregroundControl.toolCount = current?.toolCount;
 							input.foregroundControl.updatedAt = Date.now();
 						}
-						if (stepResults.length > 0) liveResults[taskIndex] = stepResults[0];
-						if (stepProgress.length > 0) liveProgress[taskIndex] = stepProgress[0];
-						const mergedResults = input.results.concat(liveResults.filter((result): result is SingleResult => result !== undefined));
-						const mergedProgress = input.allProgress.concat(liveProgress.filter((progress): progress is AgentProgress => progress !== undefined));
+						liveResults[taskIndex] = {
+							...liveResults[taskIndex], ...stepResults[0],
+							progress: stepProgress[0] ?? stepResults[0]?.progress ?? liveResults[taskIndex].progress,
+						};
+						const mergedResults = input.results.concat(liveResults);
+						const mergedProgress = input.allProgress.concat(liveResults.map((result) => result.progress!));
 						input.onUpdate?.({
 							...progressUpdate,
 							details: {
@@ -366,6 +382,7 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 									mode: "chain",
 									steps: input.chainSteps,
 									results: mergedResults,
+									stepStatuses: mergedResults.map((result) => result.progress ?? {}),
 									currentStepIndex: input.stepIndex,
 									currentFlatIndex: input.globalTaskIndex + taskIndex,
 									dynamicChildren: input.dynamicChildren,
@@ -374,12 +391,7 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 							},
 						});
 					},
-			}).then((result) => {
-				liveResults[taskIndex] = result;
-				liveProgress[taskIndex] = result.progress;
-				updateForegroundChild(input.foregroundControl, id, { status: result.interrupted ? "interrupted" : result.exitCode === 0 ? "completed" : "failed", sessionFile: result.sessionFile, error: result.error });
-				return result;
-			}, (error) => {
+			}).then(settleResult, (error) => {
 				updateForegroundChild(input.foregroundControl, id, { status: "failed" });
 				throw error;
 			}).finally(() => {

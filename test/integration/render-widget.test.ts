@@ -96,7 +96,7 @@ for (const mode of ["single", "parallel", "chain"] as const) {
 	});
 }
 
-for (const [shape, rootCount, concurrency = 1] of [
+for (const [shape, rootCount, concurrency = 1, failure] of [
 	["single", 1],
 	["single", 2],
 	["tasks", 1],
@@ -107,8 +107,10 @@ for (const [shape, rootCount, concurrency = 1] of [
 	["dynamic", 1],
 	["static", 1, 2],
 	["dynamic", 1, 2],
+	["dynamic", 1, 2, "validation"],
+	["static", 1, 2, "fail-fast"],
 ] as const) {
-	it(`renders live and final identities and labels from ${shape} dispatch with ${rootCount} foreground run${rootCount === 1 ? "" : "s"} and concurrency ${concurrency}`, async () => {
+	it(`renders live and final identities and labels from ${shape} dispatch with ${rootCount} foreground run${rootCount === 1 ? "" : "s"} and concurrency ${concurrency}${failure ? ` with ${failure}` : ""}`, async () => {
 		const { createSubagentExecutor } = await import("../../src/runs/foreground/subagent-executor.ts");
 		const { writeNestedEvent } = await import("../../src/runs/shared/nested-events.ts");
 		const { createMockPi, createTempDir, removeTempDir, createEventBus, makeAgent, makeMinimalCtx, events } = await import("../support/helpers.ts");
@@ -122,23 +124,29 @@ for (const [shape, rootCount, concurrency = 1] of [
 			expandTilde: (value: string) => value, discoverAgents: () => ({ agents: [makeAgent("echo", { completionGuard: false })] }) });
 		const render = (value: any, expanded: boolean) => renderSubagentResult(value, { expanded }, theme as any).render(180).join("\n");
 		try {
-			if (shape === "dynamic") mock.onCall({ taskIncludes: "Seed", output: "items", structuredOutput: { items: ["alpha", "beta"] } });
-			mock.onCall({ taskIncludes: "Work", steps: [
+			const names = concurrency === 2 ? ["alpha", "beta", "gamma"] : ["alpha", "beta"];
+			if (shape === "dynamic") mock.onCall({ taskIncludes: "Seed", output: "items", structuredOutput: {
+				items: names.map((name, index) => ({ name, task: failure === "validation" && index === 0 ? "{outputs.missing}" : name })),
+			} });
+			const steps = [
 				{ jsonl: [events.messageStart()] },
 				...(concurrency === 2 ? [{ delay: 350, jsonl: [events.toolStart("read", { path: "audit.ts" })] }] : []),
 				{ delay: 350, jsonl: [events.assistantMessage("done")] },
-			] });
+			];
+			if (concurrency === 2) mock.onCall({ taskIncludes: shape === "static" ? "Work first" : "Work alpha", delay: 500, steps });
+			if (failure === "fail-fast") mock.onCall({ taskIncludes: "Work second", steps, exitCode: 1 });
+			mock.onCall({ taskIncludes: "Work", steps });
 			const first = { agent: "echo", task: "Work first", label: "audit alpha" };
 			const second = { agent: "echo", task: "Work second", label: "audit beta" };
+			const third = { agent: "echo", task: "Work third", label: "audit gamma" };
 			const params = shape === "single" ? first
 				: shape === "tasks" ? { tasks: [first, second], concurrency: 1 }
 				: shape === "sequential" ? { chain: [first, second] }
-				: shape === "static" ? { chain: [{ parallel: [first, second], concurrency }] }
+				: shape === "static" ? { chain: [{ parallel: concurrency === 2 ? [first, second, third] : [first, second], concurrency, failFast: failure === "fail-fast" }] }
 				: { chain: [{ agent: "echo", task: "Seed", label: "seed items", as: "items", outputSchema: { type: "object" } },
-					{ expand: { from: { output: "items", path: "/items" }, maxItems: 2 }, parallel: { agent: "echo", task: "Work {item}", label: "audit {item}" }, collect: { as: "reviews" }, label: "group audit", concurrency }] };
+					{ expand: { from: { output: "items", path: "/items" }, maxItems: names.length }, parallel: { agent: "echo", task: "Work {item.task}", label: "audit {item.name}" }, collect: { as: "reviews" }, label: "group audit", concurrency }] };
 			const allUpdates: any[][] = [];
-			const concurrentUpdates: Array<{ update: any; reportingId: string; children: Array<{ id: string; label?: string }> }> = [];
-			const reportedChildren = new Set<string>();
+			const concurrentUpdates: Array<{ update: any; reportingId: string; children: Array<{ id: string; label?: string; index: number; state: string }> }> = [];
 			const attachmentId = randomUUID();
 			let attachedTo: string | undefined;
 			let maxConcurrentRoots = 0;
@@ -149,14 +157,9 @@ for (const [shape, rootCount, concurrency = 1] of [
 					updates.push(update);
 					if (concurrency === 2) {
 						const control = state.foregroundControls.get(update.details?.runId);
-						for (const child of update.details?.results ?? []) {
-							if (child.progress?.status === "running") reportedChildren.add(child.id);
-							else reportedChildren.delete(child.id);
-						}
-						const children = [...(control?.children.entries() ?? [])].filter(([id, child]) => child.state === "running" && reportedChildren.has(id)).map(([id, child]) => ({ id, ...child }));
-						const reportingChild = children.find((child) => child.index === control.currentIndex);
-						if (children.length === 2 && reportingChild) concurrentUpdates.push({ update, reportingId: reportingChild.id,
-							children: children.map(({ id, label }) => ({ id, label })) });
+						const children = [...(control?.children.entries() ?? [])].filter(([, child]) => child.label?.startsWith("audit ")).map(([id, child]) => ({ id, ...child }));
+						const reportingChild = children.find((child) => child.index === control.currentIndex && child.state === "running");
+						if (children.length === 3 && reportingChild) concurrentUpdates.push({ update, reportingId: reportingChild.id, children });
 					}
 					if (update.details?.results.some((child) => child.progress?.status === "running")) {
 						maxConcurrentRoots = Math.max(maxConcurrentRoots, state.foregroundControls.size);
@@ -174,20 +177,40 @@ for (const [shape, rootCount, concurrency = 1] of [
 			assert.equal(new Set(finals.map((value) => value.details.runId)).size, rootCount, "each root has its own id");
 			assert.equal(maxConcurrentRoots, rootCount, "configured roots overlap while a child is running");
 			if (concurrency === 2) {
-				assert.equal(new Set(concurrentUpdates.map(({ reportingId }) => reportingId)).size, 2, "both siblings report while running concurrently");
-				for (const { update, children } of concurrentUpdates) for (const expanded of [false, true]) {
-					const text = render(update, expanded);
+				assert.equal(new Set(concurrentUpdates.map(({ reportingId }) => reportingId)).size, failure ? 2 : 3, "every launched sibling reports");
+				if (!failure) {
+					assert.ok(concurrentUpdates.some(({ update, reportingId, children }) => reportingId === children[1].id
+						&& !update.details.results.find((entry) => entry.id === children[0].id)?.progress?.lastActivityAt), "second child reports before the delayed first child");
+					assert.ok(concurrentUpdates.some(({ children }) => children[2].state === "pending"), "third child waits for a concurrency slot");
+				}
+				if (failure === "validation") assert.ok(concurrentUpdates.some(({ children }) => children[0].state === "failed"), "validation fails before a sibling reports");
+				if (failure === "fail-fast") assert.ok(concurrentUpdates.some(({ children }) => children[2].state === "failed"), "fail-fast skips the queued child before a sibling reports");
+				for (const { update, children } of concurrentUpdates) {
+					for (const expanded of [false, true]) {
+						const text = render(update, expanded);
+						const rows = text.split("\n").filter((line) => children.some((child) => new RegExp(`^\\s*${child.id.slice(0, 6)} `).test(line)));
+						assert.deepEqual(rows.map((line) => line.trim().slice(0, 6)), children.map((child) => child.id.slice(0, 6)), "each child has exactly one row in flat-index order, even before its first report");
+						for (const [index, child] of children.entries()) assert.match(rows[index], new RegExp(`echo - ${child.label}`));
+					}
 					for (const child of children) {
-						assert.match(text, new RegExp(`^\\s*${child.id.slice(0, 6)} .*echo - ${child.label}`, "m"), "every running sibling keeps its stop id and label after either reports");
-						assert.equal(update.details.results.find((entry) => entry.id === child.id)?.progress?.status, "running");
+						assert.equal(update.details.results[child.index]?.id, child.id, "result slots stay aligned with child indexes");
+						assert.equal(update.details.results[child.index]?.progress?.status, child.state);
+						assert.equal(update.details.progress.filter((entry) => entry.id === child.id).length, 1, "executor pending projection does not duplicate cached progress");
+						const node = update.details.workflowGraph.nodes.flatMap((node) => node.children ?? [node]).find((node) => node.flatIndex === child.index);
+						assert.equal(node?.status, child.state, "workflow graph uses the same child slot and lifecycle state");
 					}
 				}
 			}
 			for (const [rootIndex, final] of finals.entries()) {
-				assert.notEqual(final.isError, true, JSON.stringify(final.content));
-				for (const child of final.details.results) {
+				if (failure) assert.equal(final.isError, true, JSON.stringify(final.content));
+				else assert.notEqual(final.isError, true, JSON.stringify(final.content));
+				if (failure === "validation") assert.match(final.details.results[1].error, /Unknown chain output reference/);
+				if (failure === "fail-fast") assert.equal(final.details.results[2].error, "Skipped due to fail-fast");
+				// Failed chains show only their active group after settlement.
+				const visibleResults = failure ? final.details.results.filter((child) => child.label?.startsWith("audit ")) : final.details.results;
+				for (const child of visibleResults) {
 					assert.ok(child.label);
-					const live = allUpdates[rootIndex].find((update) => update.details.results.some((entry) => entry.id === child.id && entry.progress?.status === "running"));
+					const live = allUpdates[rootIndex].find((update) => update.details.results.some((entry) => entry.id === child.id && entry.progress?.status === (child.exitCode !== 0 ? "failed" : "running")));
 					assert.ok(live, `live snapshot for ${child.label}`);
 					assert.equal(live.details.runId, final.details.runId, "live and settled rows belong to the same root");
 					for (const value of [live, final]) for (const expanded of [false, true]) {

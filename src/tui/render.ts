@@ -1282,9 +1282,9 @@ export function renderSubagentResult(
 		const rowNumber = entry.rowNumber;
 		const agentName = entry.agentName;
 
-		if (!r) {
+		if (!r || r.progress?.status === "pending") {
 			const pendingLabel = chainEntries ? resultRowLabel(d, multiLabel, i, rowNumber) : `${itemTitle} ${rowNumber}`;
-			c.addChild(new Text(fit(theme.fg("dim", `  ${pendingChildLine(d.progress?.find((entry) => entry.index === i), pendingLabel, agentName)}`)), 0, 0));
+			c.addChild(new Text(fit(theme.fg("dim", `  ${pendingChildLine(r?.progress ?? d.progress?.find((entry) => entry.index === i), pendingLabel, agentName)}`)), 0, 0));
 			c.addChild(new Text(theme.fg("dim", `    status: pending`), 0, 0));
 			c.addChild(new Spacer(1));
 			continue;
