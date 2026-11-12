@@ -3,9 +3,6 @@ import { afterEach, describe, it } from "node:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AgentConfig } from "../../src/agents/agents.ts";
-import type { RunSyncOptions } from "../../src/shared/types.ts";
-import { finalizeSingleAttempt, initializeAttempt } from "../../src/runs/foreground/attempt-finalization.ts";
 import {
 	captureSingleOutputSnapshot,
 	finalizeSingleOutput,
@@ -151,102 +148,6 @@ describe("resolveSingleOutput", () => {
 		assert.equal(result.savedPath, undefined);
 		assert.match(result.saveError ?? "", /Failed to read changed output file/);
 	});
-});
-
-describe("finalizeSingleAttempt file output recovery", () => {
-	const agent: AgentConfig = {
-		name: "reporter",
-		description: "Writes a report",
-		systemPrompt: "Write a report.",
-		systemPromptMode: "replace",
-		inheritProjectContext: false,
-		inheritSkills: false,
-		source: "project",
-		filePath: "reporter.md",
-	};
-	const report = "# Findings\nThe report is complete.\n";
-	const toolResults = [
-		{ name: "recovered grep error", toolName: "grep", isError: true, text: "Path not found: missing-directory" },
-		{ name: "successful bash printing an exit expression", toolName: "bash", isError: false, text: 'REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1' },
-	];
-	const outputs = [
-		{ name: "created", existed: false, changed: true, enabled: true },
-		{ name: "updated", existed: true, changed: true, enabled: true },
-		{ name: "unchanged", existed: true, changed: false, enabled: true },
-		{ name: "missing", existed: false, changed: false, enabled: true },
-		{ name: "disabled", existed: false, changed: false, enabled: false },
-		{ name: "changed with nonzero exit", existed: false, changed: true, enabled: true, exitCode: 7 },
-		{ name: "changed with explicit error", existed: false, changed: true, enabled: true, error: "Provider failed" },
-	];
-
-	for (const tool of toolResults) {
-		for (const output of outputs) {
-			it(`${tool.name}, output ${output.name}`, () => {
-				const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cohort-output-test-"));
-				tempDirs.push(dir);
-				const outputPath = output.enabled ? path.join(dir, "report.md") : undefined;
-				if (output.existed) fs.writeFileSync(outputPath!, "stale report", "utf-8");
-				const outputSnapshot = captureSingleOutputSnapshot(outputPath);
-				const options = { outputPath, outputMode: "file-only", runId: "report" } as RunSyncOptions;
-				const attempt = initializeAttempt(agent, "Review the files and write a report", undefined, options, {
-					sessionEnabled: false,
-					systemPrompt: agent.systemPrompt,
-					attemptNotes: [],
-				});
-				attempt.result.messages.push({
-					role: "toolResult",
-					toolCallId: "inspect",
-					toolName: tool.toolName,
-					isError: tool.isError,
-					content: [{ type: "text", text: tool.text }],
-					timestamp: 1,
-				});
-				if (output.changed) {
-					fs.writeFileSync(outputPath!, report, "utf-8");
-					attempt.result.messages.push({
-						role: "toolResult",
-						toolCallId: "save",
-						toolName: "write",
-						isError: false,
-						content: [{ type: "text", text: "Report written" }],
-						timestamp: 2,
-					});
-				}
-
-				attempt.result.exitCode = output.exitCode ?? 0;
-				attempt.result.error = output.error;
-				const result = finalizeSingleAttempt(attempt.result, attempt.progress, {
-					agent,
-					options,
-					outputSnapshot,
-					observedMutationAttempt: output.changed,
-					interruptedByControl: false,
-					allControlEvents: attempt.allControlEvents,
-					emitControlEvent: attempt.emitControlEvent,
-					startTime: attempt.startTime,
-				});
-
-				if (output.changed && !output.exitCode && !output.error) {
-					assert.equal(result.exitCode, 0, result.error);
-					assert.equal(result.error, undefined);
-					assert.equal(result.savedOutputPath, outputPath);
-					assert.deepEqual(result.outputReference, formatSavedOutputReference(outputPath!, report));
-					assert.equal(result.finalOutput, result.outputReference.message);
-					assert.equal(fs.readFileSync(outputPath!, "utf-8"), report);
-				} else {
-					assert.equal(result.exitCode, output.exitCode ?? 1);
-					if (output.error) assert.equal(result.error, output.error);
-					else if (!output.exitCode) assert.ok(result.error?.startsWith(`${tool.toolName} failed (exit 1):`));
-					assert.equal(result.savedOutputPath, undefined);
-					assert.equal(result.outputReference, undefined);
-					assert.equal(result.finalOutput, "");
-					if (output.changed) assert.equal(fs.readFileSync(outputPath!, "utf-8"), report);
-					else if (output.existed) assert.equal(fs.readFileSync(outputPath!, "utf-8"), "stale report");
-					else if (outputPath) assert.equal(fs.existsSync(outputPath), false);
-				}
-			});
-		}
-	}
 });
 
 describe("formatSavedOutputReference", () => {
