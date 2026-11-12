@@ -264,7 +264,7 @@ Background runs are swept. Background runners are detached on purpose and are no
 
 The command takes exactly one argument. It dispatches `action: "interrupt"` with that `id` through the slash bridge and reports through `ctx.ui.notify`, as today. With no foreground run in flight it reaches background runs through the same resolver.
 
-Completion lists the running subagents of this session: children of its foreground runs, steps of its tracked background jobs, and running nested children in its authorized and retained routes, read from in-memory state. Background children of other sessions resolve when typed and are not listed. Each item's value is the stop id, extended to the shortest prefix that is unique in the whole resolver namespace - run ids and settled ids included - and never a full UUID; its text reads `<stop id> <agent>` or `<stop id> <agent> - <label>`.
+Completion lists the running subagents of this session that a prefix shorter than the full id identifies: children of its foreground runs, steps of its tracked background jobs, and running nested children in its authorized and retained routes, read from in-memory state. Background children of other sessions resolve when typed and are not listed. Each item's value is the stop id, extended to the shortest prefix that is unique in the whole resolver namespace - run ids and settled ids included - and never a full UUID; its text reads `<stop id> <agent>` or `<stop id> <agent> - <label>`. A running subagent that only its full id distinguishes from another id in that namespace is not offered by completion; typing its full id stops it.
 
 ### Predecessor scope
 
