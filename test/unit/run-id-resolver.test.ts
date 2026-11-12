@@ -270,6 +270,65 @@ describe("subagent run id resolver", () => {
 		} finally { fs.rmSync(root, { recursive: true, force: true }); }
 	});
 
+	for (const route of ["foreground", "background"] as const) {
+		for (const mode of ["parallel", "chain"] as const) {
+			it(`names ${route} ${mode} run collisions by the displayed mode, not the active agent`, () => {
+				const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-stop-run-name-"));
+				try {
+					const runId = "abcdef-run";
+					const childId = "abcdef-child";
+					const state = stateWithForeground(runId);
+					if (route === "foreground") {
+						Object.assign(state.foregroundControls.get(runId)!, { mode, currentAgent: "scout",
+							children: new Map([[childId, { agent: "scout", label: "Inspect", state: "running" }]]) });
+					} else {
+						state.foregroundControls.clear();
+						const dir = path.join(root, runId);
+						fs.mkdirSync(dir);
+						fs.writeFileSync(path.join(dir, "status.json"), JSON.stringify({ mode, state: "running", pid: process.pid,
+							steps: [{ id: childId, agent: "scout", label: "Inspect", status: "running" }] }));
+					}
+					assert.throws(() => resolveSubagentRunId("abcdef", { state, target: "interrupt", asyncDirRoot: root, nested: { routes: [] } }),
+						{ message: `Ambiguous stop id 'abcdef': run:abcdef-r ${mode}, child:abcdef-c scout. Provide a longer id.` });
+				} finally { fs.rmSync(root, { recursive: true, force: true }); }
+			});
+		}
+	}
+
+	it("uses a tracked background run's displayed name instead of reconstructing it from status", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-stop-tracked-name-"));
+		try {
+			const state = stateWithForeground("unused-root");
+			const dir = path.join(root, "abcdef-run");
+			fs.mkdirSync(dir);
+			fs.writeFileSync(path.join(dir, "status.json"), JSON.stringify({ mode: "single", state: "running", pid: process.pid,
+				steps: [{ id: "abcdef-child", agent: "scout", label: "Inspect", status: "running" }] }));
+			state.asyncJobs.set("abcdef-run", { asyncId: "abcdef-run", asyncDir: dir, status: "running", mode: "single", agents: ["displayed-agent"] });
+			assert.throws(() => resolveSubagentRunId("abcdef", { state, target: "interrupt", asyncDirRoot: root, nested: { routes: [] } }),
+				{ message: "Ambiguous stop id 'abcdef': run:abcdef-r displayed-agent, child:abcdef-c scout. Provide a longer id." });
+		} finally { fs.rmSync(root, { recursive: true, force: true }); }
+	});
+
+	for (const { name, run, displayed } of [
+		{ name: "single agent", run: { agent: "scout" }, displayed: "scout" },
+		{ name: "repeated agents", run: { agents: ["scout", "scout"] }, displayed: "scout ×2" },
+		{ name: "many agents", run: { agents: ["scout", "planner", "worker", "reviewer"] }, displayed: "scout, planner +2 more" },
+		{ name: "mode fallback", run: { mode: "chain" as const }, displayed: "chain" },
+	]) {
+		it(`names nested run collisions by the displayed ${name} and child collisions by agent only`, () => {
+			const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-stop-nested-name-"));
+			const route = createNestedRoute("name-root");
+			routeRoots.push(path.dirname(route.eventSink));
+			try {
+				writeNestedEvent(route, { type: "subagent.nested.updated", ts: 100, parentRunId: route.rootRunId,
+					child: { id: "abcdef-run", parentRunId: route.rootRunId, depth: 1, path: [{ runId: route.rootRunId }],
+						state: "running", ...run, steps: [{ id: "abcdef-child", index: 0, agent: "scout", label: "Inspect", status: "running" }] } });
+				assert.throws(() => resolveSubagentRunId("abcdef", { target: "interrupt", asyncDirRoot: root, nested: { routes: [route] } }),
+					{ message: `Ambiguous stop id 'abcdef': run:abcdef-r ${displayed}, child:abcdef-c scout. Provide a longer id.` });
+			} finally { fs.rmSync(root, { recursive: true, force: true }); }
+		});
+	}
+
 	it("reads terminal status once, refreshes changed live status and reuses tracker-fed status", (t) => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-stop-cache-"));
 		try {

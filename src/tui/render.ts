@@ -285,7 +285,7 @@ function formatWidgetAgents(agents: string[]): string {
 	return agents.join(", ");
 }
 
-function widgetJobName(job: AsyncJobState): string {
+export function widgetJobName(job: AsyncJobState): string {
 	if (job.mode === "parallel") return "parallel";
 	if (job.mode === "chain") return "chain";
 	if (job.mode === "single" && job.agents?.length === 1) return job.agents[0]!;
@@ -722,7 +722,7 @@ function widgetOutputPath(job: AsyncJobState, step: NonNullable<AsyncJobState["s
 	return path.join(job.asyncDir, `output-${step.index}.log`);
 }
 
-function nestedRunName(run: NestedRunSummary): string {
+export function nestedRunName(run: NestedRunSummary): string {
 	if (run.agent) return run.label ? `${run.agent} - ${run.label}` : run.agent;
 	if (run.agents?.length) return formatWidgetAgents(run.agents);
 	return run.mode ?? "nested run";

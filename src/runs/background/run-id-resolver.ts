@@ -4,6 +4,7 @@ import { ASYNC_DIR, LEGACY_ASYNC_DIR, RESULTS_DIR, type SubagentState, type Asyn
 import { findAsyncRunPrefixMatches, resolveAsyncRunLocation, winningAsyncRunEntries, type AsyncRunLocation } from "./async-resume.ts";
 import { assertSafeNestedId, findNestedRunMatchesById, projectNestedEvents, resolveNestedAsyncDir, type NestedRoute, type NestedRunMatch, type NestedRunResolutionScope } from "../shared/nested-events.ts";
 import { checkPidLiveness } from "./stale-run-reconciler.ts";
+import { nestedRunName, widgetJobName } from "../../tui/render.ts";
 
 export type ResolvedSubagentRunId =
 	| { kind: "foreground"; id: string }
@@ -72,7 +73,7 @@ export function listStopTargets(deps: ResolveSubagentRunIdDeps = {}, refresh = f
 	};
 	for (const control of deps.state?.foregroundControls.values() ?? []) {
 		const owner = { kind: "foreground" as const, id: control.runId };
-		add({ kind: "run", id: control.runId, runId: control.runId, name: control.currentAgent ?? control.mode, state: "running", owner }, 3);
+		add({ kind: "run", id: control.runId, runId: control.runId, name: control.mode, state: "running", owner }, 3);
 		for (const [id, child] of control.children ?? []) add({ kind: "child", id, runId: control.runId, name: child.agent, label: child.label, state: child.state, owner }, 3);
 	}
 	const asyncEntries = new Map((refresh
@@ -86,7 +87,10 @@ export function listStopTargets(deps: ResolveSubagentRunIdDeps = {}, refresh = f
 		const status = backgroundStatus(asyncDir, refresh);
 		const owner = { kind: "async" as const, id, location: { asyncDir, resultPath: null, resolvedId: id } };
 		const priority = status?.state === "running" && status.pid && (!refresh || (matchesOwner(id, status.steps) && checkPidLiveness(status.pid) === "alive")) ? 2 : 0;
-		add({ kind: "run", id, runId: id, name: status?.steps?.[0]?.agent ?? id.slice(0, 6), state: status?.state ?? "unknown", owner }, priority);
+		const name = widgetJobName(deps.state?.asyncJobs.get(id) ?? {
+			asyncId: id, asyncDir, status: status?.state ?? "queued", mode: status?.mode, agents: status?.steps?.map((step) => step.agent),
+		});
+		add({ kind: "run", id, runId: id, name, state: status?.state ?? "unknown", owner }, priority);
 		for (const child of status?.steps ?? []) if (child.id) add({ kind: "child", id: child.id, runId: id, name: child.agent, label: child.label, state: stepState(child.status), owner }, priority);
 	}
 	const scope = deps.nested ?? nestedScopeFromState(deps.state) ?? { routes: [] };
@@ -119,7 +123,7 @@ export function listStopTargets(deps: ResolveSubagentRunIdDeps = {}, refresh = f
 							priority = 2;
 						}
 					}
-					add({ kind: "run", id: run.id, runId: run.id, name: run.agent ?? run.agents?.join(", ") ?? run.id.slice(0, 6), state: run.state, owner }, priority);
+					add({ kind: "run", id: run.id, runId: run.id, name: nestedRunName(run), state: run.state, owner }, priority);
 					for (const child of run.steps ?? []) add({ kind: "child", id: child.id, runId: run.id, name: child.agent, label: child.label, state: stepState(child.status), owner }, priority);
 				}
 				visit(run.children, allowed);
