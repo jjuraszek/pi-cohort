@@ -799,11 +799,8 @@ async function runOwnedSync(
 
 	const modelsToTry = candidates.length > 0 ? candidates : [undefined];
 	if (!lastResult) for (let i = 0; i < modelsToTry.length; i++) {
-		// An admitted external host owns pre-ready cancellation and teardown.
-		if (!externalOwner || i > 0) {
-			lastResult = refusedLaunch(agentName, task, options);
-			if (lastResult) break;
-		}
+		lastResult = refusedLaunch(agentName, task, options);
+		if (lastResult) break;
 		const candidate = modelsToTry[i];
 		if (candidate) attemptedModels.push(candidate);
 		const outputSnapshot = captureSingleOutputSnapshot(options.outputPath);

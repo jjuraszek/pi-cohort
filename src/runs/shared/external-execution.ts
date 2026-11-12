@@ -464,6 +464,26 @@ export async function createExternalExecution(
 			return (finishPromise ??= (async () => {
 				if (active) throw new Error("external execution owner is busy");
 				if (interruptedFinish) return interruptedFinish;
+				if (disposition === "retained" && attemptedIds.size === 0) {
+					let closed = false;
+					let endpoint = now() + controlTimeoutMs;
+					const wait = <T>(promise: Promise<T>, label: string) => controlDeadline(promise, Math.max(0, endpoint - now()), label);
+					await finishWithCleanup(
+						async () => {
+							try {
+								await wait(controller.shutdown(), "unused host shutdown");
+								await wait(controller.hostExit, "unused host exit");
+							} catch {
+								endpoint = now() + controlTimeoutMs;
+								await wait(options.backend.close(controller.lease.handle, "explicit_cleanup"), "unused host cleanup");
+								closed = true;
+								await wait(controller.hostExit, "unused host exit");
+							}
+						},
+						async () => { try { await wait(releaseObserver(), "observer release"); } finally { controller.dispose(); } },
+					);
+					return { handle: controller.lease.handle, retained: !closed };
+				}
 				if (disposition === "retained") {
 					await finishWithCleanup(
 						async () => { await controller.shutdown(); },

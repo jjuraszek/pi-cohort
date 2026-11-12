@@ -12,6 +12,7 @@ import { ChildHostFrameDecoder, encodeChildHostMessage } from "../../src/executi
 import { createExternalExecution } from "../../src/runs/shared/external-execution.ts";
 import type { ExecutionBackend, ExecutionSurfaceRequest } from "../../src/execution-backend/types.ts";
 import { runSync } from "../../src/runs/foreground/execution.ts";
+import { createNestedRoute } from "../../src/runs/shared/nested-events.ts";
 import { runSingleStep } from "../../src/runs/background/subagent-runner.ts";
 import { createDetachedExecutionBackendCoordinator } from "../../src/execution-backend/reload.ts";
 import { getArtifactPaths } from "../../src/shared/artifacts.ts";
@@ -170,7 +171,7 @@ test("background external children retain child ancestry and clear inherited num
 	}
 });
 
-for (const outcome of ["success", "artifact failure", "save and artifact failure", "interrupted", "success-terminal", "error-terminal", "failed-rate", "failed-timeout", "timeout", "busy", "uncertain-success", "uncertain-failed", "uncertain-interrupted", "close-failure", "fallback", "protocol", "pre-ready", "busy-shutdown"] as const) {
+for (const outcome of ["success", "artifact failure", "save and artifact failure", "interrupted", "success-terminal", "error-terminal", "failed-rate", "failed-timeout", "timeout", "busy", "uncertain-success", "uncertain-failed", "uncertain-interrupted", "close-failure", "fallback", "protocol", "pre-ready", "pre-ready-stop", "pre-ready-timeout", "busy-shutdown"] as const) {
 test(`runSync drives one real child host surface through a registered backend (${outcome})`, unixOnly, async () => {
 	const tempDir = createTempDir("foreground-external-");
 	const binDir = path.join(tempDir, "bin");
@@ -185,11 +186,14 @@ test(`runSync drives one real child host surface through a registered backend ($
 	let closes = 0;
 	const interrupted = !["success", "artifact failure", "save and artifact failure", "fallback"].includes(outcome);
 	const fallback = outcome === "fallback";
-	const forced = outcome === "timeout" || outcome === "busy" || outcome === "close-failure" || outcome === "protocol" || outcome === "busy-shutdown";
+	const preReady = outcome.startsWith("pre-ready");
+	const forced = outcome === "timeout" || outcome === "busy" || outcome === "close-failure" || outcome === "protocol" || outcome === "busy-shutdown" || outcome === "pre-ready-timeout";
 	const uncertain = outcome.startsWith("uncertain");
 	const fixtureMode = outcome === "pre-ready" || outcome === "busy-shutdown" ? "interrupted" : outcome === "uncertain-success" ? "success-terminal" : outcome === "uncertain-failed" ? "failed-rate" : outcome === "uncertain-interrupted" ? "interrupted" : outcome === "close-failure" ? "busy" : outcome;
 	const interrupt = new AbortController();
 	const childPidFile = path.join(tempDir, "child.pid");
+	const nestedRoute = preReady ? createNestedRoute("external-integration") : undefined;
+	let startAttempts = 0;
 	let hostExited = false;
 	const closeReasons: string[] = [];
 	let owner: Awaited<ReturnType<typeof createExternalExecution>>;
@@ -207,7 +211,6 @@ test(`runSync drives one real child host surface through a registered backend ($
 				stdio: ["ignore", "ignore", "ignore"],
 			});
 			hosts.push(host);
-			if (outcome === "pre-ready") interrupt.abort();
 			const exit = once(host, "exit").then(([status, signal]) => { hostExited = true; return { status, signal }; });
 			return {
 				handle: { protocolVersion: 1, backend: backend.name, surface: { kind: "fixture", id: "one" }, display: { label: "fixture surface", hint: "durable" }, data: null },
@@ -257,6 +260,7 @@ test(`runSync drives one real child host surface through a registered backend ($
 			runtime: mockPi.runtime,
 			id: "12345678-0000-4000-8000-000000000000",
 			runId: "external-integration",
+			...(preReady ? { nestedRoute } : {}),
 			...(outcome === "success" ? { artifactsDir: path.join(tempDir, "artifacts"), artifactConfig: { enabled: true, includeJsonl: false, includeMetadata: false } } : {}),
 			...(!interrupted && !fallback && outcome !== "success" ? {
 				outputMode: "file-only" as const, outputPath,
@@ -273,14 +277,28 @@ test(`runSync drives one real child host surface through a registered backend ($
 			acceptance: { level: "none", reason: "integration fixture" },
 		}, interrupted || fallback ? {
 			async createExternalOwner(options) {
-				owner = await createExternalExecution({ ...options, controlTimeoutMs: 300 }, outcome === "busy-shutdown" ? {
+				owner = await createExternalExecution({ ...options, controlTimeoutMs: forced || uncertain ? 300 : 5000 }, {
 					createController: async controllerOptions => {
 						const controller = await createChildHostController(controllerOptions);
-						return { ...controller, shutdown: async () => { throw new Error("child host is busy"); } };
+						return {
+							...controller,
+							startAttempt(request) { startAttempts++; return controller.startAttempt(request); },
+							...(outcome === "busy-shutdown" ? { shutdown: async () => { throw new Error("child host is busy"); } } : {}),
+							...(outcome === "pre-ready-timeout" ? { shutdown: () => new Promise<void>(() => {}) } : {}),
+						};
 					},
-				} : {});
+				});
 				return {
 					...owner,
+					ready: preReady ? owner.ready.then(() => {
+						// Hold readiness until the stop is visible to the launch admission check.
+						if (outcome === "pre-ready-stop") {
+							assert.equal(interrupt.signal.aborted, false);
+							const stops = path.join(path.dirname(nestedRoute!.eventSink), "stops");
+							fs.mkdirSync(stops, { recursive: true });
+							fs.writeFileSync(path.join(stops, options.runId), "");
+						} else interrupt.abort();
+					}) : owner.ready,
 					async runAttempt(request) {
 						const timer = setInterval(() => {
 							if (fallback || !fs.existsSync(request.sessionFile)) return;
@@ -304,6 +322,22 @@ test(`runSync drives one real child host surface through a registered backend ($
 				};
 			},
 		} : {});
+		if (preReady) {
+			assert.equal(startAttempts, 0, "stopped admission must send no start_attempt");
+			assert.equal(output.interrupted, true);
+			assert.equal(output.exitCode, 0, output.error);
+			assert.equal(output.modelAttempts, undefined);
+			assert.equal(output.attemptedModels, undefined);
+			assert.equal(fs.existsSync(childPidFile), false, "no child was spawned");
+			assert.equal(hostExited, true, "unused host must exit before finalization");
+			assert.equal(releases, 1);
+			assert.deepEqual(dispositions, ["retained"]);
+			assert.deepEqual(closeReasons, forced ? ["explicit_cleanup"] : []);
+			assert.equal(output.executionSurface?.retained, !forced, JSON.stringify({ error: output.error, closeReasons }));
+			assert.deepEqual(await owner!.finish("retained"), output.executionSurface);
+			if (outcome === "pre-ready-stop") assert.equal(output.finalOutput, "Subagent launch refused: extern is stopping.");
+			return;
+		}
 		if (interrupted) {
 			assert.equal(output.exitCode, 0, output.error);
 			assert.equal(output.interrupted, true);
@@ -326,7 +360,7 @@ test(`runSync drives one real child host surface through a registered backend ($
 			assert.deepEqual({ releases, closes }, afterAttempt);
 			assert.equal(fs.readFileSync(sessionFile, "utf8"), settledSession, "retained finish sends no additional child control");
 			assert.equal(requests.length, 1);
-			assert.equal(output.executionSurface?.retained, !forced || outcome === "close-failure");
+			assert.equal(output.executionSurface?.retained, !forced || outcome === "close-failure", JSON.stringify({ error: output.error, closeReasons, afterAttempt }));
 			if (uncertain || (forced && outcome !== "protocol" && outcome !== "busy-shutdown")) assert.match(output.error ?? "", /Process termination could not be confirmed; manual cleanup may be required\./);
 			assert.deepEqual(closeReasons, forced ? ["explicit_cleanup"] : []);
 			if (outcome === "timeout") assert.match(output.error ?? "", /result_missing/);
@@ -384,6 +418,7 @@ test(`runSync drives one real child host surface through a registered backend ($
 			host.kill("SIGKILL");
 			await exited;
 		}));
+		if (nestedRoute) removeTempDir(path.dirname(nestedRoute.eventSink));
 		removeTempDir(tempDir);
 	}
 });
