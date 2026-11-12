@@ -129,7 +129,7 @@ describe("runSync execution backend routing", () => {
 				// Native execution imports named builtins; synchronize both installation and restoration.
 				syncBuiltinESMExports();
 				const output = await runSync(dir, [makeAgent("worker", { model: "one/model", fallbackModels: ["two/model"], completionGuard: false })], "worker", "Task", {
-					runtime: selected, runId: "native-real", acceptance: noAcceptance,
+					runtime: selected, runId: "native-real", id: "abcdef12-1234-4234-8234-123456789abc", parentSessionLabel: "routing parent", acceptance: noAcceptance,
 				}, { selectBackend: async () => {
 					if (scenario === "entry disappeared") fs.unlinkSync(selected.piEntryPath);
 					return nativeSelection;
@@ -141,7 +141,7 @@ describe("runSync execution backend routing", () => {
 				assert.equal(launches.length, scenario === "entry disappeared" ? 0 : 1);
 				if (launches.length) assert.deepEqual(launches[0], {
 					command: selected.nodeExecPath,
-					args: [selected.piEntryPath, "--mode", "json", "-p", "--no-session", "--name", "worker native-r", "--model", "one/model", "--extension",
+					args: [selected.piEntryPath, "--mode", "json", "-p", "--no-session", "--name", "worker abcdef from routing parent", "--model", "one/model", "--extension",
 						fileURLToPath(new URL("../../src/runs/shared/subagent-prompt-runtime.ts", import.meta.url)),
 						"--no-skills", "--system-prompt", path.join(promptDirs[0], "worker.md"), "Task: Task"],
 				});

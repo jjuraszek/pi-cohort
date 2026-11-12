@@ -492,6 +492,7 @@ describe("nested control routing", () => {
 				updatedAt: 1,
 				currentAgent: "orchestrator",
 				currentIndex: 0,
+				children: new Map([["abcdef12-1234-4234-8234-123456789abc", { agent: "orchestrator", label: "dispatch", index: 0, state: "running" }]]),
 				nestedRoute: route,
 			});
 			state.lastForegroundControlId = "root-control";
@@ -500,7 +501,8 @@ describe("nested control routing", () => {
 
 			assert.equal(result.isError, undefined);
 			assert.match(text(result), /Run: root-control/);
-			assert.match(text(result), /↳ worker \[nested-foreground\] running/);
+			assert.match(text(result), /^abcdef orchestrator - dispatch running$/m);
+			assert.match(text(result), /^nested ↳ worker running$/m);
 			assert.match(text(result), /Status: subagent\(\{ action: "status", id: "nested-foreground" \}\)/);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });

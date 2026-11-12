@@ -615,6 +615,10 @@ async function runSingleAttempt(
 		if (options.interruptSignal) {
 			const interrupt = () => {
 				if (processClosed || settled) return;
+				if (options.signal?.aborted) {
+					result.interrupted = true;
+					return;
+				}
 				interruptedByControl = true;
 				progress.status = "running";
 				progress.durationMs = Date.now() - startTime;
@@ -795,8 +799,11 @@ async function runOwnedSync(
 
 	const modelsToTry = candidates.length > 0 ? candidates : [undefined];
 	if (!lastResult) for (let i = 0; i < modelsToTry.length; i++) {
-		lastResult = refusedLaunch(agentName, task, options);
-		if (lastResult) break;
+		// An admitted external host owns pre-ready cancellation and teardown.
+		if (!externalOwner || i > 0) {
+			lastResult = refusedLaunch(agentName, task, options);
+			if (lastResult) break;
+		}
 		const candidate = modelsToTry[i];
 		if (candidate) attemptedModels.push(candidate);
 		const outputSnapshot = captureSingleOutputSnapshot(options.outputPath);

@@ -515,6 +515,7 @@ function buildChainRenderEntries(details: Details, label: MultiProgressLabel): C
 	if (details.mode !== "chain" || !label.hasParallelInChain) return undefined;
 	const entries: ChainRenderEntry[] = [];
 	for (const span of buildChainStepSpans(details)) {
+		if (label.showActiveGroupOnly && (span.start < label.groupStartIndex || span.start >= label.groupEndIndex)) continue;
 		if (span.isParallel && span.label && span.count > 0) entries.push({ kind: "group", stepIndex: span.stepIndex, label: span.label });
 		if (span.isParallel && span.count === 0) {
 			entries.push({

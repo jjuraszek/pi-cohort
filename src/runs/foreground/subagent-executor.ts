@@ -251,7 +251,7 @@ function foregroundStatusResult(control: SubagentState["foregroundControls"] ext
 		control.currentAgent ? `Current: ${control.currentAgent}${control.currentIndex !== undefined ? ` step ${control.currentIndex + 1}` : ""}` : undefined,
 		activity ? `Activity: ${activity}` : undefined,
 	].filter((line): line is string => Boolean(line));
-	for (const child of control.children.values()) lines.push(`${child.id.slice(0, 6)} ${child.agent}${child.label ? ` - ${child.label}` : ""} ${child.state}`);
+	for (const [id, child] of control.children) lines.push(`${id.slice(0, 6)} ${child.agent}${child.label ? ` - ${child.label}` : ""} ${child.state}`);
 	lines.push(...formatNestedRunStatusLines(control.nestedChildren, { indent: "", commandHints: true, maxLines: 20 }));
 	if (nestedWarning) lines.push(`Warning: ${nestedWarning}`);
 	return { content: [{ type: "text", text: lines.join("\n") }], details: { mode: "management", results: [] } };
@@ -2365,8 +2365,9 @@ export function createSubagentExecutor(services: ExecutorDeps): {
 					progress.set(id, { id, label: child.label, index: child.index, agent: child.agent, status: "pending", task: "", toolCount: 0, tokens: 0, durationMs: 0, children: childrenFor(id) });
 				}
 			}
-			details.progress = [...progress.values()];
+			if (!settled) details.progress = [...progress.values()];
 			details.results = details.results.map((result, index) => {
+				if (settled && childrenFor(result.id).length === 0) return result;
 				const current = result.progress ?? progress.get(result.id) ?? latestUpdate?.details?.results.find((entry) => entry.id === result.id)?.progress;
 				const projected = {
 					id: result.id, index, agent: result.agent, task: result.task, toolCount: 0, tokens: 0, durationMs: 0,

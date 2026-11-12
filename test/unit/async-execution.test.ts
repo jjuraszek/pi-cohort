@@ -243,9 +243,24 @@ describe("durable async startup", () => {
 					if (scenario === "missing") assert.equal(fs.existsSync(origin), false);
 				} else {
 					assert.equal(launches, 1);
-					assert.equal(observed.events.length, 1);
-					assert.equal(fs.readdirSync(route.eventSink).filter(name => name.endsWith(".json")).length, 1);
-					const child = observed.events[0].child;
+					const stepCount = scenario.endsWith("chain") ? 2 : 1;
+					assert.equal(observed.events.length, 1 + stepCount);
+					assert.equal(fs.readdirSync(route.eventSink).filter(name => name.endsWith(".json")).length, 1 + stepCount);
+					const starts = observed.events.filter(event => event.type === "subagent.nested.started");
+					assert.equal(starts.length, 1);
+					const child = starts[0].child;
+					assert.equal(child.steps, undefined);
+					const records = observed.events.filter(event => event.type === "subagent.nested.child").sort((a, b) => a.index - b.index);
+					assert.equal(records.length, stepCount);
+					assert.equal(new Set(records.map(event => event.id)).size, stepCount);
+					for (const [index, event] of records.entries()) {
+						assert.equal(event.runId, id);
+						assert.equal(event.index, index);
+						assert.equal(event.agent, "test");
+						assert.equal(event.status, "pending");
+						assert.match(event.id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+						assert.equal(event.id, status.steps[index].id);
+					}
 					assert.deepEqual(child.runtime, runtime);
 					assert.equal(child.sessionRoot, ["revived", "reused-chain", "mixed-chain"].includes(scenario) ? prior : observed.config.sessionDir);
 					assert.equal(child.state, "queued");
@@ -319,6 +334,13 @@ describe("durable async startup", () => {
 					const expectedStep = mode === "dynamic"
 						? { agent: "expand:test", label: "Dynamic fanout (items)", outputName: "items", structured: false, status: "pending", recentTools: [], recentOutput: [] }
 						: { agent: "test", model: "test/model", skills: [], sessionFile, attemptedModels: ["test/model"], status: "pending", recentTools: [], recentOutput: [] };
+					const childSteps = status.steps.filter(step => step.id !== undefined);
+					assert.equal(childSteps.length, mode === "dynamic" ? 1 : status.steps.length);
+					assert.equal(new Set(childSteps.map(step => step.id)).size, childSteps.length);
+					for (const step of childSteps) {
+						assert.match(step.id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+					}
+					if (mode !== "dynamic") Object.assign(expectedStep, { id: status.steps[0].id });
 					if (mode === "chain" || mode === "parallel") Object.assign(expectedStep, { structured: false });
 					assert.deepEqual(status.steps[mode === "dynamic" ? 1 : 0], expectedStep);
 					assert.deepEqual(status.parallelGroups, mode === "parallel" || mode === "dynamic" ? [{ start: mode === "dynamic" ? 1 : 0, count: 1, stepIndex: mode === "dynamic" ? 1 : 0 }] : []);

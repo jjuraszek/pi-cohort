@@ -138,12 +138,13 @@ describe("renderSubagentResult fork indicator", () => {
 		assert.match(unwrap(expanded), /precisefailingtoolsequenceattheend\./);
 	});
 
-	it("uses glyph-first compact rendering for completed subagents", () => {
+	it("uses id-first compact rendering for completed subagents", () => {
 		const widget = renderSubagentResult!({
 			content: [{ type: "text", text: "done" }],
 			details: {
 				mode: "single",
 				results: [{
+					id: "abc12345-0000-4000-8000-000000000001",
 					agent: "reviewer",
 					task: "review",
 					exitCode: 0,
@@ -156,7 +157,7 @@ describe("renderSubagentResult fork indicator", () => {
 		}, { expanded: false }, theme);
 
 		const text = widget.render(120).join("\n");
-		assert.match(text, /^✓ reviewer/);
+		assert.match(text, /^abc123 ✓ reviewer/);
 		assert.match(text, /⟳ 2/);
 		assert.match(text, /3 tool uses/);
 		assert.match(text, /1\.2k token/);
@@ -172,6 +173,7 @@ describe("renderSubagentResult fork indicator", () => {
 				results: [{
 					agent: "reviewer",
 					task: "review",
+					id: "def45678-0000-4000-8000-000000000002",
 					exitCode: 1,
 					error: "boom",
 					messages: [],
@@ -181,7 +183,7 @@ describe("renderSubagentResult fork indicator", () => {
 		}, { expanded: false }, theme);
 
 		const text = widget.render(120).join("\n");
-		assert.match(text, /^✗ reviewer/);
+		assert.match(text, /^def456 ✗ reviewer/);
 		assert.match(text, /⎿  Error: boom/);
 	});
 
@@ -296,8 +298,10 @@ describe("renderSubagentResult fork indicator", () => {
 			content: [{ type: "text", text: "paused" }],
 			details: {
 				mode: "chain",
+				runId: "123abc45-0000-4000-8000-000000000003",
 				chainAgents: ["worker"],
 				results: [{
+					id: "456def78-0000-4000-8000-000000000004",
 					agent: "worker",
 					task: "pause",
 					exitCode: 0,
@@ -309,7 +313,7 @@ describe("renderSubagentResult fork indicator", () => {
 		}, { expanded: false }, theme);
 
 		const text = widget.render(120).join("\n");
-		assert.match(text, /^■ chain/);
+		assert.match(text, /^123abc ■ chain/);
 		assert.match(text, /⎿  Paused/);
 	});
 
