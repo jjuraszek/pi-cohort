@@ -56,8 +56,12 @@ export function sweepBackgroundDescendants(route: NestedRouteInfo | undefined, t
 				const dir = resolveNestedAsyncDir(route.rootRunId, run);
 				if (dir && run.state === "running") {
 					// A queued or exiting runner observes the admission record at startup instead.
-					const status = readStatus(dir);
-					if (status?.state === "running" && status.pid && checkPidLiveness(status.pid) === "alive") requestAsyncStop(dir, run.id);
+					try {
+						const status = readStatus(dir);
+						if (status?.state === "running" && status.pid && checkPidLiveness(status.pid) === "alive") requestAsyncStop(dir, run.id);
+					} catch (error) {
+						console.error(`Failed to stop background descendant '${run.id}':`, error);
+					}
 				}
 			}
 			visit(run.children);

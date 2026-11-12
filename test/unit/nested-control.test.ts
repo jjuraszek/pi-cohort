@@ -387,33 +387,52 @@ describe("stop target ownership", () => {
 		} finally { clearInterval(wrong); clearInterval(owner); }
 	});
 
-	it("sweeps only recorded background descendants and closes their late-launch race", () => {
-		const route = createNestedRoute("sweep-root");
-		routeRoots.push(path.dirname(route.eventSink));
-		const dirs: string[] = [];
-		const kill = mock.method(process, "kill", () => true);
-		try {
-			for (const [id, childId] of [["nested-match", "target-child"], ["nested-sibling", "sibling-child"]]) {
-				const asyncDir = path.join(RUN_STATE_ROOT_DIR, "nested-subagent-runs", route.rootRunId, id);
-				dirs.push(asyncDir);
-				fs.mkdirSync(asyncDir, { recursive: true });
-				fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ runId: id, state: "running", pid: 98765 }));
-				writeNestedEvent(route, { type: "subagent.nested.updated", ts: Date.now(), parentRunId: route.rootRunId, parentStepIndex: 0, child: {
-					id, state: "running", agent: "worker", parentRunId: route.rootRunId, parentStepIndex: 0, depth: 1,
-					path: [{ runId: route.rootRunId, childId }], asyncDir,
-				} });
+	for (const failure of ["none", "runner-exited", "signal-error"]) {
+		it(`sweeps only recorded background descendants and closes their late-launch race (${failure})`, () => {
+			const route = createNestedRoute(`sweep-root-${failure}`);
+			routeRoots.push(path.dirname(route.eventSink));
+			const dirs: string[] = [];
+			const errors = mock.method(console, "error", () => {});
+			let firstProbes = 0;
+			const kill = mock.method(process, "kill", (pid: number, signal: NodeJS.Signals | number) => {
+				if (pid === 98765) {
+					if (signal === 0 && ++firstProbes === 2 && failure === "runner-exited") {
+						throw Object.assign(new Error("runner exited between liveness checks"), { code: "ESRCH" });
+					}
+					if (signal !== 0 && failure === "signal-error") {
+						throw Object.assign(new Error("descendant signal failed"), { code: "EPERM" });
+					}
+				}
+				return true;
+			});
+			try {
+				const ts = Date.now();
+				for (const [index, [id, childId]] of [["nested-match", "target-child"], ["nested-later", "target-child"], ["nested-sibling", "sibling-child"]].entries()) {
+					const asyncDir = path.join(RUN_STATE_ROOT_DIR, "nested-subagent-runs", route.rootRunId, id);
+					dirs.push(asyncDir);
+					fs.mkdirSync(asyncDir, { recursive: true });
+					fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ runId: id, state: "running", pid: 98765 + index }));
+					writeNestedEvent(route, { type: "subagent.nested.updated", ts: ts + index, parentRunId: route.rootRunId, parentStepIndex: 0, child: {
+						id, state: "running", agent: "worker", parentRunId: route.rootRunId, parentStepIndex: 0, depth: 1,
+						path: [{ runId: route.rootRunId, childId }], asyncDir,
+					} });
+				}
+				recordStop(route, "target-child");
+				sweepBackgroundDescendants(route, "target-child");
+				assert.equal(fs.existsSync(path.join(dirs[0], "interrupt-request-nested-match.json")), failure !== "runner-exited");
+				assert.ok(fs.existsSync(path.join(dirs[1], "interrupt-request-nested-later.json")));
+				assert.equal(fs.existsSync(path.join(dirs[2], "interrupt-request-nested-sibling.json")), false);
+				assert.deepEqual(kill.mock.calls.filter((call) => call.arguments[1] !== 0).map((call) => call.arguments[0]), failure === "runner-exited" ? [98766] : [98765, 98766]);
+				assert.equal(errors.mock.calls.length, failure === "none" ? 0 : 1);
+				if (failure !== "none") assert.match(errors.mock.calls[0].arguments[0], /nested-match/);
+				assert.equal(stoppingAncestor(route, "late-background", undefined, [{ runId: route.rootRunId, childId: "target-child" }]), "target-child");
+			} finally {
+				errors.mock.restore();
+				kill.mock.restore();
+				for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
 			}
-			recordStop(route, "target-child");
-			sweepBackgroundDescendants(route, "target-child");
-			assert.ok(fs.existsSync(path.join(dirs[0], "interrupt-request-nested-match.json")));
-			assert.equal(fs.existsSync(path.join(dirs[1], "interrupt-request-nested-sibling.json")), false);
-			assert.equal(kill.mock.calls.filter((call) => call.arguments[1] !== 0).length, 1);
-			assert.equal(stoppingAncestor(route, "late-background", undefined, [{ runId: route.rootRunId, childId: "target-child" }]), "target-child");
-		} finally {
-			kill.mock.restore();
-			for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
-		}
-	});
+		});
+	}
 });
 
 describe("nested control routing", () => {
