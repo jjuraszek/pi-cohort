@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { Message } from "@earendil-works/pi-ai";
 import type { OutputMode, SavedOutputReference } from "../../shared/types.ts";
 
 export interface SingleOutputSnapshot {
@@ -141,6 +142,17 @@ export function hasSingleOutputChanged(
 	return afterRun?.exists === true && (!beforeRun?.exists
 		|| afterRun.mtimeMs !== beforeRun.mtimeMs
 		|| afterRun.size !== beforeRun.size);
+}
+
+export function getSingleOutputErrorMessages(
+	messages: Message[],
+	beforeRun: SingleOutputSnapshot | undefined,
+	afterRun: SingleOutputSnapshot | undefined,
+): Message[] {
+	if (!hasSingleOutputChanged(beforeRun, afterRun)) return messages;
+	// A changed file forgives recovered errors, not failures after the last successful tool.
+	const lastSuccess = messages.findLastIndex((message) => message.role === "toolResult" && message.isError !== true);
+	return messages.slice(lastSuccess + 1);
 }
 
 function persistSingleOutput(

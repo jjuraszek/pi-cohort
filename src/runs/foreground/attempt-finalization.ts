@@ -9,7 +9,7 @@ import type { AgentConfig } from "../../agents/agents.ts";
 import { blockedLine, evaluateCompletionMutationGuard } from "../shared/completion-guard.ts";
 import { applyThinkingSuffix } from "../shared/pi-args.ts";
 import { readStructuredOutput } from "../shared/structured-output.ts";
-import { captureSingleOutputSnapshot, formatSavedOutputReference, hasSingleOutputChanged, resolveSingleOutput, type SingleOutputSnapshot } from "../shared/single-output.ts";
+import { captureSingleOutputSnapshot, formatSavedOutputReference, getSingleOutputErrorMessages, resolveSingleOutput, type SingleOutputSnapshot } from "../shared/single-output.ts";
 import {
 	DEFAULT_CONTROL_CONFIG,
 	buildControlEvent,
@@ -202,9 +202,10 @@ export function finalizeSingleAttempt(
 	if (result.error && result.exitCode === 0) {
 		result.exitCode = 1;
 	}
-	if (result.exitCode === 0 && !result.error
-		&& !hasSingleOutputChanged(ctx.outputSnapshot, captureSingleOutputSnapshot(options.outputPath))) {
-		const errInfo = detectSubagentError(result.messages);
+	if (result.exitCode === 0 && !result.error) {
+		const errInfo = detectSubagentError(getSingleOutputErrorMessages(
+			result.messages, ctx.outputSnapshot, captureSingleOutputSnapshot(options.outputPath),
+		));
 		if (errInfo.hasError) {
 			result.exitCode = errInfo.exitCode ?? 1;
 			result.error = errInfo.details

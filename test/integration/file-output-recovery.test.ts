@@ -38,6 +38,7 @@ const outputs = [
 	{ name: "unchanged", existed: true, changed: false, enabled: true },
 	{ name: "missing", existed: false, changed: false, enabled: true },
 	{ name: "disabled", existed: false, changed: false, enabled: false },
+	{ name: "report written, then a final read error, exit 0", existed: false, changed: true, enabled: true, finalToolError: true },
 	{ name: "changed with nonzero exit", existed: false, changed: true, enabled: true, exitCode: 7 },
 	{ name: "changed with explicit error", existed: false, changed: true, enabled: true, error: "Provider failed" },
 ];
@@ -130,7 +131,9 @@ for (const backend of ["foreground", "native", "external"] as const) {
 				const outputPath = output.enabled ? path.join(tempDir, "report.md") : undefined;
 				if (output.existed) fs.writeFileSync(outputPath!, "stale report");
 				const outputSnapshot = captureSingleOutputSnapshot(outputPath);
-				const success = output.changed && !output.exitCode && !output.error;
+				const success = output.changed && !output.exitCode && !output.error && !output.finalToolError;
+				const writtenReport = output.finalToolError ? "# Findings\n" : report;
+				const failedTool = output.finalToolError ? "read" : tool.toolName;
 				const messages = [{
 					role: "toolResult", toolCallId: "inspect", toolName: tool.toolName, isError: tool.isError,
 					content: [{ type: "text", text: tool.text }], timestamp: 1,
@@ -138,6 +141,10 @@ for (const backend of ["foreground", "native", "external"] as const) {
 				if (output.changed) messages.push({
 					role: "toolResult", toolCallId: "save", toolName: "write", isError: false,
 					content: [{ type: "text", text: "Report written" }], timestamp: 2,
+				});
+				if (output.finalToolError) messages.push({
+					role: "toolResult", toolCallId: "read", toolName: "read", isError: true,
+					content: [{ type: "text", text: "Path not found: missing-file" }], timestamp: 3,
 				});
 				const hosts: ReturnType<typeof spawn>[] = [];
 				const requests: ExecutionSurfaceRequest[] = [];
@@ -153,7 +160,7 @@ for (const backend of ["foreground", "native", "external"] as const) {
 							sessionEnabled: false, systemPrompt: agent.systemPrompt, attemptNotes: [],
 						});
 						attempt.result.messages.push(...messages);
-						if (output.changed) fs.writeFileSync(outputPath!, report);
+						if (output.changed) fs.writeFileSync(outputPath!, writtenReport);
 						attempt.result.exitCode = output.exitCode ?? 0;
 						attempt.result.error = output.error;
 						const result = finalizeSingleAttempt(attempt.result, attempt.progress, {
@@ -169,13 +176,13 @@ for (const backend of ["foreground", "native", "external"] as const) {
 						} else {
 							assert.equal(result.exitCode, output.exitCode ?? 1);
 							if (output.error) assert.equal(result.error, output.error);
-							else if (!output.exitCode) assert.ok(result.error?.startsWith(`${tool.toolName} failed (exit 1):`));
+							else if (!output.exitCode) assert.ok(result.error?.startsWith(`${failedTool} failed (exit 1):`), result.error);
 							assert.equal(result.savedOutputPath, undefined);
 							assert.equal(result.outputReference, undefined);
 							assert.equal(result.finalOutput, "");
 						}
 					} else {
-						const writeReport = output.changed ? `fs.writeFileSync(${JSON.stringify(outputPath)}, ${JSON.stringify(report)});` : "";
+						const writeReport = output.changed ? `fs.writeFileSync(${JSON.stringify(outputPath)}, ${JSON.stringify(writtenReport)});` : "";
 						const script = backend === "native"
 							? `import fs from "node:fs"; ${writeReport}\nfor (const message of ${JSON.stringify(messages)}) console.log(JSON.stringify({ type: "tool_result_end", message }));\nprocess.exit(${output.exitCode ?? 0});`
 							: externalFixture(messages, writeReport, Boolean(output.exitCode));
@@ -196,7 +203,7 @@ for (const backend of ["foreground", "native", "external"] as const) {
 							assert.equal(result.output, formatSavedOutputReference(outputPath!, report).message);
 						} else {
 							assert.equal(result.exitCode, output.exitCode && backend === "native" ? output.exitCode : 1);
-							if (!output.exitCode) assert.ok(result.error?.startsWith(`${tool.toolName} failed (exit 1):`), result.error);
+							if (!output.exitCode) assert.ok(result.error?.startsWith(`${failedTool} failed (exit 1):`), result.error);
 							assert.doesNotMatch(result.output, /Output saved to:/);
 						}
 						assert.equal(result.modelAttempts.length, 1);
@@ -208,7 +215,7 @@ for (const backend of ["foreground", "native", "external"] as const) {
 							assert.equal(requests.length, 1);
 						}
 					}
-					if (output.changed) assert.equal(fs.readFileSync(outputPath!, "utf8"), report);
+					if (output.changed) assert.equal(fs.readFileSync(outputPath!, "utf8"), writtenReport);
 					else if (output.existed) assert.equal(fs.readFileSync(outputPath!, "utf8"), "stale report");
 					else if (outputPath) assert.equal(fs.existsSync(outputPath), false);
 				} finally {
