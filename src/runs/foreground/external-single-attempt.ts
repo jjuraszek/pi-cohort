@@ -12,7 +12,7 @@ import type { RunSyncOptions, SingleResult, Usage } from "../../shared/types.ts"
 import { getSubagentDepthEnv } from "../../shared/types.ts";
 import { buildPiArgs, cleanupTempDir, SUBAGENT_OWNER_PID_ENV } from "../shared/pi-args.ts";
 import { getPiSpawnCommand } from "../shared/pi-spawn.ts";
-import { PINNED_AGENT_DIR_OVERRIDE } from "../../shared/agent-dir.ts";
+import { pinChildAgentDir } from "../../shared/agent-dir.ts";
 import { isMutatingTool } from "../shared/long-running-guard.ts";
 import type { ExternalAttemptResult, ExternalExecution } from "../shared/external-execution.ts";
 import { type AttemptSharedInit, finalizeSingleAttempt, initializeAttempt } from "./attempt-finalization.ts";
@@ -86,6 +86,7 @@ export async function runExternalSingleAttempt(input: RunExternalSingleAttemptIn
 		inheritSkills: agent.inheritSkills,
 		tools: agent.tools,
 		extensions: agent.extensions,
+		settings: agent.settings,
 		systemPrompt: shared.systemPrompt,
 		cwd: options.cwd ?? runtimeCwd,
 		promptFileStem: agent.name,
@@ -110,7 +111,8 @@ export async function runExternalSingleAttempt(input: RunExternalSingleAttemptIn
 		if (taskArg !== undefined) args.push(taskArg);
 
 		const spawnSpec = getPiSpawnCommand(args, options.runtime);
-		const mergedEnv: Record<string, string | undefined> = { ...process.env, ...sharedEnv, ...getSubagentDepthEnv(options.maxSubagentDepth), ...(PINNED_AGENT_DIR_OVERRIDE ? { PI_CODING_AGENT_DIR: PINNED_AGENT_DIR_OVERRIDE } : {}) };
+		const mergedEnv: Record<string, string | undefined> = { ...process.env, ...sharedEnv, ...getSubagentDepthEnv(options.maxSubagentDepth) };
+		pinChildAgentDir(mergedEnv);
 		mergedEnv[SUBAGENT_OWNER_PID_ENV] = "";
 		const environment: Record<string, string> = {};
 		for (const [key, value] of Object.entries(mergedEnv)) {

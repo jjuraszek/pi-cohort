@@ -47,7 +47,7 @@ const net = require("node:net");
 const args = process.argv.slice(2);
 fs.writeFileSync(require("node:path").join(process.cwd(), "child.pid"), String(process.pid));
 fs.appendFileSync(require("node:path").join(process.cwd(), "child.pids"), process.pid + "\\n");
-${argsPath ? `fs.appendFileSync(${JSON.stringify(`${argsPath}.count`)}, "1\\n"); fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(args)); fs.writeFileSync(${JSON.stringify(`${argsPath}.parent-session-id`)}, process.env.PI_SUBAGENT_PARENT_SESSION_ID ?? ""); fs.writeFileSync(${JSON.stringify(`${argsPath}.control-env`)}, JSON.stringify({ path: process.env.PI_SUBAGENT_PARENT_PATH, ownerPid: process.env.PI_SUBAGENT_OWNER_PID }));` : ""}
+${argsPath ? `fs.appendFileSync(${JSON.stringify(`${argsPath}.count`)}, "1\\n"); fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(args)); fs.writeFileSync(${JSON.stringify(`${argsPath}.parent-session-id`)}, process.env.PI_SUBAGENT_PARENT_SESSION_ID ?? ""); fs.writeFileSync(${JSON.stringify(`${argsPath}.control-env`)}, JSON.stringify({ path: process.env.PI_SUBAGENT_PARENT_PATH, ownerPid: process.env.PI_SUBAGENT_OWNER_PID })); if (process.env.PI_SUBAGENT_BASE_AGENT_DIR) fs.writeFileSync(${JSON.stringify(`${argsPath}.settings`)}, fs.readFileSync(require("node:path").join(process.env.PI_CODING_AGENT_DIR, "settings.json")));` : ""}
 const sessionFile = args[args.indexOf("--session") + 1];
 if (!sessionFile) { console.error("no --session"); process.exit(1); }
 if (${JSON.stringify(outcome)} === "missing-result") process.exit(0);
@@ -491,6 +491,7 @@ test("runSingleStep retains the surface and removes its prompt directory when an
 			agent: "worker",
 			task: "Exercise the throwing external attempt",
 			systemPrompt: "runner fixture prompt",
+			settings: { quietStartup: true },
 			inheritProjectContext: false,
 			inheritSkills: false,
 		}, {
@@ -528,6 +529,7 @@ test("runSingleStep retains the surface and removes its prompt directory when an
 		assert.equal(childArgs[childArgs.indexOf("--name") + 1], "worker child- from P");
 		assert.ok(childArgs.includes("--approve"));
 		assert.equal(fs.readFileSync(`${argsPath}.parent-session-id`, "utf-8"), "parent-session-id");
+		assert.equal(JSON.parse(fs.readFileSync(`${argsPath}.settings`, "utf-8")).quietStartup, true);
 	} finally {
 		process.env.PATH = savedPath;
 		dispose();

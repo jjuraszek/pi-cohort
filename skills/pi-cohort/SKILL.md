@@ -56,6 +56,7 @@ A child saying "done" is evidence, not verification. `reviewed` means a reviewer
 | Field | Effect |
 |---|---|
 | `model` | overrides the agent's model for this task |
+| `settings` | `settings.json` keys this task's child launches with in place of the parent's; read `reference/config-fields.md` "Child settings override" before setting it |
 | `label` | Name a child on live and result rows as `<agent> - <label>`; set it on single calls, `tasks[]` items, or chain tasks. Preserve item interpolation in dynamic templates and keep a parallel group's label on its header. |
 | `phase` | Group chain steps in status/graphs. |
 | `output` | file the child's result is saved to; absolute in parallel mode |

@@ -67,6 +67,38 @@ describe("pinned profile storage", () => {
 	}
 });
 
+describe("a child's agent directory", () => {
+	function probe(env: Record<string, string>, script: string): unknown {
+		const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+			const agentDir = await import(${JSON.stringify(new URL("../../src/shared/agent-dir.ts", import.meta.url).href)});
+			const storage = await import(${JSON.stringify(new URL("../../src/shared/types.ts", import.meta.url).href)});
+			console.log(JSON.stringify(${script}));
+		`], { env: { ...process.env, ...env }, encoding: "utf8" });
+		assert.equal(result.status, 0, result.stderr);
+		return JSON.parse(result.stdout);
+	}
+	const pin = (env: string) => `(() => { const env = ${env}; agentDir.pinChildAgentDir(env); return env.PI_CODING_AGENT_DIR ?? null; })()`;
+	const parent = path.resolve("parent-profile");
+	const overlay = path.resolve("overlay-profile");
+
+	it("pins a child without a settings override to the parent's directory", () => {
+		assert.equal(probe({ PI_CODING_AGENT_DIR: parent, PI_SUBAGENT_BASE_AGENT_DIR: "" }, pin(`{ PI_SUBAGENT_BASE_AGENT_DIR: "" }`)), parent);
+	});
+
+	it("leaves a child with a settings override on its own directory", () => {
+		assert.equal(
+			probe({ PI_CODING_AGENT_DIR: parent, PI_SUBAGENT_BASE_AGENT_DIR: "" }, pin(`{ PI_CODING_AGENT_DIR: ${JSON.stringify(overlay)}, PI_SUBAGENT_BASE_AGENT_DIR: ${JSON.stringify(parent)} }`)),
+			overlay,
+		);
+	});
+
+	it("keeps run state and grandchildren on the real directory inside an overridden child", () => {
+		const inChild = { PI_CODING_AGENT_DIR: overlay, PI_SUBAGENT_BASE_AGENT_DIR: parent };
+		assert.equal(probe(inChild, "storage.RUN_STATE_ROOT_DIR"), path.join(parent, "pi-cohort"));
+		assert.equal(probe(inChild, pin(`{ PI_SUBAGENT_BASE_AGENT_DIR: "" }`)), parent);
+	});
+});
+
 let tempDir = "";
 let agentDir = "";
 let cwd = "";

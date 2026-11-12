@@ -24,6 +24,8 @@ interface MockPiResponse {
 		stderr?: string;
 	}>;
 	echoEnv?: string[];
+	/** Reply with the settings.json of the agent directory this child was launched with. */
+	echoAgentSettings?: boolean;
 	echoRuntime?: boolean;
 	echoFiles?: string[];
 	echoCwd?: boolean;

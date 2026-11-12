@@ -192,6 +192,7 @@ Every child process also gets these environment variables, stable inputs for oth
 | `PI_SUBAGENT_RUN_ID` | the full run id, distinct from the child's stop id | when the run id is known |
 | `PI_SUBAGENT_OWNER_PID` | the spawning process's pid for the native owner watch; empty disables the watch for external attempts, whose host watches the owner socket | on every child |
 | `PI_SUBAGENT_PARENT_SESSION_ID` | the pi session id of the session that launched the child | on every child; a nested child gets its immediate parent's id, never an inherited ancestor's |
+| `PI_SUBAGENT_BASE_AGENT_DIR` | the parent's agent directory | non-empty only on a child launched with a [`settings` override](skills/pi-cohort/reference/config-fields.md#child-settings-override-settings), whose `PI_CODING_AGENT_DIR` is a temporary directory holding the merged `settings.json` |
 
 Full reference: agent/chain authoring in [doc/agents-and-chains.md](doc/agents-and-chains.md), exact command syntax in [doc/commands.md](doc/commands.md), the raw tool API in [doc/programmatic-api.md](doc/programmatic-api.md).
 

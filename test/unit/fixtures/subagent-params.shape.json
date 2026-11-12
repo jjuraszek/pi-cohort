@@ -144,6 +144,10 @@
 					"model": {
 						"type": "string"
 					},
+					"settings": {
+						"type": "object",
+						"additionalProperties": true
+					},
 					"skill": {
 						"anyOf": [
 							{
@@ -398,6 +402,10 @@
 		},
 		"model": {
 			"type": "string"
+		},
+		"settings": {
+			"type": "object",
+			"additionalProperties": true
 		},
 		"acceptance": {
 			"anyOf": [

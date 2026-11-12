@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { PINNED_AGENT_DIR_OVERRIDE } from "../../shared/agent-dir.ts";
+import { pinChildAgentDir } from "../../shared/agent-dir.ts";
 import type { ProjectTrust } from "../shared/project-trust.ts";
 import { resolveExtensionConfig } from "../../agents/agents.ts";
 import * as fs from "node:fs";
@@ -279,7 +279,7 @@ function runPiStreaming(
 		const spawnSpec = getPiSpawnCommand(args, runtime);
 		const outputStream = fs.createWriteStream(outputFile, { flags: "w" });
 		const spawnEnv = { ...process.env, ...(env ?? {}), ...getSubagentDepthEnv(maxSubagentDepth) };
-		if (PINNED_AGENT_DIR_OVERRIDE) spawnEnv.PI_CODING_AGENT_DIR = PINNED_AGENT_DIR_OVERRIDE;
+		pinChildAgentDir(spawnEnv);
 		const child = spawn(spawnSpec.command, spawnSpec.args, {
 			cwd,
 			stdio: ["ignore", "pipe", "pipe"],
@@ -850,6 +850,7 @@ async function runSingleStepAttempts(
 					inheritSkills: step.inheritSkills,
 					tools: step.tools,
 					extensions: step.extensions,
+					settings: step.settings,
 					systemPrompt: step.systemPrompt,
 					systemPromptMode: step.systemPromptMode,
 					cwd: childCwd,
@@ -1008,6 +1009,7 @@ async function runSingleStepAttempts(
 			inheritSkills: step.inheritSkills,
 			tools: step.tools,
 			extensions: step.extensions,
+			settings: step.settings,
 			systemPrompt: step.systemPrompt,
 			systemPromptMode: step.systemPromptMode,
 			cwd: childCwd,

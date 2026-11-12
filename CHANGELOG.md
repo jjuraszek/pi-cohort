@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- A child can launch with its own `settings.json` values: set `settings` on a `subagent` call (top level, `tasks[]`, or a chain step), in agent frontmatter, or under `subagents.agentOverrides.<name>`. The override covers pi keys and extension blocks, applies only to that child on native and external backends, and the call wins over the agent key by key. `defaultProjectTrust`, `httpProxy`, and `selfUpdateCommand` are rejected by name. Children gain `PI_SUBAGENT_BASE_AGENT_DIR`. (#66)
+
 ## [8.0.0] - 2026-11-12
 
 ### Fixed

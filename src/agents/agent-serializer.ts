@@ -16,6 +16,7 @@ export const KNOWN_FIELDS = new Set([
 	"skill",
 	"skills",
 	"extensions",
+	"settings",
 	"output",
 	"defaultReads",
 	"defaultProgress",
@@ -55,6 +56,8 @@ export function serializeAgent(config: AgentConfig): string {
 		const extensionsValue = joinComma(config.extensions);
 		lines.push(`extensions: ${extensionsValue ?? ""}`);
 	}
+
+	if (config.settings) lines.push(`settings: ${JSON.stringify(config.settings)}`);
 
 	if (config.output) lines.push(`output: ${config.output}`);
 

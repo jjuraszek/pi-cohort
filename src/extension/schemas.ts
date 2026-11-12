@@ -51,6 +51,12 @@ const JsonSchemaObject = Type.Unsafe({
 	description: "Structured output; non-object rejected.",
 });
 
+const SettingsOverride = Type.Unsafe({
+	type: "object",
+	additionalProperties: true,
+	description: "settings.json keys for this child only; pi-cohort skill.",
+});
+
 const AcceptanceEvidenceKind = Type.String({
 	enum: [
 		"changed-files",
@@ -139,7 +145,7 @@ const AcceptanceOverrideStub = Type.Unsafe({
 
 // tasks[] stub (round three): same treatment as ParallelTaskSchema below; structural keys
 // stay explicit (agent/task required, count = arity); every per-task override (model, output,
-// outputMode, reads, progress, skill, cwd, acceptance) passes through additionalProperties
+// outputMode, reads, progress, skill, cwd, settings, acceptance) passes through additionalProperties
 // and is documented in the pi-cohort skill. No `as` (no {outputs.name} wiring here).
 // Labels stay explicit because they identify a child on its live and settled rows.
 const TaskItem = Type.Unsafe({
@@ -157,7 +163,7 @@ const TaskItem = Type.Unsafe({
 
 // Parallel-item stubs (round two): structural/wiring keys stay explicit (agent/task,
 // count/as = arity + {outputs.name} routing); every per-task override (model, label,
-// phase, output, outputMode, reads, skill, cwd, progress, outputSchema, acceptance)
+// phase, output, outputMode, reads, skill, cwd, progress, outputSchema, settings, acceptance)
 // passes through additionalProperties and is documented in the pi-cohort skill.
 // Widening-only: dynamic-arm unknown keys are still rejected at runtime by
 // assertOnlyKeys (dynamic-fanout.ts); static-arm unknown keys were always ignored.
@@ -217,6 +223,7 @@ const ChainItem = Type.Object({
 	reads: Type.Optional(brief(ReadsOverride, "Reads first, or false.")),
 	progress: Type.Optional(Type.Boolean({ description: "Enable progress.md tracking in {chain_dir}" })),
 	model: Type.Optional(Type.String()),
+	settings: Type.Optional(SettingsOverride),
 	skill: Type.Optional(brief(SkillOverride, "Skill override.")),
 	acceptance: Type.Optional(AcceptanceOverrideStub),
 	parallel: Type.Optional(Type.Unsafe({
@@ -312,5 +319,6 @@ export const SubagentParams = Type.Object({
 	outputMode: Type.Optional(OutputModeOverride),
 	skill: Type.Optional(SkillOverride),
 	model: Type.Optional(Type.String({ description: "Model override, e.g. 'anthropic/claude-sonnet-4'." })),
+	settings: Type.Optional(SettingsOverride),
 	acceptance: Type.Optional(AcceptanceOverride),
 });

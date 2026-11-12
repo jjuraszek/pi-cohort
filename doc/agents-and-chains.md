@@ -112,7 +112,7 @@ Example:
 }
 ```
 
-Supported override fields are `model`, `fallbackModels`, `thinking`, `systemPromptMode`, `inheritProjectContext`, `inheritSkills`, `defaultContext`, `disabled`, `skills`, `tools`, `toolsPrepend`, `toolsAppend`, and `systemPrompt`. Use `defaultContext: false` in builtin overrides to clear an inherited context default. Project overrides beat user overrides.
+Supported override fields are `model`, `fallbackModels`, `thinking`, `settings`, `systemPromptMode`, `inheritProjectContext`, `inheritSkills`, `defaultContext`, `disabled`, `skills`, `tools`, `toolsPrepend`, `toolsAppend`, and `systemPrompt`. Use `defaultContext: false` in builtin overrides to clear an inherited context default. Project overrides beat user overrides.
 
 `toolsPrepend` and `toolsAppend` add tools around the agent's effective `tools` list without requiring you to restate the full list. The resolved order is `toolsPrepend + tools + toolsAppend`, with first-occurrence dedupe. They apply to both builtin and custom agents. For custom agents they compose around the frontmatter `tools` value whether or not it is set. Only the winning override scope (project beats user) is applied -- additive fields do not layer across scopes.
 
@@ -154,6 +154,7 @@ extensions:
 model: claude-haiku-4-5
 fallbackModels: openai/gpt-5-mini, anthropic/claude-sonnet-4
 thinking: high
+settings: {"quietStartup": true}
 systemPromptMode: replace
 inheritProjectContext: false
 inheritSkills: false
@@ -179,6 +180,7 @@ Important fields:
 | `model` | Default model. Bare ids prefer the current provider when possible, then unique registry matches. |
 | `fallbackModels` | Ordered backup models for provider/model failures such as quota, auth, timeout, or unavailable model. Ordinary task failures do not trigger fallback. |
 | `thinking` | Appended as a `:level` suffix at runtime unless a suffix is already present; unset means the parent session's level; `off` is emitted as `:off`. |
+| `settings` | `settings.json` keys every child of this agent launches with in place of the parent's values, as JSON on one line. A per-call `settings` wins key by key. See [Child settings override](../skills/pi-cohort/reference/config-fields.md#child-settings-override-settings). |
 | `systemPromptMode` | `replace` by default; `append` keeps Pi's base prompt. |
 | `inheritProjectContext` | Keeps or strips inherited project instruction blocks. |
 | `inheritSkills` | Keeps or strips Pi's discovered skills catalog. |

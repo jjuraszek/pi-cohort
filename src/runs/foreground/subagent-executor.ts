@@ -23,6 +23,7 @@ import { resolveModelCandidate } from "../shared/model-fallback.ts";
 import { aggregateParallelOutputs } from "../shared/parallel-utils.ts";
 import { recordRun } from "../shared/run-history.ts";
 import { validateAcceptanceInput } from "../shared/acceptance.ts";
+import { childSettingsError, type ChildSettings } from "../shared/child-settings.ts";
 import {
 	buildChainInstructions,
 	writeInitialProgressFile,
@@ -102,6 +103,7 @@ interface TaskParam {
 	reads?: string[] | boolean;
 	progress?: boolean;
 	model?: string;
+	settings?: ChildSettings;
 	skill?: string | string[] | boolean;
 	acceptance?: AcceptanceInput;
 }
@@ -131,6 +133,7 @@ export interface SubagentParamsLike {
 	artifacts?: boolean;
 	includeProgress?: boolean;
 	model?: string;
+	settings?: ChildSettings;
 	skill?: string | string[] | boolean;
 	output?: string | boolean;
 	outputMode?: "inline" | "file-only";
@@ -777,6 +780,24 @@ function validateExecutionInput(
 		};
 	}
 
+	const settingsErrors = [
+		childSettingsError(params.settings, "settings"),
+		...(params.tasks ?? []).map((task, i) => childSettingsError(task.settings, `tasks[${i}].settings`)),
+		...(params.chain ?? []).flatMap((rawStep, i) => {
+			const step = rawStep as ChainStep;
+			if (isParallelStep(step)) return step.parallel.map((member, j) => childSettingsError(member.settings, `chain[${i}].parallel[${j}].settings`));
+			if (isDynamicParallelStep(step)) return [childSettingsError(step.parallel.settings, `chain[${i}].parallel.settings`)];
+			return [childSettingsError(step.settings, `chain[${i}].settings`)];
+		}),
+	].filter((error): error is string => error !== undefined);
+	if (settingsErrors.length > 0) {
+		return {
+			content: [{ type: "text", text: `Invalid settings override:\n${settingsErrors.map((error) => `- ${error}`).join("\n")}` }],
+			isError: true,
+			details: { mode: hasChain ? "chain" as const : hasTasks ? "parallel" as const : "single" as const, results: [] },
+		};
+	}
+
 	return null;
 }
 
@@ -1017,6 +1038,7 @@ function runAsyncPath(data: ExecutionContextData, deps: CallExecutorDeps): Agent
 			...(task.outputMode !== undefined ? { outputMode: task.outputMode } : {}),
 			...(task.reads !== undefined && task.reads !== true ? { reads: task.reads } : {}),
 			progress: task.progress ?? false,
+			...(task.settings !== undefined ? { settings: task.settings } : {}),
 			...(task.acceptance !== undefined ? { acceptance: task.acceptance } : {}),
 		}));
 		return executeAsyncChain(id, {
@@ -1116,6 +1138,7 @@ function runAsyncPath(data: ExecutionContextData, deps: CallExecutorDeps): Agent
 			output: effectiveOutput,
 			outputMode: effectiveOutputMode,
 			modelOverride,
+			settings: params.settings,
 			maxSubagentDepth,
 			worktreeSetupHook: deps.config.worktreeSetupHook,
 			worktreeSetupHookTimeoutMs: deps.config.worktreeSetupHookTimeoutMs,
@@ -1473,6 +1496,7 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 			onControlEvent: input.onControlEvent,
 			nestedRoute: input.foregroundControl?.nestedRoute,
 			modelOverride: input.modelOverrides[index],
+			settings: task.settings,
 			availableModels: input.availableModels,
 			preferredModelProvider: input.ctx.model?.provider,
 			parentModel: parentModelFullId(input.ctx.model),
@@ -1670,6 +1694,7 @@ async function runParallelPath(data: ExecutionContextData, deps: CallExecutorDep
 					...(behaviorOverrides[i]?.outputMode !== undefined ? { outputMode: behaviorOverrides[i]!.outputMode } : {}),
 					...(behaviorOverrides[i]?.reads !== undefined ? { reads: behaviorOverrides[i]!.reads } : {}),
 					...(progress !== undefined ? { progress } : {}),
+					...(t.settings !== undefined ? { settings: t.settings } : {}),
 					...(t.acceptance !== undefined ? { acceptance: t.acceptance } : {}),
 				};
 			});
@@ -1960,6 +1985,7 @@ async function runSinglePath(data: ExecutionContextData, deps: CallExecutorDeps)
 				output: effectiveOutput,
 				outputMode: effectiveOutputMode,
 				modelOverride,
+				settings: params.settings,
 				maxSubagentDepth,
 				worktreeSetupHook: deps.config.worktreeSetupHook,
 				worktreeSetupHookTimeoutMs: deps.config.worktreeSetupHookTimeoutMs,
@@ -2049,6 +2075,7 @@ async function runSinglePath(data: ExecutionContextData, deps: CallExecutorDeps)
 		nestedRoute: foregroundControl?.nestedRoute,
 		index: 0,
 		modelOverride,
+		settings: params.settings,
 		availableModels,
 		preferredModelProvider: currentProvider,
 		parentModel: parentModelFullId(ctx.model),

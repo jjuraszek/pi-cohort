@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { spawn } from "node:child_process";
+import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -327,6 +328,10 @@ async function main() {
 		}
 	} else if (Array.isArray(response.jsonl) && response.jsonl.length > 0) {
 		await writeResponseEntries(response.jsonl, jsonMode, args, persistMessage);
+	} else if (response.echoAgentSettings) {
+		const agentDir = process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), ".pi", "agent");
+		const settings = fs.readFileSync(path.join(agentDir, "settings.json"), "utf-8");
+		await writeResponseEntries([defaultAssistantMessage(settings)], jsonMode, args, persistMessage);
 	} else if (Array.isArray(response.echoEnv) && response.echoEnv.length > 0) {
 		const envSnapshot = Object.fromEntries(response.echoEnv.map((key) => [key, process.env[key] ?? null]));
 		await writeResponseEntries([defaultAssistantMessage(JSON.stringify(envSnapshot))], jsonMode, args, persistMessage);
