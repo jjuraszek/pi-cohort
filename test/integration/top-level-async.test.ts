@@ -113,7 +113,6 @@ it(`async stop by UUID pauses only that child (${scenario})`, { skip: process.pl
 			request(childId(1));
 			signal();
 			await waitFor(() => !fs.readdirSync(dir).some((name) => name.startsWith("interrupt-request-")), "requests consumed together");
-			signal();
 		} else if (scenario === "whole") {
 			await stop();
 		} else {
@@ -132,6 +131,7 @@ it(`async stop by UUID pauses only that child (${scenario})`, { skip: process.pl
 		}, "result file");
 		const result = JSON.parse(fs.readFileSync(resultPath, "utf8"));
 		assert.equal(result.state, noOp ? "complete" : "paused");
+		assert.equal(status().state, result.state, "final status matches the recorded result");
 		assert.equal(status().stopping, whole ? true : undefined, "only a whole-run stop publishes run stopping state");
 		if (!noOp) assert.equal(result.summary, "Paused after interrupt. Waiting for explicit next action.");
 		if (staticChain || offset) {
