@@ -96,7 +96,7 @@ for (const mode of ["single", "parallel", "chain"] as const) {
 	});
 }
 
-for (const [shape, rootCount] of [
+for (const [shape, rootCount, concurrency = 1] of [
 	["single", 1],
 	["single", 2],
 	["tasks", 1],
@@ -105,8 +105,10 @@ for (const [shape, rootCount] of [
 	["sequential", 2],
 	["static", 1],
 	["dynamic", 1],
+	["static", 1, 2],
+	["dynamic", 1, 2],
 ] as const) {
-	it(`renders live and final identities and labels from ${shape} dispatch with ${rootCount} foreground run${rootCount === 1 ? "" : "s"}`, async () => {
+	it(`renders live and final identities and labels from ${shape} dispatch with ${rootCount} foreground run${rootCount === 1 ? "" : "s"} and concurrency ${concurrency}`, async () => {
 		const { createSubagentExecutor } = await import("../../src/runs/foreground/subagent-executor.ts");
 		const { writeNestedEvent } = await import("../../src/runs/shared/nested-events.ts");
 		const { createMockPi, createTempDir, removeTempDir, createEventBus, makeAgent, makeMinimalCtx, events } = await import("../support/helpers.ts");
@@ -121,16 +123,22 @@ for (const [shape, rootCount] of [
 		const render = (value: any, expanded: boolean) => renderSubagentResult(value, { expanded }, theme as any).render(180).join("\n");
 		try {
 			if (shape === "dynamic") mock.onCall({ taskIncludes: "Seed", output: "items", structuredOutput: { items: ["alpha", "beta"] } });
-			mock.onCall({ taskIncludes: "Work", steps: [{ jsonl: [events.messageStart()] }, { delay: 350, jsonl: [events.assistantMessage("done")] }] });
+			mock.onCall({ taskIncludes: "Work", steps: [
+				{ jsonl: [events.messageStart()] },
+				...(concurrency === 2 ? [{ delay: 350, jsonl: [events.toolStart("read", { path: "audit.ts" })] }] : []),
+				{ delay: 350, jsonl: [events.assistantMessage("done")] },
+			] });
 			const first = { agent: "echo", task: "Work first", label: "audit alpha" };
 			const second = { agent: "echo", task: "Work second", label: "audit beta" };
 			const params = shape === "single" ? first
 				: shape === "tasks" ? { tasks: [first, second], concurrency: 1 }
 				: shape === "sequential" ? { chain: [first, second] }
-				: shape === "static" ? { chain: [{ parallel: [first, second], concurrency: 1 }] }
+				: shape === "static" ? { chain: [{ parallel: [first, second], concurrency }] }
 				: { chain: [{ agent: "echo", task: "Seed", label: "seed items", as: "items", outputSchema: { type: "object" } },
-					{ expand: { from: { output: "items", path: "/items" }, maxItems: 2 }, parallel: { agent: "echo", task: "Work {item}", label: "audit {item}" }, collect: { as: "reviews" }, label: "group audit", concurrency: 1 }] };
+					{ expand: { from: { output: "items", path: "/items" }, maxItems: 2 }, parallel: { agent: "echo", task: "Work {item}", label: "audit {item}" }, collect: { as: "reviews" }, label: "group audit", concurrency }] };
 			const allUpdates: any[][] = [];
+			const concurrentUpdates: Array<{ update: any; reportingId: string; children: Array<{ id: string; label?: string }> }> = [];
+			const reportedChildren = new Set<string>();
 			const attachmentId = randomUUID();
 			let attachedTo: string | undefined;
 			let maxConcurrentRoots = 0;
@@ -139,6 +147,17 @@ for (const [shape, rootCount] of [
 				allUpdates.push(updates);
 				return executor.execute(`labels-${rootIndex}`, { ...params, async: false }, undefined, (update: any) => {
 					updates.push(update);
+					if (concurrency === 2) {
+						const control = state.foregroundControls.get(update.details?.runId);
+						for (const child of update.details?.results ?? []) {
+							if (child.progress?.status === "running") reportedChildren.add(child.id);
+							else reportedChildren.delete(child.id);
+						}
+						const children = [...(control?.children.entries() ?? [])].filter(([id, child]) => child.state === "running" && reportedChildren.has(id)).map(([id, child]) => ({ id, ...child }));
+						const reportingChild = children.find((child) => child.index === control.currentIndex);
+						if (children.length === 2 && reportingChild) concurrentUpdates.push({ update, reportingId: reportingChild.id,
+							children: children.map(({ id, label }) => ({ id, label })) });
+					}
 					if (update.details?.results.some((child) => child.progress?.status === "running")) {
 						maxConcurrentRoots = Math.max(maxConcurrentRoots, state.foregroundControls.size);
 					}
@@ -154,6 +173,16 @@ for (const [shape, rootCount] of [
 			assert.equal(finals.length, rootCount, "every configured foreground root is dispatched");
 			assert.equal(new Set(finals.map((value) => value.details.runId)).size, rootCount, "each root has its own id");
 			assert.equal(maxConcurrentRoots, rootCount, "configured roots overlap while a child is running");
+			if (concurrency === 2) {
+				assert.equal(new Set(concurrentUpdates.map(({ reportingId }) => reportingId)).size, 2, "both siblings report while running concurrently");
+				for (const { update, children } of concurrentUpdates) for (const expanded of [false, true]) {
+					const text = render(update, expanded);
+					for (const child of children) {
+						assert.match(text, new RegExp(`^\\s*${child.id.slice(0, 6)} .*echo - ${child.label}`, "m"), "every running sibling keeps its stop id and label after either reports");
+						assert.equal(update.details.results.find((entry) => entry.id === child.id)?.progress?.status, "running");
+					}
+				}
+			}
 			for (const [rootIndex, final] of finals.entries()) {
 				assert.notEqual(final.isError, true, JSON.stringify(final.content));
 				for (const child of final.details.results) {
@@ -168,7 +197,7 @@ for (const [shape, rootCount] of [
 						if (shape !== "single") assert.match(text, new RegExp(`^${value.details.runId.slice(0, 6)} `));
 					}
 				}
-				if (shape === "tasks" || shape === "static") {
+				if (shape === "tasks" || (shape === "static" && concurrency === 1)) {
 					const pending = allUpdates[rootIndex].find((update) => update.details.progress?.some((entry) => entry.status === "pending"));
 					assert.ok(pending, "queued child snapshot");
 					for (const child of pending.details.progress.filter((entry) => entry.status === "pending")) for (const expanded of [false, true]) {
