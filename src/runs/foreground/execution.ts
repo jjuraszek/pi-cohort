@@ -170,6 +170,7 @@ async function runSingleAttempt(
 		parentCapabilityToken: options.nestedRoute?.capabilityToken,
 		structuredOutput: options.structuredOutput,
 		forwardedFlags: options.forwardedFlags,
+		projectTrust: options.projectTrust,
 	});
 
 	const init = initializeAttempt(agent, task, model, options, shared);

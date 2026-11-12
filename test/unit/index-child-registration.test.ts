@@ -47,6 +47,7 @@ describe("subagent extension child mode", () => {
 			const ctx = {
 				cwd: process.cwd(),
 				hasUI: true,
+				isProjectTrusted() { return true; },
 				ui: {
 					setToolsExpanded(value) { calls.push(value); },
 					setWidget() {},
@@ -211,6 +212,7 @@ describe("subagent extension child mode", () => {
 			const ctx = {
 				cwd: process.cwd(),
 				hasUI: false,
+				isProjectTrusted() { return true; },
 				sessionManager: { getSessionId() { return "session-test"; }, getSessionFile() { return null; } },
 				modelRegistry: { getAvailable() { return []; } },
 			};

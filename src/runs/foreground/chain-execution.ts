@@ -4,6 +4,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { ProjectTrust } from "../shared/project-trust.ts";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../../agents/agents.ts";
@@ -147,6 +148,7 @@ interface ParallelChainRunInput {
 	maxSubagentDepth: number;
 	nestedRoute?: NestedRouteInfo;
 	forwardedFlags?: string[];
+	projectTrust?: ProjectTrust;
 	resolveConfig?: (cwd: string) => ExtensionConfig;
 }
 
@@ -330,6 +332,7 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 				acceptance: task.acceptance,
 				acceptanceContext: { mode: "chain" },
 				forwardedFlags: input.forwardedFlags,
+				projectTrust: input.projectTrust,
 				onUpdate: input.onUpdate
 					? (progressUpdate) => {
 						const stepResults = progressUpdate.details?.results || [];
@@ -438,6 +441,7 @@ interface ChainExecutionParams {
 	worktreeTeardownHook?: string;
 	worktreeTeardownHookTimeoutMs?: number;
 	forwardedFlags?: string[];
+	projectTrust?: ProjectTrust;
 	resolveConfig?: (cwd: string) => ExtensionConfig;
 }
 
@@ -722,6 +726,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 						runId,
 						globalTaskIndex,
 						forwardedFlags: params.forwardedFlags,
+						projectTrust: params.projectTrust,
 						resolveConfig: params.resolveConfig,
 						sessionDirForIndex,
 						sessionFileForIndex,
@@ -933,6 +938,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					runId,
 					globalTaskIndex,
 					forwardedFlags: params.forwardedFlags,
+					projectTrust: params.projectTrust,
 					resolveConfig: params.resolveConfig,
 					sessionDirForIndex,
 					sessionFileForIndex,
@@ -1168,6 +1174,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					outputPath,
 					outputMode: behavior.outputMode,
 					forwardedFlags: params.forwardedFlags,
+					projectTrust: params.projectTrust,
 					maxSubagentDepth,
 					controlConfig,
 					onControlEvent,

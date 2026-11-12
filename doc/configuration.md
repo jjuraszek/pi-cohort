@@ -150,6 +150,21 @@ Parent extension CLI flags are forwarded into spawned children by default: whate
 
 Caveat: if a child runs with a `cwd` in a different project whose *project-scoped* extension owns a forwarded flag, the child can fail to start on the unknown flag. User-scoped extensions (e.g. pi-lens) load regardless of `cwd` and are unaffected; set `forwardParentFlags: false` if the cross-project case bites.
 
+## Project trust
+
+Children inherit the parent session's [project trust](https://github.com/earendil-works/pi-coding-agent/blob/main/docs/security.md) decision: a trusted parent launches its children with `--approve`, an untrusted one with `--no-approve`. Without this a child in a fresh worktree has no saved decision for its directory, so an interactive child (external execution backends) blocks on the trust prompt with nothing reaching the parent, and a `--mode json` child silently skips the project's `.pi/settings.json`, packages, and skills.
+
+| Child `cwd` | Flag |
+|---|---|
+| Any directory in the parent's git worktree or another worktree with the same git common dir, including ancestors of the parent's `cwd` | inherited |
+| The parent's `cwd` or a directory below it on real paths, when neither is in git | inherited |
+| A separate repository or submodule nested inside the parent's tree, or an unrelated repository | none: pi resolves the child's own decision |
+| A git metadata directory, such as `.git`, `.git/objects`, or `.git/worktrees/name` | none |
+| Anywhere else, including outside the parent's tree when the parent is outside git (a sibling with a longer name is outside) | none |
+| Any, when the parent is trusted only because its `cwd` has no trust-requiring resources | none |
+
+Not a setting; `forwardParentFlags` does not affect it.
+
 ## `executionBackend`
 
 ```json
