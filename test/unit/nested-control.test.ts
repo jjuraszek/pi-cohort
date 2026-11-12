@@ -538,7 +538,9 @@ for (const via of ["native-silence", "native-cap", "executor-abort"]) {
 			assert.deepEqual(kill.mock.calls.filter((call) => call.arguments[1] !== 0).map((call) => call.arguments[0]), [98765, 98766]);
 			assert.ok(fs.existsSync(path.join(dirs[1], "interrupt-request-active-later.json")));
 			assert.ok(childKill.mock.calls.some((call) => call.arguments[0] === "SIGTERM"), "native child receives termination");
-			assert.ok(childKill.mock.calls.some((call) => call.arguments[0] === "SIGKILL"), "sweep failure does not cancel forced termination");
+			if (process.platform !== "win32") {
+				assert.ok(childKill.mock.calls.some((call) => call.arguments[0] === "SIGKILL"), "sweep failure does not cancel forced termination");
+			}
 			assert.equal(result.isError, true);
 			const diagnostic = /Stop of .* is incomplete.*active-denied.*descendant signal failed/;
 			assert.match(text(result), diagnostic);

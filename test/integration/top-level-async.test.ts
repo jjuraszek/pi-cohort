@@ -193,7 +193,7 @@ it(scenario === "runtime-cap" ? "async child is not capped by maxRuntimeMs" : `a
 });
 }
 
-it("publishes background sweep failures in the paused result and status without losing sibling output", async () => {
+it("publishes background sweep failures in the paused result and status without losing sibling output", { skip: process.platform === "win32" ? "requires POSIX signals" : undefined }, async () => {
 	const mock = createMockPi();
 	const cwd = createTempDir();
 	const id = "background-sweep";
@@ -264,6 +264,103 @@ await import(${JSON.stringify(pathToFileURL(runnerPath).href)});
 		assert.equal(result.results[1].success, true);
 		const diagnostic = /Stop of .* is incomplete.*denied-descendant.*descendant signal failed/;
 		assert.match(result.summary, /^Paused after interrupt\./);
+		assert.match(result.summary, diagnostic);
+		assert.match(result.error, diagnostic);
+		assert.equal(result.error, status().error);
+		const inspected = inspectSubagentStatus({ dir: cwd }, { asyncDirRoot: path.dirname(cwd) });
+		assert.match(inspected.content[0].text, diagnostic);
+	} finally {
+		if (runner.exitCode === null && runner.signalCode === null) runner.kill("SIGTERM");
+		await exited;
+		clearTimeout(watchdog);
+		mock.uninstall();
+		removeTempDir(cwd);
+		removeTempDir(descendantRoot);
+		removeTempDir(path.dirname(route.eventSink));
+	}
+});
+
+it("publishes background policy-stop sweep failures in the failed result and status", async () => {
+	const mock = createMockPi();
+	const cwd = createTempDir();
+	const id = "background-policy-sweep";
+	const route = createNestedRoute(id);
+	const descendantRoot = path.join(RUN_STATE_ROOT_DIR, "nested-subagent-runs", id);
+	mock.install();
+	mock.onCall({
+		taskIncludes: "Draining child",
+		ignoreSigterm: true,
+		jsonl: [events.assistantMessage("Completed before lingering")],
+		keepAliveAfterFinalMessageMs: 60_000,
+	});
+	const statusPath = path.join(cwd, "status.json");
+	const resultPath = path.join(cwd, "result.json");
+	const signalsPath = path.join(cwd, "signals.jsonl");
+	const childId = "draining-child";
+	const expectedSignal = process.platform === "win32" ? "SIGBREAK" : "SIGUSR2";
+	const status = () => JSON.parse(fs.readFileSync(statusPath, "utf8"));
+	writeAtomicJson(statusPath, { steps: [{ id: childId }] });
+	const ts = Date.now();
+	for (const [index, descendantId] of ["denied-descendant", "later-descendant"].entries()) {
+		const asyncDir = path.join(descendantRoot, descendantId);
+		fs.mkdirSync(asyncDir, { recursive: true });
+		writeAtomicJson(path.join(asyncDir, "status.json"), { runId: descendantId, state: "running", pid: 98765 + index });
+		writeNestedEvent(route, { type: "subagent.nested.updated", ts: ts + index, parentRunId: id, parentStepIndex: 0, child: {
+			id: descendantId, state: "running", agent: "worker", parentRunId: id, parentStepIndex: 0, depth: 1,
+			path: [{ runId: id, childId }], asyncDir,
+		} });
+	}
+	const configPath = path.join(cwd, "config.json");
+	writeAtomicJson(configPath, {
+		id, runtime: mock.runtime, cwd, asyncDir: cwd, resultPath, nestedRoute: route, resultMode: "single", placeholder: "{previous}",
+		steps: [{ agent: "worker", task: "Draining child", completionGuard: false }],
+	});
+	const runnerPath = path.resolve("src/runs/background/subagent-runner.ts");
+	const entry = path.join(cwd, "runner.mjs");
+	fs.writeFileSync(entry, `import fs from "node:fs";
+import { ChildProcess } from "node:child_process";
+const kill = process.kill.bind(process);
+process.kill = (pid, signal) => {
+ if (pid !== 98765 && pid !== 98766) return kill(pid, signal);
+ if (signal !== 0) {
+  fs.appendFileSync(${JSON.stringify(signalsPath)}, JSON.stringify([pid, signal]) + "\\n");
+  if (pid === 98765) throw Object.assign(new Error("descendant signal failed"), { code: "EPERM" });
+ }
+ return true;
+};
+const childKill = ChildProcess.prototype.kill;
+ChildProcess.prototype.kill = function(signal) {
+ if (this.pid && signal) fs.appendFileSync(${JSON.stringify(signalsPath)}, JSON.stringify([this.pid, signal]) + "\\n");
+ return childKill.call(this, signal);
+};
+process.argv[1] = ${JSON.stringify(runnerPath)};
+process.argv[2] = ${JSON.stringify(configPath)};
+await import(${JSON.stringify(pathToFileURL(runnerPath).href)});
+`);
+	const runner = spawn(process.execPath, [entry], { cwd, stdio: ["ignore", "ignore", "pipe"] });
+	const exited = once(runner, "exit");
+	let stderr = "";
+	runner.stderr.on("data", (data) => { stderr += data; });
+	const watchdog = setTimeout(() => runner.kill("SIGKILL"), 15_000);
+	try {
+		const [code] = await exited;
+		assert.equal(code, 0, stderr);
+		const result = JSON.parse(fs.readFileSync(resultPath, "utf8"));
+		const childSignals = fs.readFileSync(signalsPath, "utf8").trim().split("\n").map(JSON.parse);
+		assert.deepEqual(childSignals.filter(([pid]) => pid === 98765 || pid === 98766), [[98765, expectedSignal], [98766, expectedSignal]]);
+		assert.ok(childSignals.some(([pid, signal]) => pid !== 98765 && pid !== 98766 && signal === "SIGTERM"), "draining child receives SIGTERM");
+		if (process.platform !== "win32") {
+			assert.ok(childSignals.some(([pid, signal]) => pid !== 98765 && pid !== 98766 && signal === "SIGKILL"), "sweep failure does not cancel forced termination");
+		}
+		assert.ok(fs.existsSync(path.join(descendantRoot, "later-descendant", "interrupt-request-later-descendant.json")));
+		assert.equal(stoppingAncestor(route, id, childId), childId);
+		assert.equal(result.state, "failed");
+		assert.equal(result.exitCode, 1);
+		assert.equal(result.success, false);
+		assert.deepEqual(status().steps.map((step) => step.status), ["failed"]);
+		assert.equal(result.results[0].output, "Completed before lingering");
+		const diagnostic = /Stop of .* is incomplete.*denied-descendant.*descendant signal failed/;
+		assert.match(result.results[0].error, diagnostic);
 		assert.match(result.summary, diagnostic);
 		assert.match(result.error, diagnostic);
 		assert.equal(result.error, status().error);

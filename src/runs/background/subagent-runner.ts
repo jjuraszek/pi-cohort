@@ -655,6 +655,7 @@ export interface SingleStepContext {
 	parentSessionLabel?: string;
 	parentSessionId?: string;
 	registerInterrupt?: (interrupt: (() => void) | undefined) => void;
+	onStopError?: (message: string) => void;
 	nestedRoute?: NestedRouteInfo;
 	onAttemptStart?: (attempt: { model?: string; thinking?: string }) => void;
 	onChildEvent?: (event: ChildEvent) => void;
@@ -1043,7 +1044,14 @@ async function runSingleStepAttempts(
 				(signal) => {
 					const recorded = recordStop(ctx.nestedRoute, ctx.childId);
 					const sent = signal();
-					if (recorded) sweepBackgroundDescendants(ctx.nestedRoute, ctx.childId);
+					if (recorded) {
+						try {
+							sweepBackgroundDescendants(ctx.nestedRoute, ctx.childId);
+						} catch (stopError) {
+							ctx.onStopError?.(stopError instanceof Error ? stopError.message : String(stopError));
+							throw stopError;
+						}
+					}
 					return sent;
 				},
 			);
@@ -1879,6 +1887,11 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		activityTimer.unref?.();
 	}
 
+	const recordStopError = (error: unknown): void => {
+		const message = error instanceof Error ? error.message : String(error);
+		stopError = [stopError, message].filter(Boolean).join("\n");
+		statusPayload.error = stopError;
+	};
 	const stopTarget = (targetId: string): void => {
 		if (statusPayload.state !== "running") return;
 		const wholeRun = targetId === id;
@@ -1902,8 +1915,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		try {
 			sweepBackgroundDescendants(config.nestedRoute, targetId);
 		} catch (error) {
-			stopError = [stopError, error instanceof Error ? error.message : String(error)].filter(Boolean).join("\n");
-			statusPayload.error = stopError;
+			recordStopError(error);
 		}
 		writeStatusPayload();
 	};
@@ -2144,6 +2156,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					executionBackendCoordinator,
 					executionBackendConfig,
 					nestedRoute: config.nestedRoute,
+					onStopError: (message) => { recordStopError(message); writeStatusPayload(); },
 					registerInterrupt: (interrupt) => registerChildInterrupt(fi, interrupt),
 					onAttemptStart: (attempt) => updateStepModel(fi, attempt.model, attempt.thinking),
 					onChildEvent: (event) => updateStepFromChildEvent(fi, event),
@@ -2443,6 +2456,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 							executionBackendCoordinator,
 							executionBackendConfig,
 							nestedRoute: config.nestedRoute,
+							onStopError: (message) => { recordStopError(message); writeStatusPayload(); },
 							registerInterrupt: (interrupt) => registerChildInterrupt(fi, interrupt),
 							onAttemptStart: (attempt) => updateStepModel(fi, attempt.model, attempt.thinking),
 							onChildEvent: (event) => updateStepFromChildEvent(fi, event),
@@ -2631,6 +2645,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				executionBackendCoordinator,
 				executionBackendConfig,
 				nestedRoute: config.nestedRoute,
+				onStopError: (message) => { recordStopError(message); writeStatusPayload(); },
 				registerInterrupt: (interrupt) => registerChildInterrupt(flatIndex, interrupt),
 				onAttemptStart: (attempt) => updateStepModel(flatIndex, attempt.model, attempt.thinking),
 				onChildEvent: (event) => updateStepFromChildEvent(flatIndex, event),
@@ -2853,7 +2868,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			state: interrupted ? "paused" : results.every((r) => r.success) ? "complete" : "failed",
 			summary: interrupted
 				? "Paused after interrupt. Waiting for explicit next action." + formatInterruptedCleanup(results) + (stopError ? `\n\n${stopError}` : "")
-				: summary,
+				: summary + (stopError ? `\n\n${stopError}` : ""),
 			error: stopError,
 			results: results.map((r) => ({
 				id: r.id,
