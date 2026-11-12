@@ -117,7 +117,7 @@ describe("nested widget rendering", () => {
 	for (const active of [true, false]) it(`keeps dynamic group labels on ${active ? "active" : "settled"} widget headers`, () => {
 		const steps = [{ id: "workaa-child", index: 0, agent: "worker", label: "audit auth", status: active ? "running" : "completed" }];
 		const value = { asyncId: "rootaa-run", asyncDir: "/tmp/group", mode: "chain", status: active ? "running" : "complete", steps, stepsTotal: 1,
-			activeParallelGroup: active, chainStepCount: 1, parallelGroups: [{ stepIndex: 0, start: 0, count: 1 }],
+			activeParallelGroup: active, currentStep: 0, chainStepCount: 1, parallelGroups: [{ stepIndex: 0, start: 0, count: 1 }],
 			workflowGraph: { version: 1, mode: "chain", nodes: [{ id: "step-0", kind: "dynamic-parallel-group", stepIndex: 0, label: "Audit group", status: active ? "running" : "completed", children: [{ id: "node-0", kind: "agent", flatIndex: 0, agent: "worker", label: "audit auth" }] }] } };
 		for (const expanded of [false, true]) {
 			const text = buildWidgetLines([value] as any, theme, 180, expanded).join("\n");
