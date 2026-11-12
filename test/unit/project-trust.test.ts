@@ -77,9 +77,13 @@ describe("inheritsTrust", () => {
 		assert.ok(inheritsTrust(path.join(worktree, "sub"), trustIn(path.join(repo, "sub"))));
 	});
 
-	it("is false for a subdirectory, which may hold a saved decision of its own", () => {
-		assert.ok(!inheritsTrust(path.join(repo, "sub", "dir"), trustIn(repo)));
-	});
+	for (const relative of ["sub/dir", ".git", ".git/objects", ".git/worktrees/pi-worktree-x-0"]) {
+		it(`is false for ${relative}, which is not the parent's directory`, () => {
+			const child = path.join(repo, relative);
+			assert.ok(fs.statSync(child).isDirectory());
+			assert.equal(inheritsTrust(child, trustIn(repo)), false);
+		});
+	}
 
 	it("is false for an ancestor of the parent's cwd, in the repository or another worktree", () => {
 		assert.ok(!inheritsTrust(repo, trustIn(path.join(repo, "sub"))));

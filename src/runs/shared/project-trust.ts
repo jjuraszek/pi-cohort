@@ -26,10 +26,10 @@ function realpathOrResolve(dir: string): string {
 }
 
 function repoLocation(cwd: string): RepoLocation | undefined {
-	const result = runGit(cwd, ["rev-parse", "--git-common-dir", "--show-prefix"]);
+	const result = runGit(cwd, ["rev-parse", "--is-inside-work-tree", "--git-common-dir", "--show-prefix"]);
 	if (result.status !== 0) return undefined;
-	const [common, prefix = ""] = result.stdout.split(/\r?\n/);
-	return common ? { commonDir: realpathOrResolve(path.resolve(cwd, common)), prefix } : undefined;
+	const [insideWorkTree, common, prefix = ""] = result.stdout.split(/\r?\n/);
+	return insideWorkTree === "true" && common ? { commonDir: realpathOrResolve(path.resolve(cwd, common)), prefix } : undefined;
 }
 
 /**
