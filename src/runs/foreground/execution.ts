@@ -247,6 +247,10 @@ async function runSingleAttempt(
 			silenceKillRequested = true;
 			const closedAdmission = closeChildAdmission(options);
 			const termSent = trySignalChild(proc, "SIGTERM");
+			if (termSent) {
+				result.error ??= `Subagent killed: in-flight turn produced no output for ${Math.round(silenceMs / 1000)}s ` +
+					`(exceeded inFlightSilenceKillMs=${controlConfig.inFlightSilenceKillMs}ms). Likely wedged in a tool call.`;
+			}
 			try {
 				if (closedAdmission) sweepBackgroundDescendants(options.nestedRoute, options.id!);
 			} catch (error) {
@@ -254,9 +258,6 @@ async function runSingleAttempt(
 			}
 			if (!termSent) return;
 			forcedTerminationSignal = true;
-			result.error = result.error ??
-				`Subagent killed: in-flight turn produced no output for ${Math.round(silenceMs / 1000)}s ` +
-				`(exceeded inFlightSilenceKillMs=${controlConfig.inFlightSilenceKillMs}ms). Likely wedged in a tool call.`;
 			silenceHardKillTimer = setTimeout(() => {
 				if (settled || processClosed) return;
 				forcedTerminationSignal = trySignalChild(proc, "SIGKILL") || forcedTerminationSignal;

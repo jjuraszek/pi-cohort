@@ -209,6 +209,7 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 				`${stopId(status.runId)} ${status.mode} ${status.state}`,
 				`Run: ${status.runId}`,
 				`State: ${status.state}`,
+				status.error ? `Error: ${status.error}` : undefined,
 				statusActivityText ? `Activity: ${statusActivityText}` : undefined,
 				`Mode: ${status.mode}`,
 				`Progress: ${progressLabel}`,

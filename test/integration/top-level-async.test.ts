@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { pathToFileURL } from "node:url";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createEventBus, createMockPi, createTempDir, events, makeAgent, makeMinimalCtx, removeTempDir, tryImport } from "../support/helpers.ts";
 import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
-import { ASYNC_DIR, RESULTS_DIR } from "../../src/shared/types.ts";
+import { ASYNC_DIR, RESULTS_DIR, RUN_STATE_ROOT_DIR } from "../../src/shared/types.ts";
+import { createNestedRoute, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
+import { stoppingAncestor } from "../../src/runs/shared/stop-control.ts";
+import { inspectSubagentStatus } from "../../src/runs/background/run-status.ts";
 import { writeAtomicJson } from "../../src/shared/atomic-json.ts";
 
 async function waitFor(predicate: () => boolean, message: string, timeout = 75_000): Promise<void> {
@@ -186,6 +192,93 @@ it(scenario === "runtime-cap" ? "async child is not capped by maxRuntimeMs" : `a
 	}
 });
 }
+
+it("publishes background sweep failures in the paused result and status without losing sibling output", async () => {
+	const mock = createMockPi();
+	const cwd = createTempDir();
+	const id = "background-sweep";
+	const route = createNestedRoute(id);
+	const descendantRoot = path.join(RUN_STATE_ROOT_DIR, "nested-subagent-runs", id);
+	mock.install();
+	mock.onCall({ taskIncludes: "Stopped child", delay: 60_000, output: "must be stopped" });
+	mock.onCall({ taskIncludes: "Sibling child", delay: 1_500, output: "Sibling output retained" });
+	const statusPath = path.join(cwd, "status.json");
+	const resultPath = path.join(cwd, "result.json");
+	const signalsPath = path.join(cwd, "signals.jsonl");
+	const childId = "stopped-child";
+	const status = () => JSON.parse(fs.readFileSync(statusPath, "utf8"));
+	writeAtomicJson(statusPath, { steps: [{ id: childId }, { id: "sibling-child" }] });
+	const ts = Date.now();
+	for (const [index, descendantId] of ["denied-descendant", "later-descendant"].entries()) {
+		const asyncDir = path.join(descendantRoot, descendantId);
+		fs.mkdirSync(asyncDir, { recursive: true });
+		writeAtomicJson(path.join(asyncDir, "status.json"), { runId: descendantId, state: "running", pid: 98765 + index });
+		writeNestedEvent(route, { type: "subagent.nested.updated", ts: ts + index, parentRunId: id, parentStepIndex: 0, child: {
+			id: descendantId, state: "running", agent: "worker", parentRunId: id, parentStepIndex: 0, depth: 1,
+			path: [{ runId: id, childId }], asyncDir,
+		} });
+	}
+	const configPath = path.join(cwd, "config.json");
+	writeAtomicJson(configPath, {
+		id, runtime: mock.runtime, cwd, asyncDir: cwd, resultPath, nestedRoute: route, resultMode: "parallel", placeholder: "{previous}",
+		steps: [{ parallel: ["Stopped child", "Sibling child"].map((task) => ({ agent: "worker", task, completionGuard: false })), concurrency: 2 }],
+	});
+	const runnerPath = path.resolve("src/runs/background/subagent-runner.ts");
+	const entry = path.join(cwd, "runner.mjs");
+	fs.writeFileSync(entry, `import fs from "node:fs";
+const kill = process.kill.bind(process);
+process.kill = (pid, signal) => {
+ if (pid !== 98765 && pid !== 98766) return kill(pid, signal);
+ if (signal !== 0) {
+  fs.appendFileSync(${JSON.stringify(signalsPath)}, JSON.stringify([pid, signal]) + "\\n");
+  if (pid === 98765) throw Object.assign(new Error("descendant signal failed"), { code: "EPERM" });
+ }
+ return true;
+};
+process.argv[1] = ${JSON.stringify(runnerPath)};
+process.argv[2] = ${JSON.stringify(configPath)};
+await import(${JSON.stringify(pathToFileURL(runnerPath).href)});
+`);
+	const runner = spawn(process.execPath, [entry], { cwd, stdio: ["ignore", "ignore", "pipe"] });
+	const exited = once(runner, "exit");
+	let stderr = "";
+	runner.stderr.on("data", (data) => { stderr += data; });
+	const watchdog = setTimeout(() => runner.kill("SIGKILL"), 15_000);
+	try {
+		await waitFor(() => mock.callCount() === 2 && status().steps.every((step) => step.status === "running"), "native children launched", 5_000);
+		writeAtomicJson(path.join(cwd, `interrupt-request-${childId}.json`), { targetId: childId });
+		runner.kill("SIGUSR2");
+		const [code] = await exited;
+		assert.equal(code, 0, stderr);
+		const result = JSON.parse(fs.readFileSync(resultPath, "utf8"));
+		assert.deepEqual(fs.readFileSync(signalsPath, "utf8").trim().split("\n").map(JSON.parse), [[98765, "SIGUSR2"], [98766, "SIGUSR2"]]);
+		assert.ok(fs.existsSync(path.join(descendantRoot, "later-descendant", "interrupt-request-later-descendant.json")));
+		assert.equal(stoppingAncestor(route, id, childId), childId);
+		assert.equal(status().stopping, undefined);
+		assert.equal(result.state, "paused");
+		assert.equal(result.exitCode, 0);
+		assert.equal(result.success, false);
+		assert.deepEqual(status().steps.map((step) => step.status), ["paused", "complete"]);
+		assert.equal(result.results[0].interrupted, true);
+		assert.equal(result.results[1].output, "Sibling output retained");
+		assert.equal(result.results[1].success, true);
+		const diagnostic = /Stop of .* is incomplete.*denied-descendant.*descendant signal failed/;
+		assert.match(result.summary, /^Paused after interrupt\./);
+		assert.match(result.summary, diagnostic);
+		assert.match(result.error, diagnostic);
+		assert.equal(result.error, status().error);
+		const inspected = inspectSubagentStatus({ dir: cwd }, { asyncDirRoot: path.dirname(cwd) });
+		assert.match(inspected.content[0].text, diagnostic);
+	} finally {
+		if (runner.exitCode === null && runner.signalCode === null) runner.kill("SIGTERM");
+		await exited;
+		clearTimeout(watchdog);
+		mock.uninstall();
+		removeTempDir(cwd);
+		removeTempDir(descendantRoot);
+		removeTempDir(path.dirname(route.eventSink));
+	}
+});
 
 interface TopLevelAsyncModule {
 	applyForceTopLevelAsyncOverride<T extends { async?: boolean; clarify?: boolean }>(

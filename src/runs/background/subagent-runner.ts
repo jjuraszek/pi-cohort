@@ -1458,6 +1458,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	const controlConfig = config.controlConfig ?? DEFAULT_CONTROL_CONFIG;
 	const children: ForegroundControl["children"] = new Map();
 	let interrupted = false;
+	let stopError: string | undefined;
 	let currentActivityState: ActivityState | undefined;
 	let activityTimer: NodeJS.Timeout | undefined;
 	let previousCumulativeTokens: TokenUsage = { input: 0, output: 0, total: 0 };
@@ -1901,7 +1902,8 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		try {
 			sweepBackgroundDescendants(config.nestedRoute, targetId);
 		} catch (error) {
-			statusPayload.error = [statusPayload.error, error instanceof Error ? error.message : String(error)].filter(Boolean).join("\n");
+			stopError = [stopError, error instanceof Error ? error.message : String(error)].filter(Boolean).join("\n");
+			statusPayload.error = stopError;
 		}
 		writeStatusPayload();
 	};
@@ -2804,6 +2806,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	statusPayload.shareUrl = shareUrl;
 	statusPayload.gistUrl = gistUrl;
 	statusPayload.shareError = shareError;
+	statusPayload.error = stopError ?? statusPayload.error;
 	if (statusPayload.state === "failed" && !statusPayload.error) {
 		const failedStep = statusPayload.steps.find((s) => s.status === "failed");
 		if (failedStep?.agent) {
@@ -2848,7 +2851,10 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			mode: resultMode,
 			success: !interrupted && results.every((r) => r.success),
 			state: interrupted ? "paused" : results.every((r) => r.success) ? "complete" : "failed",
-			summary: interrupted ? "Paused after interrupt. Waiting for explicit next action." + formatInterruptedCleanup(results) : summary,
+			summary: interrupted
+				? "Paused after interrupt. Waiting for explicit next action." + formatInterruptedCleanup(results) + (stopError ? `\n\n${stopError}` : "")
+				: summary,
+			error: stopError,
 			results: results.map((r) => ({
 				id: r.id,
 				label: r.label,

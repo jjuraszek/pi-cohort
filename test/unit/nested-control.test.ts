@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { ChildProcess } from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -487,6 +488,76 @@ describe("stop target ownership", () => {
 		});
 	}
 });
+
+for (const via of ["native-silence", "native-cap", "executor-abort"]) {
+	it(`reports an incomplete subtree stop after active ${via} termination`, async () => {
+		const route = createNestedRoute(`active-${via}`);
+		routeRoots.push(path.dirname(route.eventSink));
+		setNestedRouteEnv(route);
+		const runtimePi = createMockPi();
+		runtimePi.install();
+		runtimePi.onCall({ taskIncludes: "Active child", ignoreSigterm: true, steps: [
+			{ jsonl: [{ type: "message_start" }] }, { delay: 60_000 },
+		] });
+		const state = createState();
+		const controller = new AbortController();
+		const executor = createExecutor(state, [{ name: "worker", completionGuard: false }], false, undefined, runtimePi.captureRuntime);
+		const originalKill = process.kill.bind(process);
+		const kill = mock.method(process, "kill", (pid: number, signal: NodeJS.Signals | number) => {
+			if (pid !== 98765 && pid !== 98766) return originalKill(pid, signal);
+			if (pid === 98765 && signal !== 0) throw Object.assign(new Error("descendant signal failed"), { code: "EPERM" });
+			return true;
+		});
+		const childKill = mock.method(ChildProcess.prototype, "kill");
+		const pending = executor.execute("active-stop", {
+			agent: "worker", task: "Active child", async: false, clarify: false, artifacts: false,
+			sessionDir: path.dirname(route.eventSink), acceptance: { level: "none", reason: "Exercise native termination" },
+			control: via === "native-silence"
+				? { needsAttentionAfterMs: 10, inFlightSilenceCeilingMs: 20, inFlightSilenceKillMs: 100 }
+				: { enabled: false, maxRuntimeMs: via === "native-cap" ? 2_000 : 60_000 },
+		}, controller.signal, undefined, ctx(path.dirname(route.eventSink)));
+		try {
+			await waitFor(() => runtimePi.callCount() === 1, 5_000);
+			const control = [...state.foregroundControls.values()][0];
+			const childId = [...control.children.keys()][0];
+			assert.equal(control.children.get(childId)?.state, "running");
+			const ts = Date.now();
+			const dirs = ["active-denied", "active-later"].map((id, index) => {
+				const asyncDir = path.join(RUN_STATE_ROOT_DIR, "nested-subagent-runs", route.rootRunId, id);
+				routeRoots.push(asyncDir);
+				fs.mkdirSync(asyncDir, { recursive: true });
+				fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ runId: id, state: "running", pid: 98765 + index }));
+				writeNestedEvent(route, { type: "subagent.nested.updated", ts: ts + index, parentRunId: control.runId, parentStepIndex: 0, child: {
+					id, state: "running", agent: "worker", parentRunId: control.runId, parentStepIndex: 0, depth: 2,
+					path: [{ runId: route.rootRunId }, { runId: control.runId, childId }], asyncDir,
+				} });
+				return asyncDir;
+			});
+			if (via === "executor-abort") controller.abort();
+			const result = await pending;
+			assert.deepEqual(kill.mock.calls.filter((call) => call.arguments[1] !== 0).map((call) => call.arguments[0]), [98765, 98766]);
+			assert.ok(fs.existsSync(path.join(dirs[1], "interrupt-request-active-later.json")));
+			assert.ok(childKill.mock.calls.some((call) => call.arguments[0] === "SIGTERM"), "native child receives termination");
+			assert.ok(childKill.mock.calls.some((call) => call.arguments[0] === "SIGKILL"), "sweep failure does not cancel forced termination");
+			assert.equal(result.isError, true);
+			const diagnostic = /Stop of .* is incomplete.*active-denied.*descendant signal failed/;
+			assert.match(text(result), diagnostic);
+			assert.equal(result.details.results.length, 1, "the native child's result is retained");
+			assert.equal(stoppingAncestor(route, control.runId, childId), via === "executor-abort" ? control.runId : childId);
+			const nested = projectNestedEvents(route).children.find((child) => child.id === control.runId)!;
+			assert.equal(nested.state, "failed", "completion is published after adding the stop failure");
+			assert.match(nested.error!, diagnostic);
+			if (via !== "executor-abort") {
+				assert.equal(result.details.results[0].exitCode, 1);
+				assert.match(result.details.results[0].error!, via === "native-cap" ? /exceeded maxRuntimeMs=2000ms/ : /exceeded inFlightSilenceKillMs=100ms/);
+			}
+		} finally {
+			controller.abort();
+			await pending;
+			childKill.mock.restore(); kill.mock.restore(); runtimePi.uninstall();
+		}
+	});
+}
 
 describe("nested control routing", () => {
 	it("routes interrupt to an explicit nested id through the control inbox", async () => {
