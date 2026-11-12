@@ -1,14 +1,14 @@
 /**
- * Hermetic integration test for parent CLI flag forwarding.
+ * Hermetic integration test for parent CLI flags and project trust.
  *
- * Proves `forwardedFlags` threads through the real dispatch code into the
- * spawned child's argv: foreground (runSync -> buildPiArgs) and async
- * (executeAsyncSingle -> subagent-runner -> buildPiArgs). Uses the mock pi
- * binary; no real model calls.
+ * Follows flags through foreground execution and detached single/chain runners,
+ * and project trust from the executor's session context into the child's argv.
+ * Uses the mock pi binary; no real model calls.
  */
 
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { MockPi } from "../support/helpers.ts";
@@ -18,9 +18,12 @@ import {
 	removeTempDir,
 	makeAgentConfigs,
 	makeAgent,
+	makeMinimalCtx,
+	createEventBus,
 	tryImport,
 } from "../support/helpers.ts";
 import { deriveForwardedFlags } from "../../src/runs/shared/forward-flags.ts";
+import { emptyGrandTotal } from "../../src/extension/grand-total.ts";
 
 interface RunSyncResult {
 	exitCode: number;
@@ -39,16 +42,18 @@ interface ExecutionModule {
 interface AsyncExecutionModule {
 	isAsyncAvailable(): boolean;
 	executeAsyncSingle(id: string, params: Record<string, unknown>): { content: Array<{ text?: string }>; isError?: boolean; details: { asyncId?: string } };
+	executeAsyncChain: AsyncExecutionModule["executeAsyncSingle"];
 }
 
 interface TypesModule {
 	RESULTS_DIR: string;
 }
 
+const executorMod = await tryImport<typeof import("../../src/runs/foreground/subagent-executor.ts")>("./src/runs/foreground/subagent-executor.ts");
 const execution = await tryImport<ExecutionModule>("./src/runs/foreground/execution.ts");
 const asyncMod = await tryImport<AsyncExecutionModule>("./src/runs/background/async-execution.ts");
 const typesMod = await tryImport<TypesModule>("./src/shared/types.ts");
-const available = !!(execution && asyncMod && typesMod);
+const available = !!(executorMod && execution && asyncMod && typesMod);
 
 const runSync = execution?.runSync;
 const availabilityMock = createMockPi();
@@ -144,37 +149,66 @@ describe("parent flag forwarding", { skip: !available ? "pi packages not availab
 		assert.ok(!readCallArgs().includes("--no-autofix"));
 	});
 
-	it("passes the parent's project trust into the child argv (foreground)", async () => {
-		mockPi.onCall({ output: "ok" });
-		const agents = [makeAgent("restricted", { extensions: [] })];
+	for (const trusted of [true, false]) {
+		it(`reads isProjectTrusted()=${trusted} at dispatch and passes it into the child argv`, async () => {
+			execFileSync("git", ["init", "-q", tempDir], { timeout: 10_000 });
+			fs.mkdirSync(path.join(tempDir, ".pi"));
+			fs.writeFileSync(path.join(tempDir, ".pi", "settings.json"), "{}");
+			mockPi.onCall({ output: "ok" });
+			const executor = executorMod!.createSubagentExecutor({
+				captureRuntime: mockPi.captureRuntime,
+				pi: { events: createEventBus(), getSessionName: () => undefined },
+				state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: emptyGrandTotal() },
+				resolveConfig: () => ({ forwardParentFlags: false }),
+				tempArtifactsDir: tempDir,
+				getSubagentSessionRoot: () => tempDir,
+				expandTilde: (value: string) => value,
+				discoverAgents: () => ({ agents: [makeAgent("restricted", { extensions: [] })] }),
+			});
 
-		const result = await runSync!(tempDir, agents, "restricted", "do it", {
-			runId: "trust-fg",
-			projectTrust: { trusted: true, root: tempDir },
+			const result = await executor.execute(
+				"trust-dispatch",
+				{ agent: "restricted", task: "do it", async: false, artifacts: false },
+				new AbortController().signal,
+				undefined,
+				{ ...makeMinimalCtx(tempDir), isProjectTrusted: () => trusted },
+			);
+
+			assert.ok(!result.isError, JSON.stringify(result));
+			assert.equal(result.details?.results[0]?.exitCode, 0);
+			assert.equal(mockPi.callCount(), 1);
+			const args = readCallArgs();
+			assert.ok(args.includes("--no-extensions"));
+			assert.deepEqual(args.filter((arg) => arg === "--approve" || arg === "--no-approve"), [trusted ? "--approve" : "--no-approve"]);
 		});
+	}
 
-		assert.equal(result.exitCode, 0);
-		assert.ok(readCallArgs().includes("--approve"));
-	});
+	for (const mode of ["single", "chain"] as const) {
+		it(`passes the parent's project trust through the async detached ${mode} runner into the child argv`, async () => {
+			assert.ok(isAsyncAvailable(), "jiti must be available for detached trust coverage");
+			mockPi.onCall({ output: "async done" });
+			const id = `trust-async-${mode}-${Date.now().toString(36)}`;
+			const params = {
+				ctx: { runtime: mockPi.runtime, pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
+				artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+				shareEnabled: false,
+				maxSubagentDepth: 2,
+				projectTrust: { trusted: false, root: tempDir },
+			};
+			const started = mode === "single"
+				? executeAsyncSingle!(id, { ...params, agent: "worker", task: "Do work", agentConfig: makeAgent("worker") })
+				: asyncMod!.executeAsyncChain(id, { ...params, chain: [{ agent: "worker", task: "Do work" }], agents: [makeAgent("worker")] });
+			assert.ok(!started.isError, JSON.stringify(started));
 
-	it("passes the parent's project trust through the async detached runner into the child argv", { skip: !isAsyncAvailable?.() ? "jiti not available" : undefined }, async () => {
-		mockPi.onCall({ output: "async done" });
-		const id = `trust-async-${Date.now().toString(36)}`;
-
-		executeAsyncSingle!(id, {
-			agent: "worker",
-			task: "Do work",
-			agentConfig: makeAgent("worker"),
-			ctx: { runtime: mockPi.runtime, pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
-			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
-			shareEnabled: false,
-			maxSubagentDepth: 2,
-			projectTrust: { trusted: false, root: tempDir },
+			const resultPath = await waitForAsyncResultFile(id, 30_000);
+			const result = JSON.parse(fs.readFileSync(resultPath, "utf-8"));
+			assert.equal(result.success, true, JSON.stringify(result));
+			assert.equal(result.results.length, 1);
+			assert.equal(result.results[0]?.success, true);
+			assert.equal(mockPi.callCount(), 1);
+			assert.deepEqual(readCallArgs().filter((arg) => arg === "--approve" || arg === "--no-approve"), ["--no-approve"]);
 		});
-
-		await waitForAsyncResultFile(id, 30_000);
-		assert.ok(readLastMockPiArgs(mockPi).includes("--no-approve"));
-	});
+	}
 
 	it("forwards a parent CLI flag through the async detached runner into the child argv", { skip: !isAsyncAvailable?.() ? "jiti not available" : undefined }, async () => {
 		mockPi.onCall({ output: "async done" });
