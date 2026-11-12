@@ -175,6 +175,8 @@ describe("finalizeSingleAttempt file output recovery", () => {
 		{ name: "unchanged", existed: true, changed: false, enabled: true },
 		{ name: "missing", existed: false, changed: false, enabled: true },
 		{ name: "disabled", existed: false, changed: false, enabled: false },
+		{ name: "changed with nonzero exit", existed: false, changed: true, enabled: true, exitCode: 7 },
+		{ name: "changed with explicit error", existed: false, changed: true, enabled: true, error: "Provider failed" },
 	];
 
 	for (const tool of toolResults) {
@@ -211,6 +213,8 @@ describe("finalizeSingleAttempt file output recovery", () => {
 					});
 				}
 
+				attempt.result.exitCode = output.exitCode ?? 0;
+				attempt.result.error = output.error;
 				const result = finalizeSingleAttempt(attempt.result, attempt.progress, {
 					agent,
 					options,
@@ -222,7 +226,7 @@ describe("finalizeSingleAttempt file output recovery", () => {
 					startTime: attempt.startTime,
 				});
 
-				if (output.changed) {
+				if (output.changed && !output.exitCode && !output.error) {
 					assert.equal(result.exitCode, 0, result.error);
 					assert.equal(result.error, undefined);
 					assert.equal(result.savedOutputPath, outputPath);
@@ -230,12 +234,14 @@ describe("finalizeSingleAttempt file output recovery", () => {
 					assert.equal(result.finalOutput, result.outputReference.message);
 					assert.equal(fs.readFileSync(outputPath!, "utf-8"), report);
 				} else {
-					assert.equal(result.exitCode, 1);
-					assert.ok(result.error?.startsWith(`${tool.toolName} failed (exit 1):`));
+					assert.equal(result.exitCode, output.exitCode ?? 1);
+					if (output.error) assert.equal(result.error, output.error);
+					else if (!output.exitCode) assert.ok(result.error?.startsWith(`${tool.toolName} failed (exit 1):`));
 					assert.equal(result.savedOutputPath, undefined);
 					assert.equal(result.outputReference, undefined);
 					assert.equal(result.finalOutput, "");
-					if (output.existed) assert.equal(fs.readFileSync(outputPath!, "utf-8"), "stale report");
+					if (output.changed) assert.equal(fs.readFileSync(outputPath!, "utf-8"), report);
+					else if (output.existed) assert.equal(fs.readFileSync(outputPath!, "utf-8"), "stale report");
 					else if (outputPath) assert.equal(fs.existsSync(outputPath), false);
 				}
 			});

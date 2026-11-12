@@ -21,6 +21,7 @@ import { createExternalExecution as createExternalExecutionImpl } from "../../sr
 import { runExternalBackgroundAttempt as runExternalBackgroundAttemptImpl, type OnSynthesizedChildEvent } from "../../src/runs/background/external-attempt.ts";
 import { runSingleStep as runSingleStepImpl } from "../../src/runs/background/subagent-runner.ts";
 import { getArtifactPaths } from "../../src/shared/artifacts.ts";
+import { formatSavedOutputReference } from "../../src/runs/shared/single-output.ts";
 import { createMockPi, createTempDir, removeTempDir } from "../support/helpers.ts";
 
 const mockPi = createMockPi();
@@ -179,6 +180,85 @@ function promptTempDir(argsPath: string): string {
 	const promptPath = args[promptFlagIndex + 1];
 	assert.ok(promptPath, "expected a prompt path after the system prompt flag");
 	return path.dirname(promptPath);
+}
+
+for (const backend of ["native", "external"] as const) {
+	for (const tool of [
+		{ toolName: "grep", isError: true, text: "Path not found: missing-directory" },
+		{ toolName: "bash", isError: false, text: 'REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1' },
+	]) {
+		for (const output of ["created", "updated", "unchanged", "missing", "disabled", "nonzero"] as const) {
+			test(`runSingleStep file output recovery: ${backend}, ${tool.toolName}, ${output}`, unixOnly, async () => {
+				const tempDir = createTempDir("bg-file-output-");
+				const binDir = path.join(tempDir, "bin");
+				fs.mkdirSync(binDir);
+				const outputPath = output === "disabled" ? undefined : path.join(tempDir, "report.md");
+				const changed = output === "created" || output === "updated" || output === "nonzero";
+				const existed = output === "updated" || output === "unchanged";
+				const success = changed && output !== "nonzero";
+				const report = "# Findings\nThe report is complete.\n";
+				if (existed) fs.writeFileSync(outputPath!, "stale report");
+				const messages = [{
+					role: "toolResult", toolCallId: "inspect", toolName: tool.toolName, isError: tool.isError,
+					content: [{ type: "text", text: tool.text }], timestamp: 1,
+				}];
+				if (changed) messages.push({
+					role: "toolResult", toolCallId: "save", toolName: "write", isError: false,
+					content: [{ type: "text", text: "Report written" }], timestamp: 2,
+				});
+				const writeReport = changed ? `fs.writeFileSync(${JSON.stringify(outputPath)}, ${JSON.stringify(report)});` : "";
+				const script = backend === "native"
+					? `const fs = require("node:fs"); ${writeReport}\nfor (const message of ${JSON.stringify(messages)}) console.log(JSON.stringify({ type: "tool_result_end", message }));\nprocess.exit(${output === "nonzero" ? 7 : 0});`
+					: makeFixtureScript(output === "nonzero" ? "fail" : "success")
+						.replace(/  append\(\{ type: "message"[^\n]+/, `${writeReport}\n  for (const message of ${JSON.stringify(messages)}) append({ type: "message", message });`)
+						.replaceAll('"background answer"', '""');
+				fs.writeFileSync(path.join(binDir, "pi"), script, { mode: 0o755 });
+				const hosts: ReturnType<typeof spawn>[] = [];
+				const requests: ExecutionSurfaceRequest[] = [];
+				const lifecycle = { releases: 0, closes: 0 };
+				const name = `file-output-${process.pid}`;
+				const dispose = backend === "external"
+					? registerExecutionBackend(makeBackend(name, binDir, requests, hosts, lifecycle))
+					: () => {};
+				try {
+					const result = await runSingleStep({
+						agent: "reporter", task: "Review the files and write a report", outputPath, outputMode: "file-only",
+						inheritProjectContext: false, inheritSkills: false,
+					}, {
+						cwd: tempDir, previousOutput: "", placeholder: "{previous}", sessionEnabled: false,
+						id: "file-output", flatIndex: 0, flatStepCount: 1, outputFile: path.join(tempDir, "output.log"),
+						executionBackendCoordinator: createDetachedExecutionBackendCoordinator({ protocolVersion: 1, registrations: [] }),
+						executionBackendConfig: { protocolVersion: 1, registrations: [], userPreference: backend === "native" ? "native" : name },
+					});
+					if (success) {
+						assert.equal(result.exitCode, 0, result.error);
+						assert.equal(result.error, undefined);
+						assert.equal(result.output, formatSavedOutputReference(outputPath!, report).message);
+					} else {
+						assert.equal(result.exitCode, output === "nonzero" && backend === "native" ? 7 : 1);
+						if (output !== "nonzero") assert.ok(result.error?.startsWith(`${tool.toolName} failed (exit 1):`), result.error);
+						assert.doesNotMatch(result.output, /Output saved to:/);
+					}
+					assert.equal(result.modelAttempts.length, 1);
+					assert.equal(result.modelAttempts[0].success, success);
+					if (changed) assert.equal(fs.readFileSync(outputPath!, "utf8"), report);
+					else if (existed) assert.equal(fs.readFileSync(outputPath!, "utf8"), "stale report");
+					else if (outputPath) assert.equal(fs.existsSync(outputPath), false);
+					if (backend === "external") {
+						assert.equal(result.executionSurface.retained, !success);
+						assert.equal(lifecycle.closes, success ? 1 : 0);
+						assert.equal(lifecycle.releases, 1);
+						assert.equal(requests.length, 1);
+						assert.ok(hosts[0].exitCode !== null || hosts[0].signalCode !== null);
+					}
+				} finally {
+					dispose();
+					await cleanupHosts(hosts);
+					removeTempDir(tempDir);
+				}
+			});
+		}
+	}
 }
 
 test("runExternalBackgroundAttempt: success path writes session, returns exitCode 0 and handle", unixOnly, async () => {
