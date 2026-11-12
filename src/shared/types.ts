@@ -4,6 +4,7 @@
 
 import * as os from "node:os";
 import * as path from "node:path";
+import type { ProjectTrust } from "../runs/shared/project-trust.ts";
 import { PINNED_AGENT_DIR } from "./agent-dir.ts";
 import type { PiRuntimeIdentity } from "../runs/shared/pi-spawn.ts";
 import type { Message } from "@earendil-works/pi-ai";
@@ -143,6 +144,7 @@ export type ControlNotificationChannel = "event" | "async";
 
 export interface ControlConfig {
 	enabled?: boolean;
+	maxRuntimeMs?: number;
 	needsAttentionAfterMs?: number;
 	activeNoticeAfterMs?: number;
 	inFlightSilenceCeilingMs?: number;
@@ -156,6 +158,7 @@ export interface ControlConfig {
 
 export interface ResolvedControlConfig {
 	enabled: boolean;
+	maxRuntimeMs: number;
 	needsAttentionAfterMs: number;
 	activeNoticeAfterMs: number;
 	inFlightSilenceCeilingMs: number;
@@ -839,6 +842,7 @@ export interface RunSyncOptions {
 	nestedRoute?: NestedRouteInfo;
 	/** Parent extension flags to forward into the child (already derived; empty = none). */
 	forwardedFlags?: string[];
+	projectTrust?: ProjectTrust;
 	/** Override the agent's default model (format: "provider/id" or just "id") */
 	modelOverride?: string;
 	/** Registry models available for heuristic bare-model resolution */

@@ -94,7 +94,7 @@ interface RepoState {
 
 const DEFAULT_WORKTREE_SETUP_HOOK_TIMEOUT_MS = 30000;
 
-function runGit(cwd: string, args: string[]): GitResult {
+export function runGit(cwd: string, args: string[]): GitResult {
 	const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf-8" });
 	return {
 		stdout: result.stdout ?? "",

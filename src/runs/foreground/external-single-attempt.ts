@@ -101,6 +101,7 @@ export async function runExternalSingleAttempt(input: RunExternalSingleAttemptIn
 		parentCapabilityToken: options.nestedRoute?.capabilityToken,
 		structuredOutput: options.structuredOutput,
 		forwardedFlags: options.forwardedFlags,
+		projectTrust: options.projectTrust,
 	});
 
 	try {

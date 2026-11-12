@@ -6,6 +6,19 @@
 - **Breaking:** `interrupt` takes a child or run id, not `index`; `/interrupt-child <id>` takes exactly one token instead of `<index> [run-id]`. Every child/run row starts with its own six-character id, and completion extends colliding prefixes. Child session names are `<agent> <six-character child id> from <parent>`, without the run-id prefix or positional suffix. `resume` keeps its index and `Revive child` behavior. (#62)
 - Stopping a child stops its subtree, including detached background descendants, without stopping siblings; stopping a run signals every running child and prevents queued launches. Native children exit when their owner dies; external hosts watch the owner socket. Foreground child-id stops preserve sibling outputs and chain failed-group results; background stops retain paused-result semantics. Single-agent calls and `tasks[]` items accept `label`, rendered as `<agent> - <label>` across dispatch shapes. (#62)
 
+## [7.7.5] - 2026-11-12
+
+### Fixed
+- A child in any directory of the parent's git worktree or another worktree sharing its git common dir inherits the parent's project-trust decision (`--approve` / `--no-approve`). Outside git, inheritance covers the parent's directory and its descendants on real paths. Fresh worktree children avoid the trust prompt under external execution backends and load project settings, packages, and skills under the native one. Separate nested repositories, submodules, git metadata, and unrelated directories decide for themselves; a parent trusted only because its directory has nothing to gate passes nothing on. ([doc/configuration.md](doc/configuration.md#project-trust))
+
+## [7.7.4] - 2026-11-11
+
+### Added
+- Foreground children have an absolute `control.maxRuntimeMs` cap, configurable per call or with `subagents.control.maxRuntimeMs` in settings. Existing runs now default to 14400000 ms (4 h), even with attention tracking disabled; capped children return a failure naming the limit. (#61)
+
+### Fixed
+- Native aborts escalate to SIGKILL after 3 s when the child ignores SIGTERM, instead of treating a sent signal as proof of exit. (#61)
+
 ## [7.7.3] - 2026-11-10
 
 ### Added

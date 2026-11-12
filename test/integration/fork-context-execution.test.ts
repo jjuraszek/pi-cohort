@@ -258,6 +258,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		return {
 			cwd: tempDir,
 			hasUI: false,
+			isProjectTrusted() { return true; },
 			ui: {},
 			modelRegistry: { getAvailable: () => [] },
 			sessionManager,

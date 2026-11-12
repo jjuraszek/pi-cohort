@@ -508,6 +508,7 @@ test("runSingleStep retains the surface and removes its prompt directory when an
 			outputFile: path.join(tempDir, "output-0.log"),
 			executionBackendCoordinator: createDetachedExecutionBackendCoordinator({ protocolVersion: 1, registrations: [] }),
 			executionBackendConfig: { protocolVersion: 1, registrations: [], userPreference: backendName },
+			projectTrust: { trusted: true, root: tempDir },
 		});
 
 		assert.equal(result.exitCode, 1);
@@ -525,6 +526,7 @@ test("runSingleStep retains the surface and removes its prompt directory when an
 		assert.equal(fs.existsSync(promptTempDir(argsPath)), false);
 		const childArgs = JSON.parse(fs.readFileSync(argsPath, "utf-8")) as string[];
 		assert.equal(childArgs[childArgs.indexOf("--name") + 1], "worker child- from P");
+		assert.ok(childArgs.includes("--approve"));
 		assert.equal(fs.readFileSync(`${argsPath}.parent-session-id`, "utf-8"), "parent-session-id");
 	} finally {
 		process.env.PATH = savedPath;

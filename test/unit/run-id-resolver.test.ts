@@ -217,7 +217,7 @@ describe("subagent run id resolver", () => {
 				assert.equal(resolved.kind, "child");
 				assert.equal(resolved.owner.kind, "nested", "the caller must route through the projection, not the owner's live map");
 				const result = await executor.execute(`stop-${index}`, { action: "interrupt", id }, undefined, undefined, {
-					cwd: root, hasUI: false,
+					cwd: root, hasUI: false, isProjectTrusted: () => false,
 					sessionManager: { getSessionId: () => "test", getSessionFile: () => undefined, getSessionName: () => undefined },
 				} as any);
 				assert.notEqual(result.isError, true, JSON.stringify(result.content));

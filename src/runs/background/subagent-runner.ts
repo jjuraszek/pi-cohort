@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { PINNED_AGENT_DIR_OVERRIDE } from "../../shared/agent-dir.ts";
+import type { ProjectTrust } from "../shared/project-trust.ts";
 import { resolveExtensionConfig } from "../../agents/agents.ts";
 import * as fs from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -126,6 +127,7 @@ interface SubagentRunConfig {
 	parentSessionId?: string;
 	runtime: PiRuntimeIdentity;
 	forwardedFlags?: string[];
+	projectTrust?: ProjectTrust;
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;
 	worktreeTeardownHook?: string;
@@ -643,6 +645,7 @@ export interface SingleStepContext {
 	outputFile: string;
 	runtime: PiRuntimeIdentity;
 	forwardedFlags?: string[];
+	projectTrust?: ProjectTrust;
 	parentSessionLabel?: string;
 	parentSessionId?: string;
 	registerInterrupt?: (interrupt: (() => void) | undefined) => void;
@@ -857,6 +860,7 @@ async function runSingleStepAttempts(
 					parentCapabilityToken: ctx.nestedRoute?.capabilityToken,
 					structuredOutput: effectiveStructuredOutput,
 					forwardedFlags: ctx.forwardedFlags,
+					projectTrust: ctx.projectTrust,
 				});
 				const mergedEnv: Record<string, string> = {};
 				for (const [k, v] of Object.entries({ ...process.env, ...env, ...getSubagentDepthEnv(step.maxSubagentDepth) })) {
@@ -1011,6 +1015,7 @@ async function runSingleStepAttempts(
 			parentCapabilityToken: ctx.nestedRoute?.capabilityToken,
 			structuredOutput: effectiveStructuredOutput,
 			forwardedFlags: ctx.forwardedFlags,
+			projectTrust: ctx.projectTrust,
 		});
 		let run: RunPiStreamingResult;
 		try {
@@ -2115,6 +2120,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 					runtime: config.runtime,
 					controlConfig: config.controlConfig,
 					forwardedFlags: config.forwardedFlags,
+					projectTrust: config.projectTrust,
 					parentSessionLabel: config.parentSessionLabel,
 					parentSessionId: config.parentSessionId,
 					executionBackendCoordinator,
@@ -2413,6 +2419,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 							runtime: config.runtime,
 							controlConfig: config.controlConfig,
 							forwardedFlags: config.forwardedFlags,
+							projectTrust: config.projectTrust,
 							parentSessionLabel: config.parentSessionLabel,
 							parentSessionId: config.parentSessionId,
 							executionBackendCoordinator,
@@ -2600,6 +2607,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				runtime: config.runtime,
 				controlConfig: config.controlConfig,
 				forwardedFlags: config.forwardedFlags,
+				projectTrust: config.projectTrust,
 				parentSessionLabel: config.parentSessionLabel,
 				parentSessionId: config.parentSessionId,
 				executionBackendCoordinator,

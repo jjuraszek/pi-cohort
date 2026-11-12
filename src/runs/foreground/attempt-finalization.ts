@@ -27,6 +27,8 @@ import type {
 	Usage,
 } from "../../shared/types.ts";
 
+export const INTERRUPTED_FINAL_OUTPUT = "Interrupted. Waiting for explicit next action.";
+
 export const artifactOutputByResult = new WeakMap<SingleResult, string>();
 export const acceptanceOutputByResult = new WeakMap<SingleResult, string>();
 
@@ -190,7 +192,7 @@ export function finalizeSingleAttempt(
 		result.exitCode = 0;
 		result.interrupted = true;
 		result.error = undefined;
-		result.finalOutput = result.finalOutput || "Interrupted. Waiting for explicit next action.";
+		result.finalOutput = result.finalOutput || INTERRUPTED_FINAL_OUTPUT;
 		result.controlEvents = ctx.allControlEvents.length ? ctx.allControlEvents : undefined;
 		progress.activityState = undefined;
 		progress.durationMs = Date.now() - ctx.startTime;

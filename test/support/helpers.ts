@@ -89,6 +89,7 @@ interface MinimalCtx {
 	cwd: string;
 	hasUI: boolean;
 	ui: Record<string, never>;
+	isProjectTrusted: () => boolean;
 	sessionManager: {
 		getSessionId: () => string;
 		getSessionFile: () => string | null;
@@ -106,6 +107,7 @@ export function makeMinimalCtx(cwd: string): MinimalCtx {
 		cwd,
 		hasUI: false,
 		ui: {},
+		isProjectTrusted: () => true,
 		sessionManager: {
 			getSessionId: () => "session-123",
 			getSessionFile: () => null,

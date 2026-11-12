@@ -526,6 +526,42 @@ describe("buildPiArgs child ownership", () => {
 	});
 });
 
+describe("buildPiArgs project trust", () => {
+	const root = process.cwd();
+	const base = { baseArgs: ["--mode", "json", "-p"], task: "hi", sessionEnabled: false, inheritProjectContext: false, inheritSkills: false, cwd: root };
+
+	for (const [label, projectTrust, flag] of [
+		["trusted", { trusted: true, root }, "--approve"],
+		["untrusted", { trusted: false, root }, "--no-approve"],
+		["unknown", undefined, undefined],
+	] as const) {
+		it(`passes ${flag ?? "no trust flag"} when the parent's trust is ${label}`, () => {
+			const { args } = buildPiArgs({ ...base, projectTrust });
+			assert.deepEqual(args.filter((arg) => arg === "--approve" || arg === "--no-approve"), flag ? [flag] : []);
+			assert.equal(args.at(-1), "Task: hi", "the task stays last");
+		});
+	}
+
+	it("keeps the trust flag when the agent restricts extensions", () => {
+		const { args } = buildPiArgs({ ...base, projectTrust: { trusted: true, root }, extensions: [] });
+		assert.ok(args.includes("--approve"));
+		assert.ok(args.includes("--no-extensions"));
+	});
+
+	it("leaves the decision to a child whose cwd is a different project", () => {
+		const { args } = buildPiArgs({ ...base, projectTrust: { trusted: true, root }, cwd: os.tmpdir() });
+		assert.ok(!args.includes("--approve"));
+		assert.ok(!args.includes("--no-approve"));
+	});
+
+	for (const trusted of [true, false]) {
+		it(`passes the parent's trust=${trusted} to a child in a subdirectory`, () => {
+			const { args } = buildPiArgs({ ...base, projectTrust: { trusted, root }, cwd: path.join(root, "src") });
+			assert.deepEqual(args.filter((arg) => arg === "--approve" || arg === "--no-approve"), [trusted ? "--approve" : "--no-approve"]);
+		});
+	}
+});
+
 describe("buildPiArgs child session name", () => {
 	const base = { baseArgs: [], task: "hi", sessionEnabled: true, inheritProjectContext: false, inheritSkills: false };
 	const runId = "a1b2c3d4-0000-4000-8000-000000000000";

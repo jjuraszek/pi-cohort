@@ -57,7 +57,7 @@ Per step:
 
 ### Call-time `control` overrides
 
-Per-call attention-tracking overrides: `subagent({ ..., control: {...} })`. Run-level field - sits beside `tasks`/`chain`, not inside task items. The tool schema declares only `enabled`; all fields below are accepted (`additionalProperties: true`) and re-parsed defensively at runtime (`resolveControlConfig`, `src/runs/shared/subagent-control.ts`) - invalid values fall back to the defaults.
+Pass per-call attention and runtime overrides as `subagent({ ..., control: {...} })`. Place `control` beside `tasks`/`chain`, not inside task items. Use the fields below even though the tool schema declares only `enabled` (`additionalProperties: true`). Supply valid values to override settings; let invalid values fall through to settings, then defaults (`resolveControlConfig`, `src/runs/shared/subagent-control.ts`).
 
 | Field | Type | Meaning | Default |
 |---|---|---|---|
@@ -66,6 +66,7 @@ Per-call attention-tracking overrides: `subagent({ ..., control: {...} })`. Run-
 | `activeNoticeAfterMs` | integer >= 1 | Elapsed-ms threshold for the long-running notice. | `240000` |
 | `inFlightSilenceCeilingMs` | integer >= 1 | Silent ms in-flight before escalation. | `600000` |
 | `inFlightSilenceKillMs` | integer >= 1 | SIGTERM the child after this silent span (clamped above the needs-attention window). | `1800000` |
+| `maxRuntimeMs` | integer >= 1 | Cap each child from its start regardless of activity (foreground only); treat expiry as a failure naming the cap, even with `enabled: false`. | `14400000` |
 | `activeNoticeAfterTurns` | integer >= 1 | Notice by assistant turns. | off |
 | `activeNoticeAfterTokens` | integer >= 1 | Notice by total tokens. | off |
 | `failedToolAttemptsBeforeAttention` | integer >= 1 | Mutating-tool failures before `needs_attention`. | `3` |

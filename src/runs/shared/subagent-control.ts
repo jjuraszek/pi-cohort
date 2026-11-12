@@ -13,6 +13,7 @@ const DEFAULT_NOTIFY_ON: ControlEventType[] = ["active_long_running", "needs_att
 
 export const DEFAULT_CONTROL_CONFIG: ResolvedControlConfig = {
 	enabled: true,
+	maxRuntimeMs: 14_400_000,
 	needsAttentionAfterMs: 60_000,
 	activeNoticeAfterMs: 240_000,
 	inFlightSilenceCeilingMs: 600_000,
@@ -41,6 +42,9 @@ export function resolveControlConfig(
 	override?: ControlConfig,
 ): ResolvedControlConfig {
 	const enabled = override?.enabled ?? globalConfig?.enabled ?? DEFAULT_CONTROL_CONFIG.enabled;
+	const maxRuntimeMs = parsePositiveInt(override?.maxRuntimeMs)
+		?? parsePositiveInt(globalConfig?.maxRuntimeMs)
+		?? DEFAULT_CONTROL_CONFIG.maxRuntimeMs;
 	const needsAttentionAfterMs = parsePositiveInt(override?.needsAttentionAfterMs)
 		?? parsePositiveInt(globalConfig?.needsAttentionAfterMs)
 		?? DEFAULT_CONTROL_CONFIG.needsAttentionAfterMs;
@@ -72,6 +76,7 @@ export function resolveControlConfig(
 		?? DEFAULT_CONTROL_CONFIG.notifyChannels;
 	return {
 		enabled,
+		maxRuntimeMs,
 		needsAttentionAfterMs,
 		activeNoticeAfterMs,
 		inFlightSilenceCeilingMs,

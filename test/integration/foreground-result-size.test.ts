@@ -84,6 +84,7 @@ function makeCtx(cwd: string) {
 	return {
 		cwd,
 		hasUI: false,
+		isProjectTrusted() { return true; },
 		ui: {},
 		sessionManager: {
 			getSessionId: () => "session-123",

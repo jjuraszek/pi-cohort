@@ -12,6 +12,8 @@ interface MockPiResponse {
 	exitCode?: number;
 	delay?: number;
 	keepAliveAfterFinalMessageMs?: number;
+	ignoreSigterm?: boolean;
+	exitOnSigtermWithOpenStdout?: { pidFile: string };
 	jsonl?: unknown[];
 	structuredOutput?: unknown;
 	steps?: Array<{

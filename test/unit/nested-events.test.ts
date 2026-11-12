@@ -264,7 +264,7 @@ it("publishes nested foreground identities without a UI callback and preserves t
 				getSubagentSessionRoot: () => root, expandTilde: (value) => value,
 				discoverAgents: () => ({ agents: [{ name: "worker", source: "user", systemPrompt: "help" }] as any }),
 			});
-			const running = executor.execute("launch", params, new AbortController().signal, undefined, { cwd: root, hasUI: false,
+			const running = executor.execute("launch", params, new AbortController().signal, undefined, { cwd: root, hasUI: false, isProjectTrusted: () => true,
 				sessionManager: { getSessionId: () => "test", getSessionFile: () => undefined, getSessionName: () => undefined }, modelRegistry: { getAvailable: () => [] } } as any);
 			let live: NestedRunSummary | undefined;
 			for (let i = 0; i < 80; i++) {
@@ -333,7 +333,7 @@ it("preserves task labels when clarification launches in the background", async 
 			discoverAgents: () => ({ agents: [{ name: "worker", source: "user", systemPrompt: "help" }] as any }),
 		});
 		const result = await executor.execute("launch", { clarify: true, tasks: [{ agent: "worker", task: "go", label: "retained label" }] },
-			new AbortController().signal, undefined, { cwd: root, hasUI: true,
+			new AbortController().signal, undefined, { cwd: root, hasUI: true, isProjectTrusted: () => true,
 				ui: { custom: async () => ({ confirmed: true, templates: ["edited task"], behaviorOverrides: [{}], runInBackground: true }) },
 				sessionManager: { getSessionId: () => "test", getSessionFile: () => undefined, getSessionName: () => undefined },
 				modelRegistry: { getAvailable: () => [] } } as any);

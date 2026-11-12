@@ -351,6 +351,37 @@ describe("resolveControlConfig inFlightSilenceKillMs", () => {
 	});
 });
 
+describe("resolveControlConfig maxRuntimeMs", () => {
+	it("resolves maxRuntimeMs with call-time, settings, default precedence", () => {
+		for (const [settings, override, expected] of [
+			[undefined, undefined, 14_400_000],
+			[2_000, undefined, 2_000],
+			[2_000, 1_000, 1_000],
+			[2_000, 3_000_000_000, 3_000_000_000],
+		] as const) {
+			const config = resolveControlConfig({ maxRuntimeMs: settings }, { enabled: false, maxRuntimeMs: override });
+			assert.equal(config.maxRuntimeMs, expected, "cap ignores enabled and silence thresholds");
+		}
+	});
+
+	for (const invalid of [0, -1, 1.5, "123", null, NaN, Infinity]) {
+		it(`ignores non-positive-integer maxRuntimeMs (${String(invalid)})`, () => {
+			assert.equal(resolveControlConfig(
+				{ maxRuntimeMs: 2_000 },
+				{ maxRuntimeMs: invalid as never },
+			).maxRuntimeMs, 2_000, "invalid call-time value falls through to settings");
+			assert.equal(resolveControlConfig(
+				undefined,
+				{ maxRuntimeMs: invalid as never },
+			).maxRuntimeMs, 14_400_000, "invalid call-time value without settings falls through to default");
+			assert.equal(resolveControlConfig(
+				{ maxRuntimeMs: invalid as never },
+				{ maxRuntimeMs: invalid as never },
+			).maxRuntimeMs, 14_400_000, "invalid values at both levels fall through to default");
+		});
+	}
+});
+
 describe("shouldSilenceKill", () => {
 	const base = { startedAt: 0, now: 10_000, killMs: 5_000 };
 

@@ -89,6 +89,7 @@ Defaults to `false`. Forces depth-0 single, parallel, and chain runs into backgr
       "activeNoticeAfterMs": 240000,
       "inFlightSilenceCeilingMs": 600000,
       "inFlightSilenceKillMs": 1800000,
+      "maxRuntimeMs": 14400000,
       "failedToolAttemptsBeforeAttention": 3,
       "notifyOn": ["active_long_running", "needs_attention"],
       "notifyChannels": ["event", "async"]
@@ -97,7 +98,9 @@ Defaults to `false`. Forces depth-0 single, parallel, and chain runs into backgr
 }
 ```
 
-These are the consumer defaults. Optional `activeNoticeAfterTurns` and `activeNoticeAfterTokens` have no defaults and remain unset. Numeric thresholds must be positive integers; invalid thresholds fall back in the consumer. The kill threshold is clamped to at least `inFlightSilenceCeilingMs + needsAttentionAfterMs`. `notifyOn` accepts the two event names shown above; `notifyChannels` accepts `event` and `async`. An empty list disables those notifications. Per-call control overrides take precedence over the resolved settings object; this is separate from whole-object replacement between settings levels.
+These are the consumer defaults. Optional `activeNoticeAfterTurns` and `activeNoticeAfterTokens` have no defaults and remain unset. Numeric thresholds must be positive integers; invalid thresholds fall back in the consumer. The silence-kill threshold is clamped to at least `inFlightSilenceCeilingMs + needsAttentionAfterMs`. `notifyOn` accepts the two event names shown above; `notifyChannels` accepts `event` and `async`. An empty list disables those notifications. Per-call control overrides take precedence over the resolved settings object; this is separate from whole-object replacement between settings levels.
+
+`maxRuntimeMs` defaults to `14400000` ms (4 h) and caps each foreground child from its start regardless of activity; async children are not capped. With `enabled: false`, attention tracking and the ordinary silence kill are disabled, but a foreground child awaiting structured settlement can still be silence-killed and the runtime cap still applies. A capped child returns a failure whose `error` names `maxRuntimeMs` and its value. No value disables the cap: invalid values fall through to settings, then the default; use a very large positive integer for no practical limit. The runtime cap is not clamped against the silence thresholds.
 
 ## `chain`
 
@@ -146,6 +149,21 @@ At each interactive session start, prints a `[Subagents]` roster into chat listi
 Parent extension CLI flags are forwarded into spawned children by default: whatever extension flags you launched `pi` with (for example `--no-autofix` from pi-lens) are re-applied to every subagent child, across foreground, sync-background, and detached-async dispatch, at any nesting depth. Flags are derived by running the parent's own argv through pi's exported `parseArgs` and forwarding what it reports as unknown flags, each re-emitted as `--name=value` (booleans as `--name=true`) so a forwarded flag cannot consume the child's own flags. Core flags the host pi recognizes (`--model`, `--mode`, `--system-prompt`, `--session*`, `-p`, ...), their values, and everything after a `--` delimiter (the queued prompt) are never forwarded; a core name written in `=` form (`--model=x`) is forwarded because pi reports it as unknown. The child's model comes from explicit resolution instead - per-call, agent, then the parent session's current model and thinking level (see the resolution table in [`agents-and-chains.md`](agents-and-chains.md#changing-a-builtin-agents-model)). Forwarding is skipped silently when the parent was launched with `--extension`/`-e`/`--no-extensions`, or when the dispatched agent restricts its own extensions, because the child would not load the flag's owning extension. Defaults to enabled; set to `false` to disable entirely.
 
 Caveat: if a child runs with a `cwd` in a different project whose *project-scoped* extension owns a forwarded flag, the child can fail to start on the unknown flag. User-scoped extensions (e.g. pi-lens) load regardless of `cwd` and are unaffected; set `forwardParentFlags: false` if the cross-project case bites.
+
+## Project trust
+
+Children inherit the parent session's [project trust](https://github.com/earendil-works/pi-coding-agent/blob/main/docs/security.md) decision: a trusted parent launches its children with `--approve`, an untrusted one with `--no-approve`. Without this a child in a fresh worktree has no saved decision for its directory, so an interactive child (external execution backends) blocks on the trust prompt with nothing reaching the parent, and a `--mode json` child silently skips the project's `.pi/settings.json`, packages, and skills.
+
+| Child `cwd` | Flag |
+|---|---|
+| Any directory in the parent's git worktree or another worktree with the same git common dir, including ancestors of the parent's `cwd` | inherited |
+| The parent's `cwd` or a directory below it on real paths, when neither is in git | inherited |
+| A separate repository or submodule nested inside the parent's tree, or an unrelated repository | none: pi resolves the child's own decision |
+| A git metadata directory, such as `.git`, `.git/objects`, or `.git/worktrees/name` | none |
+| Anywhere else, including outside the parent's tree when the parent is outside git (a sibling with a longer name is outside) | none |
+| Any, when the parent is trusted only because its `cwd` has no trust-requiring resources | none |
+
+Not a setting; `forwardParentFlags` does not affect it.
 
 ## `executionBackend`
 
