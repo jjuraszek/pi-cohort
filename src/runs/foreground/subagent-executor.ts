@@ -2503,7 +2503,11 @@ export function createSubagentExecutor(services: ExecutorDeps): {
 			}
 		};
 
-		const stopOnAbort = () => { foregroundControl?.interrupt?.(); };
+		let abortStopError: string | undefined;
+		const stopOnAbort = () => {
+			try { foregroundControl?.interrupt?.(); }
+			catch (error) { abortStopError = error instanceof Error ? error.message : String(error); }
+		};
 		if (signal?.aborted) stopOnAbort();
 		else signal?.addEventListener("abort", stopOnAbort, { once: true });
 		let nestedForegroundStarted = false;
@@ -2529,22 +2533,24 @@ export function createSubagentExecutor(services: ExecutorDeps): {
 				nestedForegroundStarted = true;
 			}
 			const finish = (result: AgentToolResult<Details>) => {
+				if (abortStopError) {
+					result.isError = true;
+					result.content.unshift({ type: "text", text: abortStopError });
+				}
+				writeNestedForegroundEvent("subagent.nested.completed", result);
 				if (foregroundControl) updateForegroundNestedProjection(foregroundControl);
 				return withForkContext(projectUpdate(result, true), effectiveParams.context);
 			};
 			if (hasChain && effectiveParams.chain) {
 				const result = await runChainPath(execData, deps);
-				writeNestedForegroundEvent("subagent.nested.completed", result);
 				return finish(result);
 			}
 			if (hasTasks && effectiveParams.tasks) {
 				const result = await runParallelPath(execData, deps);
-				writeNestedForegroundEvent("subagent.nested.completed", result);
 				return finish(result);
 			}
 			if (hasSingle) {
 				const result = await runSinglePath(execData, deps);
-				writeNestedForegroundEvent("subagent.nested.completed", result);
 				return finish(result);
 			}
 		} catch (error) {

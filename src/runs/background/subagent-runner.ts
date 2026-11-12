@@ -413,8 +413,14 @@ function runPiStreaming(
 			settlementWaitTimer = undefined;
 		}
 		function signalByPolicy(signal: NodeJS.Signals): boolean {
-			const send = () => trySignalChild(child, signal);
-			return onPolicyStop ? onPolicyStop(send) : send();
+			let sent = false;
+			const send = () => sent = trySignalChild(child, signal);
+			try {
+				return onPolicyStop ? onPolicyStop(send) : send();
+			} catch (stopError) {
+				error = [error, stopError instanceof Error ? stopError.message : String(stopError)].filter(Boolean).join("\n");
+				return sent;
+			}
 		}
 		function startSettlementWait(): void {
 			if (settlementWaitTimer || settled || childExited) return;
@@ -1892,7 +1898,11 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			child.stopRequested = true;
 			child.interrupt?.();
 		}
-		sweepBackgroundDescendants(config.nestedRoute, targetId);
+		try {
+			sweepBackgroundDescendants(config.nestedRoute, targetId);
+		} catch (error) {
+			statusPayload.error = [statusPayload.error, error instanceof Error ? error.message : String(error)].filter(Boolean).join("\n");
+		}
 		writeStatusPayload();
 	};
 	const registerChildInterrupt = (index: number, interrupt: (() => void) | undefined) => {

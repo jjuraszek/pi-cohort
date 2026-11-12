@@ -247,7 +247,11 @@ async function runSingleAttempt(
 			silenceKillRequested = true;
 			const closedAdmission = closeChildAdmission(options);
 			const termSent = trySignalChild(proc, "SIGTERM");
-			if (closedAdmission) sweepBackgroundDescendants(options.nestedRoute, options.id!);
+			try {
+				if (closedAdmission) sweepBackgroundDescendants(options.nestedRoute, options.id!);
+			} catch (error) {
+				result.error = [result.error, error instanceof Error ? error.message : String(error)].filter(Boolean).join("\n");
+			}
 			if (!termSent) return;
 			forcedTerminationSignal = true;
 			result.error = result.error ??
@@ -716,10 +720,14 @@ async function runOwnedSync(
 	else callerSignal?.addEventListener("abort", forwardAbort, { once: true });
 	options = { ...options, signal: controller.signal };
 	let capElapsedMs: number | undefined;
+	let capStopError: string | undefined;
 	let capTimer: NodeJS.Timeout | undefined;
 	let resolveCap!: () => void;
 	const capReached = new Promise<void>((resolve) => { resolveCap = resolve; });
-	const capError = () => `Subagent killed: ran for ${Math.round(capElapsedMs! / 1000)}s (exceeded maxRuntimeMs=${maxRuntimeMs}ms).`;
+	const capError = () => [
+		`Subagent killed: ran for ${Math.round(capElapsedMs! / 1000)}s (exceeded maxRuntimeMs=${maxRuntimeMs}ms).`,
+		capStopError,
+	].filter(Boolean).join("\n");
 	const rewriteCappedResult = (result: SingleResult): boolean => {
 		if (capElapsedMs === undefined || (result.exitCode === 0 && !result.error && !result.interrupted)) return false;
 		result.exitCode = 1;
@@ -744,7 +752,11 @@ async function runOwnedSync(
 			resolveCap();
 			const closedAdmission = closeChildAdmission(options);
 			controller.abort();
-			if (closedAdmission) sweepBackgroundDescendants(options.nestedRoute, options.id!);
+			try {
+				if (closedAdmission) sweepBackgroundDescendants(options.nestedRoute, options.id!);
+			} catch (error) {
+				capStopError = error instanceof Error ? error.message : String(error);
+			}
 		}, Math.min(Math.max(0, maxRuntimeMs - (monotonicNow() - startedAt)), 2_147_483_647));
 		capTimer.unref?.();
 	};

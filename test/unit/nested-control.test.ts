@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, it, mock } from "node:test";
 import { resolveSubagentRunId, listStopTargets } from "../../src/runs/background/run-id-resolver.ts";
-import { stopForegroundTarget, registerForegroundInterrupt, stoppingAncestor, recordStop, sweepBackgroundDescendants } from "../../src/runs/shared/stop-control.ts";
+import { stopForegroundTarget, registerForegroundInterrupt, stoppingAncestor, recordStop } from "../../src/runs/shared/stop-control.ts";
 import { runSync } from "../../src/runs/foreground/execution.ts";
 import registerFanoutChildSubagentExtension, { startNestedControlInboxListener } from "../../src/extension/fanout-child.ts";
 import { createMockPi } from "../support/mock-pi.ts";
@@ -387,17 +387,22 @@ describe("stop target ownership", () => {
 		} finally { clearInterval(wrong); clearInterval(owner); }
 	});
 
-	for (const failure of ["none", "runner-exited", "signal-error"]) {
-		it(`sweeps only recorded background descendants and closes their late-launch race (${failure})`, () => {
-			const route = createNestedRoute(`sweep-root-${failure}`);
+	const sweepCases = ["inbox", "foreground", "runtime-cap", "abort"].flatMap((via) =>
+		["none", "runner-exited", "signal-exited", "signal-error"].map((failure) => ({ via, failure })));
+	for (const { via, failure } of sweepCases) {
+		it(`sweeps only recorded background descendants and reports stop failures to the caller (${via}, ${failure})`, async () => {
+			const route = createNestedRoute(`sweep-root-${via}-${failure}`);
 			routeRoots.push(path.dirname(route.eventSink));
 			const dirs: string[] = [];
 			const errors = mock.method(console, "error", () => {});
 			let firstProbes = 0;
 			const kill = mock.method(process, "kill", (pid: number, signal: NodeJS.Signals | number) => {
 				if (pid === 98765) {
-					if (signal === 0 && ++firstProbes === 2 && failure === "runner-exited") {
+					if (signal === 0 && ++firstProbes >= 2 && failure === "runner-exited") {
 						throw Object.assign(new Error("runner exited between liveness checks"), { code: "ESRCH" });
+					}
+					if (signal !== 0 && failure === "signal-exited") {
+						throw Object.assign(new Error("runner exited before signaling"), { code: "ESRCH" });
 					}
 					if (signal !== 0 && failure === "signal-error") {
 						throw Object.assign(new Error("descendant signal failed"), { code: "EPERM" });
@@ -417,14 +422,62 @@ describe("stop target ownership", () => {
 						path: [{ runId: route.rootRunId, childId }], asyncDir,
 					} });
 				}
-				recordStop(route, "target-child");
-				sweepBackgroundDescendants(route, "target-child");
+				setNestedRouteEnv(route);
+				const state = createState();
+				let stopped = 0;
+				let stopError: unknown;
+				const control = { runId: route.rootRunId, nestedRoute: route, children: new Map([
+					["target-child", { agent: "worker", state: "running", index: 0, interrupt: () => { stopped++; return true; } }],
+				]) } as any;
+				control.interrupt = (id: string) => {
+					try { return stopForegroundTarget(control, id); }
+					catch (error) { stopError = error; throw error; }
+				};
+				state.foregroundControls.set(control.runId, control);
+				let response: { ok: boolean; message: string };
+				if (via === "inbox") {
+					const timer = startNestedControlInboxListener({} as any, state);
+					try {
+						writeNestedControlRequest(route, { ts: Date.now(), requestId: "sweep-request", targetId: "target-child", action: "interrupt" });
+						await waitFor(() => readNestedControlResults(route).length === 1);
+					} finally { clearInterval(timer); }
+					response = readNestedControlResults(route)[0];
+				} else if (via === "foreground") {
+					const result = await createExecutor(state).execute("stop", { action: "interrupt", id: "target-child" }, undefined, undefined, ctx(os.tmpdir()));
+					response = { ok: !result.isError, message: text(result) };
+				} else {
+					const abort = new AbortController();
+					try {
+						const result = await runSync(os.tmpdir(), [{ name: "worker" } as any], "worker", "test", {
+							id: "target-child", runId: route.rootRunId, nestedRoute: route, runtime: mockPi.runtime,
+							signal: abort.signal, controlConfig: { maxRuntimeMs: 20 },
+						} as any, { selectBackend: async () => {
+							if (via === "abort") abort.abort();
+							else await new Promise((resolve) => setTimeout(resolve, 50));
+							return { selection: { kind: "native" } } as any;
+						} });
+						response = { ok: !result.error?.includes("nested-match"), message: result.error ?? "" };
+					} catch (error) {
+						stopError = error;
+						response = { ok: false, message: error instanceof Error ? error.message : String(error) };
+					}
+				}
 				assert.equal(fs.existsSync(path.join(dirs[0], "interrupt-request-nested-match.json")), failure !== "runner-exited");
 				assert.ok(fs.existsSync(path.join(dirs[1], "interrupt-request-nested-later.json")));
 				assert.equal(fs.existsSync(path.join(dirs[2], "interrupt-request-nested-sibling.json")), false);
 				assert.deepEqual(kill.mock.calls.filter((call) => call.arguments[1] !== 0).map((call) => call.arguments[0]), failure === "runner-exited" ? [98766] : [98765, 98766]);
-				assert.equal(errors.mock.calls.length, failure === "none" ? 0 : 1);
-				if (failure !== "none") assert.match(errors.mock.calls[0].arguments[0], /nested-match/);
+				assert.equal(response.ok, failure !== "signal-error", "a real signal failure must reach the caller after later descendants are signaled");
+				if (failure === "signal-error") {
+					if (via !== "runtime-cap") assert.ok(stopError instanceof Error);
+					assert.match(response.message, /nested-match.*descendant signal failed/);
+				} else {
+					assert.equal(stopError, undefined, "an exited runner is not a stop failure");
+				}
+				assert.equal(errors.mock.calls.length, 0);
+				if (via === "inbox" || via === "foreground") {
+					assert.equal(stopped, 1, "accepted stop effects are not undone");
+					assert.equal(control.children.get("target-child").stopRequested, true);
+				}
 				assert.equal(stoppingAncestor(route, "late-background", undefined, [{ runId: route.rootRunId, childId: "target-child" }]), "target-child");
 			} finally {
 				errors.mock.restore();

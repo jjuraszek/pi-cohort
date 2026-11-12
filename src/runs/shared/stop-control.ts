@@ -48,6 +48,7 @@ export function requestAsyncStop(asyncDir: string, targetId: string): void {
 export function sweepBackgroundDescendants(route: NestedRouteInfo | undefined, targetId: string): void {
 	if (!route) return;
 	const seen = new Set<string>();
+	const failures: string[] = [];
 	const visit = (runs: NestedRunSummary[] | undefined): void => {
 		for (const run of runs ?? []) {
 			if (seen.has(run.id)) continue;
@@ -55,12 +56,16 @@ export function sweepBackgroundDescendants(route: NestedRouteInfo | undefined, t
 			if ((run.state === "queued" || run.state === "running") && run.path?.some((part) => part.runId === targetId || part.childId === targetId)) {
 				const dir = resolveNestedAsyncDir(route.rootRunId, run);
 				if (dir && run.state === "running") {
-					// A queued or exiting runner observes the admission record at startup instead.
-					try {
-						const status = readStatus(dir);
-						if (status?.state === "running" && status.pid && checkPidLiveness(status.pid) === "alive") requestAsyncStop(dir, run.id);
-					} catch (error) {
-						console.error(`Failed to stop background descendant '${run.id}':`, error);
+					const status = readStatus(dir);
+					if (status?.state === "running" && status.pid && checkPidLiveness(status.pid) !== "dead") {
+						try {
+							requestAsyncStop(dir, run.id);
+						} catch (error) {
+							// The runner can exit between the status read, liveness probe and signal.
+							if ((error as NodeJS.ErrnoException).code !== "ESRCH" && checkPidLiveness(status.pid) !== "dead") {
+								failures.push(`Failed to stop background descendant '${run.id}': ${error instanceof Error ? error.message : String(error)}`);
+							}
+						}
 					}
 				}
 			}
@@ -69,6 +74,7 @@ export function sweepBackgroundDescendants(route: NestedRouteInfo | undefined, t
 		}
 	};
 	visit(projectNestedEvents(route).children);
+	if (failures.length) throw new Error(`Stop of ${targetId.slice(0, 6)} is incomplete. ${failures.join(" ")}`);
 }
 
 export function stopForegroundTarget(control: ForegroundControl, targetId = control.runId): boolean {
