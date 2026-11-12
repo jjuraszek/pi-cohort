@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
+import fs from "node:fs";
 import * as path from "node:path";
-import { afterEach, describe, it } from "node:test";
-import { ASYNC_DIR, LEGACY_ASYNC_DIR, RUN_STATE_ROOT_DIR, TEMP_ROOT_DIR, type AsyncJobState, type SubagentState } from "../../src/shared/types.ts";
+import { afterEach, describe, it, mock as testMock } from "node:test";
+import { syncBuiltinESMExports } from "node:module";
+import { ASYNC_DIR, LEGACY_ASYNC_DIR, RUN_STATE_ROOT_DIR, TEMP_ROOT_DIR, type AsyncJobState, type AsyncStatus, type SubagentState } from "../../src/shared/types.ts";
 import {
 	createNestedRoute,
 	applyNestedEvent,
@@ -11,6 +12,7 @@ import {
 	findNestedRunMatchesById,
 	isTopLevelAsyncDir,
 	nestedRouteEnv,
+	nestedSummaryFromAsyncStatus,
 	projectNestedRegistryForRoot,
 	readNestedRegistry,
 	resolveNestedAsyncDir,
@@ -23,6 +25,10 @@ import {
 	updateAsyncJobNestedProjection,
 	updateForegroundNestedProjection,
 	writeNestedEvent,
+	readNestedControlRequests,
+	readNestedControlResults,
+	writeNestedControlRequest,
+	writeNestedControlResult,
 } from "../../src/runs/shared/nested-events.ts";
 import {
 	SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV,
@@ -34,6 +40,11 @@ import {
 	SUBAGENT_PARENT_ROOT_RUN_ID_ENV,
 	SUBAGENT_PARENT_RUN_ID_ENV,
 } from "../../src/runs/shared/pi-args.ts";
+
+import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
+import { createMockPi } from "../support/mock-pi.ts";
+import { runSingleStep } from "../../src/runs/background/subagent-runner.ts";
+import { encodeNestedPathEnv, parseNestedPathEnv } from "../../src/runs/shared/nested-path.ts";
 
 const routes: Array<{ eventSink: string }> = [];
 const savedEnv = {
@@ -76,9 +87,286 @@ function child(id: string, state: "queued" | "running" | "complete" | "failed" |
 		agents: ["reviewer"],
 		startedAt: 10,
 		lastUpdate: ts,
-		steps: [{ agent: "leaf", status: state === "running" ? "running" as const : "complete" as const }],
+		steps: [{ id: `${id}-leaf`, agent: "leaf", status: state === "running" ? "running" as const : "complete" as const }],
 	};
 }
+
+describe("child identities", () => {
+	it("round-trips complete child-bearing ancestry and rejects unsafe ids", () => {
+		const ancestry = Array.from({ length: 6 }, (_, index) => ({ runId: `run-${index}`, childId: `child-${index}`, stepIndex: index }));
+		assert.deepEqual(parseNestedPathEnv(encodeNestedPathEnv(ancestry)), ancestry);
+		assert.deepEqual(sanitizeSummary({ ...child("nested-run", "running", 1), path: ancestry })?.path, ancestry);
+		assert.deepEqual(parseNestedPathEnv(JSON.stringify([{ runId: "../unsafe" }, { runId: "safe", childId: "../unsafe" }])), []);
+	});
+
+	it("omits legacy id-less steps while retaining identified steps, runs and descendants", () => {
+		const route = trackRoute();
+		const steps = ["pending", "running", "completed"].flatMap((status, index) => [
+			{ agent: "legacy", status }, { id: `owned-${index}`, agent: "leaf", status, index },
+		]);
+		const run = { ...child("legacy-run", "running", 1), steps };
+		assert.deepEqual(sanitizeSummary(run)?.steps?.map((step) => step.id), ["owned-0", "owned-1", "owned-2"]);
+		// Stored pre-upgrade records remain readable without inventing child identities.
+		const legacyFile = path.join(route.eventSink, "legacy.json");
+		fs.writeFileSync(legacyFile, JSON.stringify({ type: "subagent.nested.started", ts: 1, rootRunId: route.rootRunId, capabilityToken: route.capabilityToken, parentRunId: route.rootRunId, child: run }));
+		writeNestedEvent(route, { type: "subagent.nested.started", ts: 2, parentRunId: "legacy-run", child: child("descendant", "running", 2, "legacy-run") });
+		const registry = projectNestedEvents(route);
+		assert.deepEqual(findNestedRun(registry.children, "legacy-run")?.steps?.map((step) => step.id), ["owned-0", "owned-1", "owned-2"]);
+		assert.ok(findNestedRun(registry.children, "descendant"));
+		assert.ok(fs.existsSync(legacyFile));
+	});
+
+	it("retains live records beyond settled depth, step and sibling caps", () => {
+		const route = trackRoute();
+		let parent = route.rootRunId;
+		for (let depth = 1; depth <= 6; depth++) {
+			const id = `depth-${depth}`;
+			writeNestedEvent(route, { type: "subagent.nested.started", ts: depth, parentRunId: parent, child: { ...child(id, "complete", depth, parent), depth, steps: [] } });
+			parent = id;
+		}
+		for (let index = 0; index < 17; index++) {
+			writeNestedEvent(route, { type: "subagent.nested.started", ts: 10 + index, parentRunId: parent, child: { ...child(`live-${index}`, "running", 10 + index, parent), depth: 7 } });
+		}
+		const registry = projectNestedEvents(route);
+		assert.equal(findNestedRun(registry.children, parent)?.children?.length, 17);
+		assert.equal(findNestedRun(readNestedRegistry(route).children, "live-16")?.depth, 7);
+		const settled = sanitizeSummary({ ...child("settled", "complete", 1), steps: Array.from({ length: 17 }, (_, index) => ({ id: `step-${index}`, agent: "leaf", status: "completed" })), children: Array.from({ length: 20 }, (_, index) => child(`settled-${index}`, "complete", 1)) });
+		assert.equal(settled?.steps?.length, 12);
+		assert.equal(settled?.children?.length, 16);
+	});
+
+	it("publishes bounded child records, defers orphans, and merges by identity without regression", () => {
+		const route = trackRoute();
+		for (let index = 16; index >= 0; index--) {
+			writeNestedEvent(route, { type: "subagent.nested.child", ts: 100 + index, runId: "nested-a", id: `owned-${index}`, agent: "leaf", label: `label-${index}`, status: "running", index, sessionFile: "s".repeat(2048), currentPath: "p".repeat(2048) });
+		}
+		assert.equal(projectNestedEvents(route).processedEvents.length, 0);
+		writeNestedEvent(route, { type: "subagent.nested.started", ts: 200, parentRunId: route.rootRunId, child: { ...child("nested-a", "running", 200), steps: [] } });
+		let registry = projectNestedEvents(route);
+		assert.equal(registry.children[0].steps?.length, 17);
+		assert.deepEqual(registry.children[0].steps?.map((step) => step.id), Array.from({ length: 17 }, (_, index) => `owned-${index}`));
+		writeNestedEvent(route, { type: "subagent.nested.child", ts: 300, runId: "nested-a", id: "owned-0", agent: "leaf", status: "interrupted", index: 0 });
+		writeNestedEvent(route, { type: "subagent.nested.child", ts: 400, runId: "nested-a", id: "owned-0", agent: "leaf", status: "running", index: 0 });
+		writeNestedEvent(route, { type: "subagent.nested.child", ts: 50, runId: "nested-a", id: "owned-1", agent: "older", status: "running", index: 1 });
+		writeNestedEvent(route, { type: "subagent.nested.child", ts: 500, runId: "nested-a", id: "owned-2", agent: "leaf", status: "running", index: 2, currentPath: "x".repeat(70_000) });
+		const oversizedChildren = Array.from({ length: 17 }, (_, index) => ({
+			...child(`descendant-${index}`, "running", 500),
+			path: Array.from({ length: 100 }, (_, depth) => ({ runId: `ancestor-${depth}`, childId: `owner-${depth}` })),
+		}));
+		writeNestedEvent(route, { type: "subagent.nested.child", ts: 500, runId: "nested-a", id: "owned-3", agent: "leaf", status: "running", index: 3, label: "identity label", children: oversizedChildren });
+		registry = projectNestedEvents(route);
+		assert.equal(registry.children[0].steps?.[0].status, "interrupted");
+		assert.equal(registry.children[0].steps?.[1].agent, "leaf");
+		assert.equal(registry.children[0].steps?.[2].id, "owned-2");
+		assert.equal(registry.children[0].steps?.[2].currentPath, "x".repeat(2048));
+		assert.equal(registry.children[0].steps?.[3].id, "owned-3");
+		assert.equal(registry.children[0].steps?.[3].label, "identity label");
+		assert.equal(registry.children[0].steps?.[3].children, undefined);
+		assert.deepEqual(projectNestedEvents(route), registry);
+		for (const name of fs.readdirSync(route.eventSink)) assert.ok(fs.statSync(path.join(route.eventSink, name)).size <= 64 * 1024);
+	});
+
+	it("publishes background terminal updates beyond the settled display cap", () => {
+		const route = trackRoute();
+		const status: AsyncStatus = {
+			runId: "nested", mode: "chain", state: "running", startedAt: 1, lastUpdate: 10,
+			steps: Array.from({ length: 13 }, (_, index) => ({
+				id: `leaf-${index}`, agent: "worker", status: index < 12 ? "completed" : "running",
+			})),
+		};
+		const publish = () => writeNestedEvent(route, { type: "subagent.nested.updated", ts: status.lastUpdate!,
+			parentRunId: route.rootRunId,
+			child: nestedSummaryFromAsyncStatus(status, path.dirname(route.eventSink), {
+				id: status.runId, parentRunId: route.rootRunId, depth: 1, ts: status.lastUpdate!,
+			}),
+		});
+		publish();
+		assert.equal(projectNestedEvents(route).children[0].steps?.at(-1)?.status, "running");
+		status.steps![12].status = "completed";
+		status.lastUpdate = 20;
+		publish();
+		const settled = projectNestedEvents(route).children[0].steps!;
+		assert.equal(settled.length, 12);
+		assert.equal(settled.some((step) => step.status === "running"), false);
+	});
+
+	it("preserves child terminal guards after display eviction and event-cache rollover", () => {
+		const route = trackRoute();
+		const run = { ...child("nested", "running", 10, route.rootRunId), steps: Array.from({ length: 13 }, (_, index) => ({
+			id: `leaf-${index}`, agent: "worker", status: "running" as const,
+		})) };
+		writeNestedEvent(route, { type: "subagent.nested.started", ts: 10, parentRunId: route.rootRunId, child: run });
+		projectNestedEvents(route);
+		writeNestedEvent(route, { type: "subagent.nested.updated", ts: 20, parentRunId: route.rootRunId,
+			child: { ...run, lastUpdate: 20, steps: run.steps.map((step) => ({ ...step, status: "completed", lastUpdate: 20 })) } });
+		const settled = projectNestedEvents(route);
+		assert.equal(settled.children[0].steps?.length, 12);
+		const registryPath = path.join(path.dirname(route.eventSink), "registry.json");
+		// Model cache rollover without publishing a thousand unrelated events.
+		const terminalEvents = settled.processedEvents.filter((name) =>
+			parseNestedEventRecords(fs.readFileSync(path.join(route.eventSink, name), "utf8"), route)[0].ts >= 20);
+		fs.writeFileSync(registryPath, JSON.stringify({ ...settled, processedEvents: terminalEvents }));
+		assert.deepEqual(projectNestedEvents(route).children, settled.children);
+		assert.deepEqual(projectNestedEvents(route).children, settled.children);
+		writeNestedEvent(route, { type: "subagent.nested.child", ts: 30, runId: "nested",
+			id: "leaf-12", index: 12, agent: "worker", status: "pending" });
+		assert.deepEqual(projectNestedEvents(route).children, settled.children);
+	});
+
+	it("uses targetId on capability-checked control requests and results", () => {
+		const route = trackRoute();
+		writeNestedControlRequest(route, { ts: 1, requestId: "request", targetId: "child-id", action: "interrupt" });
+		writeNestedControlResult(route, { ts: 2, requestId: "request", targetId: "child-id", ok: true, message: "stopped" });
+		assert.equal(readNestedControlRequests(route)[0]?.targetId, "child-id");
+		assert.equal(readNestedControlResults(route)[0]?.targetId, "child-id");
+	});
+});
+
+it("publishes nested foreground identities without a UI callback and preserves them in results", async () => {
+	const route = trackRoute();
+	const mock = createMockPi();
+	mock.install();
+	const env = {
+		PI_SUBAGENT_PARENT_EVENT_SINK: route.eventSink,
+		PI_SUBAGENT_PARENT_CONTROL_INBOX: route.controlInbox,
+		PI_SUBAGENT_PARENT_ROOT_RUN_ID: route.rootRunId,
+		PI_SUBAGENT_PARENT_CAPABILITY_TOKEN: route.capabilityToken,
+		PI_SUBAGENT_PARENT_RUN_ID: route.rootRunId,
+		PI_SUBAGENT_PARENT_PATH: JSON.stringify([{ runId: route.rootRunId }]),
+		PI_SUBAGENT_PARENT_DEPTH: "1",
+		PI_SUBAGENT_PARENT_CHILD_INDEX: "0",
+	};
+	const saved = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
+	Object.assign(process.env, env);
+	const root = path.dirname(route.eventSink);
+	try {
+		for (const params of [
+			{ agent: "worker", task: "go", label: "single" },
+			{ tasks: [{ agent: "worker", task: "go", label: "task", count: 2 }], concurrency: 1 },
+			{ chain: [{ agent: "worker", task: "go", label: "sequential" }] },
+			{ chain: [{ parallel: [{ agent: "worker", task: "go", label: "static" }], label: "group" }] },
+			{ chain: [
+				{ agent: "worker", task: "invalid seed", as: "seed", label: "seed", outputSchema: { type: "object" } },
+				{ expand: { from: { output: "seed", path: "/items" }, maxItems: 1 }, parallel: { agent: "worker", task: "use {item}", label: "invalid-reference" }, collect: { as: "collected" } },
+			] },
+			{ chain: [
+				{ agent: "worker", task: "seed", label: "seed", as: "seed", outputSchema: { type: "object" } },
+				{ expand: { from: { output: "seed", path: "/items" }, maxItems: 2 }, parallel: { agent: "worker", task: "go {item}", label: "dynamic {item}" }, collect: { as: "collected" }, label: "group" },
+			] },
+		]) {
+			const invalidReference = params.chain?.[0]?.task === "invalid seed";
+			mock.onCall({ output: "done", delay: 150, structuredOutput: { items: invalidReference ? ["{outputs.missing}"] : ["one", "two"] } });
+			const state: any = { foregroundControls: new Map(), foregroundRuns: new Map(), retainedNestedRoutes: new Map(), asyncJobs: new Map(),
+				grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, cleanupTimers: new Map() };
+			const executor = createSubagentExecutor({ captureRuntime: mock.captureRuntime, state,
+				pi: { events: { emit() {}, on() { return () => {}; } }, getSessionName() { return "parent"; } } as any,
+				resolveConfig: () => ({ maxSubagentDepth: 3, control: {} } as any), tempArtifactsDir: root,
+				getSubagentSessionRoot: () => root, expandTilde: (value) => value,
+				discoverAgents: () => ({ agents: [{ name: "worker", source: "user", systemPrompt: "help" }] as any }),
+			});
+			const running = executor.execute("launch", params, new AbortController().signal, undefined, { cwd: root, hasUI: false, isProjectTrusted: () => true,
+				sessionManager: { getSessionId: () => "test", getSessionFile: () => undefined, getSessionName: () => undefined }, modelRegistry: { getAvailable: () => [] } } as any);
+			let live: NestedRunSummary | undefined;
+			for (let i = 0; i < 80; i++) {
+				live = projectNestedEvents(route).children.find((run) => run.state === "running" && run.steps?.some((step) => step.status === "running"));
+				if (live) break;
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			}
+			const owner = live && state.foregroundControls.get(live.id);
+			const result = await running;
+			assert.equal(Boolean(result.isError), invalidReference);
+			assert.ok(live, JSON.stringify(result.content));
+			assert.ok(owner?.children.size);
+			if (params.tasks) {
+				assert.equal(live.steps?.length, 2);
+				assert.equal(live.steps?.filter((step) => step.status === "pending").length, 1);
+			}
+			const settled = projectNestedEvents(route).children.find((run) => run.id === live.id)!;
+			assert.equal(settled.steps?.length, result.details?.results.length);
+			assert.equal(new Set(result.details!.results.map((child) => child.id)).size, result.details!.results.length);
+			for (const child of result.details!.results) {
+				assert.match(child.id, /^[0-9a-f]{8}-[0-9a-f-]{27}$/);
+				assert.notEqual(child.id, live.id);
+				const expectedState = child.exitCode === 0 ? "completed" : "failed";
+				if (expectedState === "failed") {
+					assert.equal(child.label, "invalid-reference");
+					assert.match(child.error, /missing/);
+				}
+				assert.equal(owner.children.get(child.id)?.state, expectedState);
+				assert.equal(settled.steps?.find((step) => step.id === child.id)?.label, child.label);
+				assert.equal(settled.steps?.find((step) => step.id === child.id)?.status, expectedState);
+				assert.ok(child.label);
+				assert.notEqual(child.label, "group");
+			}
+			assert.ok(result.details!.results.some((child) => child.id === live.steps![0].id));
+		}
+	} finally {
+		mock.uninstall();
+		for (const [key, value] of Object.entries(saved)) {
+			if (value === undefined) delete process.env[key]; else process.env[key] = value;
+		}
+	}
+});
+
+it("preserves task labels when clarification launches in the background", async () => {
+	const mock = createMockPi();
+	mock.install();
+	const route = trackRoute();
+	const root = path.dirname(route.eventSink);
+	let config: any;
+	const originalWrite = fs.writeFileSync;
+	const write = testMock.method(fs, "writeFileSync", (file: any, data: any, ...args: any[]) => {
+		if (String(file).includes("async-cfg-")) {
+			config = JSON.parse(String(data));
+			throw new Error("stop before runner launch");
+		}
+		return originalWrite(file, data, ...args);
+	});
+	syncBuiltinESMExports();
+	try {
+		const state: any = { foregroundControls: new Map(), foregroundRuns: new Map(), retainedNestedRoutes: new Map(), asyncJobs: new Map(),
+			grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, cleanupTimers: new Map() };
+		const executor = createSubagentExecutor({ captureRuntime: mock.captureRuntime, state,
+			pi: { events: { emit() {}, on() { return () => {}; } }, getSessionName() { return "parent"; } } as any,
+			resolveConfig: () => ({ maxSubagentDepth: 3, control: {} } as any), tempArtifactsDir: root,
+			getSubagentSessionRoot: () => root, expandTilde: (value) => value,
+			discoverAgents: () => ({ agents: [{ name: "worker", source: "user", systemPrompt: "help" }] as any }),
+		});
+		const result = await executor.execute("launch", { clarify: true, tasks: [{ agent: "worker", task: "go", label: "retained label" }] },
+			new AbortController().signal, undefined, { cwd: root, hasUI: true, isProjectTrusted: () => true,
+				ui: { custom: async () => ({ confirmed: true, templates: ["edited task"], behaviorOverrides: [{}], runInBackground: true }) },
+				sessionManager: { getSessionId: () => "test", getSessionFile: () => undefined, getSessionName: () => undefined },
+				modelRegistry: { getAvailable: () => [] } } as any);
+		assert.match(result.content[0].text, /stop before runner launch/);
+		assert.equal(config.steps[0].parallel[0].label, "retained label");
+		assert.match(config.steps[0].parallel[0].task, /edited task/);
+	} finally {
+		write.mock.restore();
+		syncBuiltinESMExports();
+		mock.uninstall();
+	}
+});
+
+it("keeps the dispatch-owned identity across background fallback attempts", async () => {
+	const mock = createMockPi();
+	mock.install();
+	const route = trackRoute();
+	const root = path.dirname(route.eventSink);
+	try {
+		mock.onCall({ stderr: "429 rate limit", exitCode: 1, remaining: 1 });
+		mock.onCall({ output: "done" });
+		const result = await runSingleStep({ agent: "worker", task: "go", label: "background", modelCandidates: ["provider/first", "provider/second"] }, {
+			childId: "12345678-1234-1234-1234-123456789abc", id: route.rootRunId,
+			previousOutput: "", placeholder: "{previous}", cwd: root, sessionEnabled: false,
+			outputs: {}, runtime: mock.captureRuntime(), flatIndex: 0, flatStepCount: 1,
+			outputFile: path.join(root, "output.log"),
+		});
+		assert.equal(result.exitCode, 0);
+		assert.equal(result.id, "12345678-1234-1234-1234-123456789abc");
+		assert.equal(result.label, "background");
+		assert.equal(result.modelAttempts.length, 2);
+	} finally { mock.uninstall(); }
+});
 
 describe("nested event route validation", () => {
 	it("resolves nested parent addresses with full inherited path", () => {
@@ -373,14 +661,14 @@ describe("durable nested origins", () => {
 			const sessionRoot = path.resolve("sessions/origin");
 			const origin = { ...child("origin", "running", 100, "parent"), runtime, sessionRoot };
 			const inSteps = container === "steps" || container === "steps-to-children" || container === "step-position";
-			const parent = { ...child("parent", "running", 100), ...(inSteps ? { steps: [{ agent: "owner", status: "running" as const, children: [origin] }] } : { children: container === "deep-children" ? [{ ...child("middle", "running", 100, "parent"), children: [origin] }] : [origin] }) };
+			const parent = { ...child("parent", "running", 100), ...(inSteps ? { steps: [{ id: "owner-id", agent: "owner", status: "running" as const, children: [origin] }] } : { children: container === "deep-children" ? [{ ...child("middle", "running", 100, "parent"), children: [origin] }] : [origin] }) };
 			const registry = { rootRunId: "root-run", updatedAt: 100, children: [parent], processedEvents: [] };
 			const before = structuredClone(registry);
 			for (const metadata of [{}, { runtime: { ...runtime, piEntryPath: path.resolve("other-pi.js") } }, { sessionRoot: path.resolve("sessions/other") }, { runtime: { ...runtime, piEntryPath: path.resolve("other-pi.js") }, sessionRoot: path.resolve("sessions/other") }]) {
 				const snapshot = { ...child("origin", "complete", 200, "parent"), ...metadata, currentTool: "read", turnCount: 2 };
 				const toSteps = container === "steps" || container === "children-to-steps" || container === "step-position";
-				const steps = [{ agent: "owner", status: "complete" as const, children: [snapshot] }];
-				if (container === "step-position") steps.unshift({ agent: "other", status: "complete", children: [] });
+				const steps = [{ id: "owner-id", agent: "owner", status: "complete" as const, children: [snapshot] }];
+				if (container === "step-position") steps.unshift({ id: "other-id", agent: "other", status: "complete", children: [] });
 				const event = { type: "subagent.nested.updated" as const, ts: 200, rootRunId: "root-run", parentRunId: "root-run", capabilityToken: "token", child: { ...child("parent", "running", 200), children: toSteps ? [] : container === "deep-children" ? [{ ...child("middle", "running", 200, "parent"), children: [snapshot] }] : [snapshot], steps: toSteps ? steps : [] } };
 				const eventBefore = structuredClone(event);
 				const result = applyNestedEvent(registry, event);

@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { beforeEach, describe, it } from "node:test";
 
 import { ASYNC_DIR } from "../../src/shared/types.ts";
 import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
+import { updateBackgroundStopInventory } from "../../src/runs/background/run-id-resolver.ts";
+import { readNestedControlRequests, writeNestedControlResult, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
 import { registerSlashSubagentBridge } from "../../src/slash/slash-bridge.ts";
 import { createMockPi, events as childEvents, makeAgent, makeMinimalCtx } from "../support/helpers.ts";
 
@@ -888,7 +891,7 @@ describe("interrupt-child slash command", () => {
 		} };
 	}
 
-	it("/interrupt-child argument handling and running-child completions", async () => {
+	it("/interrupt-child argument handling and running-child completions", async (t) => {
 		const state = createState(process.cwd());
 		const h = setup(state);
 		const requests: unknown[] = [];
@@ -900,31 +903,52 @@ describe("interrupt-child slash command", () => {
 				requestId, result: { content: [{ type: "text", text: "action result" }] }, isError: false,
 			});
 		});
-		for (const args of ["", "-1", "+1", "1.5", "1e2", "abc", "1 run extra"]) {
+		for (const args of ["", "child run", "1 run extra"]) {
 			await h.command.handler(args, h.ctx);
-			assert.deepEqual(h.notifications.pop(), { message: "Usage: /interrupt-child <index> [run-id]", type: "error" });
+			assert.deepEqual(h.notifications.pop(), { message: "Usage: /interrupt-child <id>\nNo subagent is running.", type: "error" });
 		}
 		assert.deepEqual(requests, []);
 		assert.deepEqual(h.command.getArgumentCompletions!(""), []);
-		await h.command.handler("1", h.ctx);
-		assert.deepEqual(requests.pop(), { action: "interrupt", index: 1 });
-		state.foregroundControls.set("run-a", { childInterrupts: new Map([[0, () => true], [2, () => true]]) });
-		await h.command.handler("  02  ", h.ctx);
-		assert.deepEqual(requests.pop(), { action: "interrupt", index: 2, id: "run-a" });
+		await h.command.handler("abc", h.ctx);
+		assert.deepEqual(requests.pop(), { action: "interrupt", id: "abc" });
+		state.foregroundControls.set("abcdef-run", {
+			runId: "abcdef-run", mode: "parallel", children: new Map([
+				["abcdef-child", { agent: "scout", label: "find bugs", state: "running" }],
+				["abcdef-settled", { agent: "reviewer", state: "completed" }],
+				["12345678-1234-1234-1234-123456789ab0", { agent: "worker", state: "running" }],
+				["12345678-1234-1234-1234-123456789ab1", { agent: "worker", state: "running" }],
+			]),
+		});
+		const cachedDir = path.join(os.tmpdir(), "cached-run");
+		state.asyncJobs.set("cached-run", { asyncId: "cached-run", asyncDir: cachedDir, status: "running" });
+		updateBackgroundStopInventory(cachedDir, { state: "running", steps: [
+			{ id: "async-child", agent: "worker", status: "running" },
+			{ id: "queued-child", agent: "worker", status: "pending" },
+		] }, 1);
+		updateBackgroundStopInventory(path.join(os.tmpdir(), "foreign-run"), { state: "running", steps: [
+			{ id: "foreign-child", agent: "worker", status: "running" },
+		] }, 1);
 		const values = (prefix: string) => (h.command.getArgumentCompletions!(prefix) as Array<{ value: string }>).map(({ value }) => value);
-		assert.deepEqual(values(""), ["0", "2"]);
-		assert.deepEqual(values("2"), ["2"]);
-		state.foregroundControls.set("run-b", { childInterrupts: new Map([[1, () => true]]) });
-		await h.command.handler("1", h.ctx);
-		assert.deepEqual(requests, []);
-		assert.match(h.notifications.at(-1)!.message, /run-a/);
-		assert.match(h.notifications.at(-1)!.message, /run-b/);
-		assert.deepEqual(values(""), ["0 run-a", "2 run-a", "1 run-b"]);
-		assert.deepEqual(values("1 r"), ["1 run-b"]);
-		state.foregroundControls.get("run-a").childInterrupts.delete(0);
-		assert.deepEqual(values("0"), []);
-		await h.command.handler("1 run-b", h.ctx);
-		assert.deepEqual(requests.pop(), { action: "interrupt", index: 1, id: "run-b" });
+		const reads = t.mock.method(fs, "readFileSync");
+		const stats = t.mock.method(fs, "statSync");
+		const scans = t.mock.method(fs, "readdirSync");
+		syncBuiltinESMExports();
+		try {
+			assert.deepEqual(values(""), ["abcdef-c", "async-"]);
+			assert.deepEqual(values("abcdef-c"), ["abcdef-c"]);
+			assert.deepEqual(values("abcdef-s"), []);
+			assert.match(h.command.getArgumentCompletions!("")[0].label, /abcdef-c.*scout.*find bugs/);
+			assert.equal(reads.mock.callCount(), 0);
+			assert.equal(stats.mock.callCount(), 0);
+			assert.equal(scans.mock.callCount(), 0);
+		} finally {
+			reads.mock.restore(); stats.mock.restore(); scans.mock.restore(); syncBuiltinESMExports();
+		}
+		await h.command.handler("", h.ctx);
+		assert.match(h.notifications.at(-1)!.message, /abcdef-c scout/);
+		assert.doesNotMatch(h.notifications.at(-1)!.message, /settled|queued|foreign/);
+		await h.command.handler("  abcdef-c  ", h.ctx);
+		assert.deepEqual(requests.pop(), { action: "interrupt", id: "abcdef-c" });
 		assert.deepEqual(h.notifications.at(-1), { message: "action result", type: "info" });
 		assert.equal(h.statuses.at(-1), undefined);
 		h.assertNoSteer();
@@ -948,7 +972,7 @@ describe("interrupt-child slash command", () => {
 	});
 
 	for (const explicit of [false, true]) {
-		it(`/interrupt-child stops one child of a blocked foreground run (${explicit ? "prefix" : "implicit"})`, async () => {
+		it(`/interrupt-child stops one child of a blocked foreground run (${explicit ? "prefix" : "full id"})`, async () => {
 			await withTempProject("pi-slash-interrupt-", async (root) => {
 				const state = createState(root);
 				const h = setup(state);
@@ -978,15 +1002,40 @@ describe("interrupt-child slash command", () => {
 					while (mock.callCount() < 3 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
 					assert.equal(mock.callCount(), 3);
 					const [runId, control] = [...state.foregroundControls.entries()][0];
-					assert.equal(control.childInterrupts.size, 3);
+					assert.equal(control.children.size, 3);
 					assert.equal(settled, false);
-					const suffix = explicit ? ` ${runId.slice(0, 6)}` : "";
-					await h.command.handler(`99${suffix}`, h.ctx);
-					assert.deepEqual(h.notifications.at(-1), { message: `Foreground run ${runId} has no running child at index 99.`, type: "error" });
-					assert.equal(control.childInterrupts.size, 3);
-					await h.command.handler(`1${suffix}`, h.ctx);
-					assert.deepEqual(h.notifications.at(-1), { message: `Interrupt requested for child 1 of foreground run ${runId}.`, type: "info" });
-					assert.deepEqual([...control.childInterrupts.keys()].sort(), [0, 2]);
+					const route = control.nestedRoute!;
+					control.nestedChildren = []; // A projection before the nested event is still empty.
+					writeNestedEvent(route, { type: "subagent.nested.updated", ts: Date.now(), parentRunId: runId,
+						child: { id: "nested-run", parentRunId: runId, depth: 1, path: [{ runId }], state: "running", agent: "worker",
+							steps: [{ id: "nested-child", agent: "worker", label: "nested work", status: "running" }] } });
+					const responder = setInterval(() => {
+						for (const request of readNestedControlRequests(route)) {
+							assert.equal(request.targetId, "nested-child");
+							writeNestedControlResult(route, { ts: Date.now(), requestId: request.requestId, targetId: request.targetId, ok: true, message: "Nested stop accepted" });
+						}
+					}, 10);
+					try {
+						await h.command.handler(explicit ? "nested-c" : "nested-child", h.ctx);
+						assert.deepEqual(h.notifications.at(-1), { message: "Nested stop accepted", type: "info" });
+						assert.equal(settled, false, "nested routing must work while the caller waits");
+						assert.notEqual(control.stopRequested, true);
+						const completionDeadline = Date.now() + 5_000;
+						let completion;
+						do {
+							completion = h.command.getArgumentCompletions!("nested-c").find((entry) => entry.value === "nested-c");
+							if (completion) break;
+							await new Promise((resolve) => setTimeout(resolve, 10));
+						} while (Date.now() < completionDeadline);
+						assert.ok(completion, "nested-c completion must appear within 5 seconds");
+						assert.match(completion.label, /nested work/);
+					} finally { clearInterval(responder); }
+					await h.command.handler("missing-child", h.ctx);
+					assert.match(h.notifications.at(-1)!.message, /No running subagent matches 'missing-child'/);
+					const childId = [...control.children.keys()][1];
+					await h.command.handler(explicit ? childId.slice(0, 6) : childId, h.ctx);
+					assert.deepEqual(h.notifications.at(-1), { message: `Interrupt requested for child ${childId} of foreground run ${runId}.`, type: "info" });
+					assert.equal(control.children.get(childId).stopRequested, true);
 					assert.equal(settled, false, "siblings must still be in flight after the stop request");
 					assert.equal(h.statuses.at(-1), undefined);
 					const result = await pending;

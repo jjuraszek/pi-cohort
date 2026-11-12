@@ -1,3 +1,4 @@
+import { stopId } from "../../tui/render-helpers.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { formatDuration, formatModelThinking, formatTokens, shortenPath } from "../../shared/formatters.ts";
@@ -11,6 +12,7 @@ import { flatToLogicalStepIndex, normalizeParallelGroups } from "./parallel-grou
 import { readRunnerLogTail, reconcileAsyncRun, reconcileNestedAsyncDescendants } from "./stale-run-reconciler.ts";
 
 interface AsyncRunStepSummary {
+	id?: string;
 	index: number;
 	agent: string;
 	label?: string;
@@ -144,6 +146,7 @@ function statusToSummary(asyncDir: string, status: AsyncStatus & { cwd?: string 
 		const stepLastActivityAt = step.lastActivityAt;
 		return {
 			index,
+			id: step.id,
 			agent: step.agent,
 			...(step.label ? { label: step.label } : {}),
 			...(step.phase ? { phase: step.phase } : {}),
@@ -298,9 +301,9 @@ function formatActivityFacts(input: { activityState?: ActivityState; lastActivit
 }
 
 function formatStepLine(step: AsyncRunStepSummary): string {
-	const display = step.label ? `${step.label} (${step.agent})` : step.agent;
+	const display = step.label ? `${step.agent} - ${step.label}` : step.agent;
 	const phase = step.phase ? `[${step.phase}] ` : "";
-	const parts = [`${step.index + 1}. ${phase}${display}`, step.status];
+	const parts = [`${stopId(step.id)} ${step.index + 1}. ${phase}${display}`, step.status];
 	const activity = formatActivityFacts(step);
 	if (activity) parts.push(activity);
 	const modelThinking = formatModelThinking(step.model, step.thinking);
@@ -340,7 +343,7 @@ function formatRunHeader(run: AsyncRunSummary): string {
 	const stepLabel = formatAsyncRunProgressLabel(run);
 	const cwd = run.cwd ? shortenPath(run.cwd) : shortenPath(run.asyncDir);
 	const activity = formatActivityFacts(run);
-	return `${run.id} | ${run.state}${activity ? ` | ${activity}` : ""} | ${run.mode} | ${stepLabel} | ${cwd}`;
+	return `${stopId(run.id)} | ${run.state}${activity ? ` | ${activity}` : ""} | ${run.mode} | ${stepLabel} | ${cwd}`;
 }
 
 export function formatAsyncRunList(runs: AsyncRunSummary[], heading = "Active async runs"): string {
@@ -348,7 +351,7 @@ export function formatAsyncRunList(runs: AsyncRunSummary[], heading = "Active as
 
 	const lines = [`${heading}: ${runs.length}`, ""];
 	for (const run of runs) {
-		lines.push(`- ${formatRunHeader(run)}`);
+		lines.push(formatRunHeader(run));
 		for (const step of run.steps) {
 			lines.push(`  ${formatStepLine(step)}`);
 			lines.push(...formatNestedRunStatusLines(step.children, { indent: "    ", maxLines: 12 }));

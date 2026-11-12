@@ -45,6 +45,7 @@ import { blockedLine } from "../shared/completion-guard.ts";
 import { getPiSpawnCommand, PiRuntimeLaunchError } from "../shared/pi-spawn.ts";
 import { PINNED_AGENT_DIR_OVERRIDE } from "../../shared/agent-dir.ts";
 import { createJsonlWriter } from "../../shared/jsonl-writer.ts";
+import { recordStop, stoppingAncestor, sweepBackgroundDescendants } from "../shared/stop-control.ts";
 import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
 import { buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
 import { captureSingleOutputSnapshot, formatFileOnlyFailure, validateFileOnlyOutputMode } from "../shared/single-output.ts";
@@ -98,10 +99,6 @@ export interface RunSyncDependencies {
 	runExternalAttempt?: (input: RunExternalSingleAttemptInput) => Promise<SingleResult>;
 }
 
-function failedResult(agent: string, task: string, error: string): SingleResult {
-	return { agent, task, exitCode: 1, messages: [], usage: emptyUsage(), error };
-}
-
 function safeExternalFailure(phase: "startup" | "attempt" | "finish" | "cleanup", error?: unknown): string {
 	const code = externalExecutionDiagnosticCode(error);
 	return `External execution ${phase} failed${code ? ` (${code})` : ""}`;
@@ -142,6 +139,7 @@ async function runSingleAttempt(
 	model: string | undefined,
 	options: RunSyncOptions,
 	shared: AttemptSharedInit,
+	callerSignal?: AbortSignal,
 ): Promise<SingleResult> {
 	const { args, env: sharedEnv, tempDir } = buildPiArgs({
 		baseArgs: ["--mode", "json", "-p"],
@@ -160,6 +158,7 @@ async function runSingleAttempt(
 		cwd: options.cwd ?? runtimeCwd,
 		promptFileStem: agent.name,
 		runId: options.runId,
+		childId: options.id,
 		childAgentName: agent.name,
 		childIndex: options.index ?? 0,
 		parentSessionLabel: options.parentSessionLabel,
@@ -246,12 +245,19 @@ async function runSingleAttempt(
 		const requestSilenceKill = (silenceMs: number) => {
 			if (silenceKillRequested || childExited || settled || processClosed) return;
 			silenceKillRequested = true;
+			const closedAdmission = closeChildAdmission(options);
 			const termSent = trySignalChild(proc, "SIGTERM");
+			if (termSent) {
+				result.error ??= `Subagent killed: in-flight turn produced no output for ${Math.round(silenceMs / 1000)}s ` +
+					`(exceeded inFlightSilenceKillMs=${controlConfig.inFlightSilenceKillMs}ms). Likely wedged in a tool call.`;
+			}
+			try {
+				if (closedAdmission) sweepBackgroundDescendants(options.nestedRoute, options.id!);
+			} catch (error) {
+				result.error = [result.error, error instanceof Error ? error.message : String(error)].filter(Boolean).join("\n");
+			}
 			if (!termSent) return;
 			forcedTerminationSignal = true;
-			result.error = result.error ??
-				`Subagent killed: in-flight turn produced no output for ${Math.round(silenceMs / 1000)}s ` +
-				`(exceeded inFlightSilenceKillMs=${controlConfig.inFlightSilenceKillMs}ms). Likely wedged in a tool call.`;
 			silenceHardKillTimer = setTimeout(() => {
 				if (settled || processClosed) return;
 				forcedTerminationSignal = trySignalChild(proc, "SIGKILL") || forcedTerminationSignal;
@@ -619,6 +625,10 @@ async function runSingleAttempt(
 		if (options.interruptSignal) {
 			const interrupt = () => {
 				if (processClosed || settled) return;
+				if (options.signal?.aborted || callerSignal?.aborted) {
+					result.interrupted = true;
+					return;
+				}
 				interruptedByControl = true;
 				progress.status = "running";
 				progress.durationMs = Date.now() - startTime;
@@ -631,6 +641,9 @@ async function runSingleAttempt(
 					if (settled || processClosed) return;
 					trySignalChild(proc, "SIGTERM");
 				}, 1000).unref?.();
+				setTimeout(() => {
+					if (!processClosed) trySignalChild(proc, "SIGKILL");
+				}, 3000).unref?.();
 			};
 			if (options.interruptSignal.aborted) interrupt();
 			else {
@@ -652,10 +665,40 @@ async function runSingleAttempt(
 	});
 }
 
-/**
- * Run a subagent synchronously (blocking until complete)
- */
+function closeChildAdmission(options: RunSyncOptions): boolean {
+	if (!options.id || stoppingAncestor(options.nestedRoute, options.runId, options.id)) return false;
+	return recordStop(options.nestedRoute, options.id);
+}
+
+function refusedLaunch(agent: string, task: string, options: RunSyncOptions): SingleResult | undefined {
+	const stopped = stoppingAncestor(options.nestedRoute, options.runId, options.id);
+	if (!stopped && !options.signal?.aborted && !options.interruptSignal?.aborted) return undefined;
+	return {
+		id: options.id, label: options.label, agent, task, exitCode: 0, messages: [], usage: emptyUsage(), interrupted: true,
+		finalOutput: stopped ? `Subagent launch refused: ${stopped.slice(0, 6)} is stopping.` : "Interrupted before launch.",
+	};
+}
+
 export async function runSync(
+	...args: Parameters<typeof runOwnedSync>
+): Promise<SingleResult> {
+	const options = args[4];
+	const refused = refusedLaunch(args[2], args[3], options);
+	if (refused) return refused;
+	let closedAdmission = false;
+	const stop = () => { closedAdmission = closeChildAdmission(options) || closedAdmission; };
+	options.signal?.addEventListener("abort", stop, { once: true });
+	options.interruptSignal?.addEventListener("abort", stop, { once: true });
+	try {
+		return await runOwnedSync(...args);
+	} finally {
+		options.signal?.removeEventListener("abort", stop);
+		options.interruptSignal?.removeEventListener("abort", stop);
+		if (closedAdmission) sweepBackgroundDescendants(options.nestedRoute, options.id!);
+	}
+}
+
+async function runOwnedSync(
 	runtimeCwd: string,
 	agents: AgentConfig[],
 	agentName: string,
@@ -663,17 +706,11 @@ export async function runSync(
 	options: RunSyncOptions,
 	dependencies: RunSyncDependencies = {},
 ): Promise<SingleResult> {
+	const failedResult = (agent: string, task: string, error: string): SingleResult => ({
+		id: options.id, label: options.label, agent, task, exitCode: 1, messages: [], usage: emptyUsage(), error,
+	});
 	const agent = agents.find((a) => a.name === agentName);
-	if (!agent) {
-		return {
-			agent: agentName,
-			task,
-			exitCode: 1,
-			messages: [],
-			usage: emptyUsage(),
-			error: `Unknown agent: ${agentName}`,
-		};
-	}
+	if (!agent) return failedResult(agentName, task, `Unknown agent: ${agentName}`);
 	const monotonicNow = dependencies.monotonicNow ?? (() => performance.now());
 	const startedAt = monotonicNow();
 	const maxRuntimeMs = options.controlConfig?.maxRuntimeMs ?? DEFAULT_CONTROL_CONFIG.maxRuntimeMs;
@@ -684,10 +721,14 @@ export async function runSync(
 	else callerSignal?.addEventListener("abort", forwardAbort, { once: true });
 	options = { ...options, signal: controller.signal };
 	let capElapsedMs: number | undefined;
+	let capStopError: string | undefined;
 	let capTimer: NodeJS.Timeout | undefined;
 	let resolveCap!: () => void;
 	const capReached = new Promise<void>((resolve) => { resolveCap = resolve; });
-	const capError = () => `Subagent killed: ran for ${Math.round(capElapsedMs! / 1000)}s (exceeded maxRuntimeMs=${maxRuntimeMs}ms).`;
+	const capError = () => [
+		`Subagent killed: ran for ${Math.round(capElapsedMs! / 1000)}s (exceeded maxRuntimeMs=${maxRuntimeMs}ms).`,
+		capStopError,
+	].filter(Boolean).join("\n");
 	const rewriteCappedResult = (result: SingleResult): boolean => {
 		if (capElapsedMs === undefined || (result.exitCode === 0 && !result.error && !result.interrupted)) return false;
 		result.exitCode = 1;
@@ -702,7 +743,7 @@ export async function runSync(
 	};
 	const armCap = () => {
 		capTimer = setTimeout(() => {
-			if (controller.signal.aborted || options.interruptSignal?.aborted) return;
+			if (options.signal?.aborted || options.interruptSignal?.aborted) return;
 			const elapsedMs = monotonicNow() - startedAt;
 			if (elapsedMs < maxRuntimeMs) {
 				armCap();
@@ -710,7 +751,13 @@ export async function runSync(
 			}
 			capElapsedMs = elapsedMs;
 			resolveCap();
+			const closedAdmission = closeChildAdmission(options);
 			controller.abort();
+			try {
+				if (closedAdmission) sweepBackgroundDescendants(options.nestedRoute, options.id!);
+			} catch (error) {
+				capStopError = error instanceof Error ? error.message : String(error);
+			}
 		}, Math.min(Math.max(0, maxRuntimeMs - (monotonicNow() - startedAt)), 2_147_483_647));
 		capTimer.unref?.();
 	};
@@ -718,15 +765,7 @@ export async function runSync(
 	try {
 		const outputModeValidationError = validateFileOnlyOutputMode(options.outputMode, options.outputPath, `Single run (${agentName})`);
 		if (outputModeValidationError) {
-			return {
-				agent: agentName,
-				task,
-				exitCode: 1,
-				messages: [],
-				usage: emptyUsage(),
-				outputMode: options.outputMode,
-				error: outputModeValidationError,
-			};
+			return { ...failedResult(agentName, task, outputModeValidationError), outputMode: options.outputMode };
 		}
 
 		try {
@@ -769,14 +808,7 @@ export async function runSync(
 		const skillCwd = options.cwd ?? runtimeCwd;
 		const { resolved: resolvedSkills, missing: missingSkills } = resolveSkillsWithFallback(skillNames, skillCwd, runtimeCwd);
 		if (skillNames.some((skill) => skill.trim() === "pi-cohort") && missingSkills.includes("pi-cohort")) {
-			return {
-				agent: agentName,
-				task,
-				exitCode: 1,
-				messages: [],
-				usage: emptyUsage(),
-				error: "Skills not found: pi-cohort",
-			};
+			return failedResult(agentName, task, "Skills not found: pi-cohort");
 		}
 		let systemPrompt = agent.systemPrompt?.trim() || "";
 		if (resolvedSkills.length > 0) {
@@ -814,6 +846,11 @@ export async function runSync(
 		let lastResult: SingleResult | undefined;
 		let externalOwner: ExternalExecution | undefined;
 		const childId = `child-${options.index ?? 0}`;
+		const refused = refusedLaunch(agentName, task, options);
+		if (refused) {
+			rewriteCappedResult(refused);
+			return refused;
+		}
 		if (backendSelection.selection.kind === "external") {
 			try {
 				externalOwner = await (dependencies.createExternalOwner ?? createExternalExecution)({
@@ -823,7 +860,7 @@ export async function runSync(
 					childId,
 					cwd: childCwd,
 					title: agentName,
-					signal: controller.signal,
+					signal: options.signal!,
 				});
 				await externalOwner.ready;
 			} catch (error) {
@@ -834,6 +871,11 @@ export async function runSync(
 
 		const modelsToTry = candidates.length > 0 ? candidates : [undefined];
 		if (!lastResult) for (let i = 0; i < modelsToTry.length; i++) {
+			lastResult = refusedLaunch(agentName, task, options);
+			if (lastResult) {
+				rewriteCappedResult(lastResult);
+				break;
+			}
 			const candidate = modelsToTry[i];
 			if (candidate) attemptedModels.push(candidate);
 			const outputSnapshot = captureSingleOutputSnapshot(options.outputPath);
@@ -878,7 +920,7 @@ export async function runSync(
 			} else {
 				try {
 					result = await (dependencies.runNativeAttempt ?? runSingleAttempt)(
-						runtimeCwd, effectiveAgent, taskWithAcceptance, candidate, options, shared,
+						runtimeCwd, effectiveAgent, taskWithAcceptance, candidate, options, shared, callerSignal,
 					);
 				} catch (error) {
 					if (!(error instanceof PiRuntimeLaunchError)) throw error;
@@ -909,14 +951,7 @@ export async function runSync(
 			attemptNotes.push(formatModelAttemptNote(attempt, modelsToTry[i + 1]));
 		}
 
-		const result = lastResult ?? {
-			agent: agentName,
-			task,
-			exitCode: 1,
-			messages: [],
-			usage: emptyUsage(),
-			error: "Subagent did not produce a result.",
-		} satisfies SingleResult;
+		const result = lastResult ?? failedResult(agentName, task, "Subagent did not produce a result.");
 
 		let postLoopError: unknown;
 		let preservedAt: string | undefined;

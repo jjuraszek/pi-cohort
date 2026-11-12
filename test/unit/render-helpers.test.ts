@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { row } from "../../src/tui/render-helpers.ts";
+import { budgetLines, detailLine, row, targetLine } from "../../src/tui/render-helpers.ts";
 import { renderSubagentResult } from "../../src/tui/render.ts";
 
 const theme = {
@@ -23,6 +23,7 @@ function componentText(component: unknown): string {
 
 function result(agent: string, output: string) {
 	return {
+		id: `${agent.padEnd(6, "x")}-child`,
 		agent,
 		task: `${agent} task`,
 		exitCode: 0,
@@ -31,6 +32,46 @@ function result(agent: string, output: string) {
 		finalOutput: output,
 	};
 }
+
+for (const mode of ["single", "parallel", "chain"] as const) {
+	for (const expanded of [false, true]) test(`${mode} ${expanded ? "expanded" : "compact"} rows use their own six-character ids and labels`, () => {
+		const results = ["scout", ...(mode === "single" ? [] : ["writer"])].map((agent, index) => ({
+			...result(agent, "done"), id: `collid-${agent}`, label: "audit auth",
+			progress: { id: `collid-${agent}`, agent, index, status: "completed", children: [{ id: `n-${agent}-full`, parentRunId: "abcdef-root", depth: 1, path: [], state: "running", agent: "worker", label: "nested audit", lastUpdate: 1 }] },
+		}));
+		const text = componentText(renderSubagentResult({ content: [], details: { mode, runId: "abcdef-root", results } }, { expanded }, theme as any));
+		const lines = text.split("\n");
+		assert.equal(lines[0]!.trim().split(" ")[0], mode === "single" ? "collid" : "abcdef");
+		for (const child of results) {
+			assert.ok(lines.some((line) => line.trim().startsWith(`${child.id.slice(0, 6)} `) && line.includes(`${child.agent} - audit auth`)));
+			assert.ok(!text.includes(child.id));
+			const nestedId = child.progress.children[0]!.id;
+			assert.equal(lines.some((line) => line.trim().startsWith(`${nestedId.slice(0, 6)} `) && line.includes("worker - nested audit")), expanded, "only expanded foreground views draw nested rows");
+		}
+		assert.equal(lines.filter((line) => line.trim().startsWith("collid ")).length, results.length, "collisions never widen settled row tokens");
+		assert.ok(!text.includes("abcdef-root"));
+		assert.ok(!lines.filter((line) => /Task:|task:/.test(line)).some((line) => /^\s*\S{6} /.test(line)));
+	});
+}
+
+for (const expanded of [false, true]) test(`chain ${expanded ? "expanded" : "compact"} separates unallocated workflow details from pending target rows`, () => {
+	const progress = { id: "queued-child", agent: "writer", label: "later", index: 1, status: "pending", toolCount: 0, tokens: 0, durationMs: 0, recentTools: [], recentOutput: [] };
+	const text = componentText(renderSubagentResult({ content: [], details: {
+		mode: "chain", runId: "abcdef-root", chainAgents: ["scout", "writer", "auditor"],
+		results: [result("scout", "done")], progress: [progress],
+	} }, { expanded }, theme as any));
+	assert.match(text, /^\s*queued .*Step 2: writer - later.*pending/m);
+	assert.match(text, /Workflow step 3: auditor.*pending/);
+	assert.doesNotMatch(text, /^\s*(?:◦ )?Step 3:/m);
+});
+
+test("line budgets discard details before settled rows and never discard live targets", () => {
+	const lines = [targetLine("settled", false), detailLine("activity"), targetLine("running", true), targetLine("queued", true)];
+	for (const { name, budget, expected } of [
+		{ name: "detail first", budget: 3, expected: ["settled", "running", "queued"] },
+		{ name: "live overflow", budget: 1, expected: ["running", "queued"] },
+	]) assert.deepEqual(budgetLines(lines, budget).map((line) => line.text), expected, name);
+});
 
 test("row clips content to the available width", () => {
 	const rendered = row("abcdef", 6, theme as any);
@@ -86,6 +127,8 @@ test("compact chain rendering uses workflow graph spans for dynamic fanout resul
 	assert.match(text, /Agent 1\/2: reviewer/);
 	assert.match(text, /Agent 2\/2: reviewer/);
 	assert.match(text, /Step 3: writer/);
+	assert.match(text, /Parallel group 2: Review targets/);
+	assert.doesNotMatch(text, /reviewer - Review targets/);
 });
 
 test("compact chain rendering shows failed zero-child dynamic fanout groups", () => {
@@ -122,9 +165,9 @@ test("compact chain rendering shows failed zero-child dynamic fanout groups", ()
 	assert.match(text, /step 1\/3/);
 	assert.doesNotMatch(text, /step 3\/3/);
 	assert.match(text, /Step 1: scout/);
-	assert.match(text, /Step 2: Review targets .* failed/);
+	assert.match(text, /Parallel group 2: Review targets .* failed/);
 	assert.match(text, /No review targets materialized/);
-	assert.match(text, /Step 3: writer .* pending/);
+	assert.match(text, /Workflow step 3: writer .* pending/);
 });
 
 test("expanded chain rendering uses workflow graph spans for dynamic fanout results", () => {

@@ -111,6 +111,8 @@ export function initializeAttempt(
 ): AttemptInit {
 	const modelArg = applyThinkingSuffix(model, agent.thinking);
 	const result: SingleResult = {
+		id: options.id,
+		label: options.label,
 		agent: agent.name,
 		task: shared.originalTask ?? task,
 		exitCode: 0,
@@ -142,6 +144,8 @@ export function initializeAttempt(
 	};
 
 	const progress: AgentProgress = {
+		id: options.id,
+		label: options.label,
 		index: options.index ?? 0,
 		agent: agent.name,
 		status: "running",

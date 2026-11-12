@@ -30,7 +30,7 @@ import { resolveExtensionConfig, discoverAgents, discoverAgentsAll } from "../ag
 import { cleanupAllArtifactDirs, cleanupOldArtifacts, getArtifactsDir } from "../shared/artifacts.ts";
 import { resolveCurrentSessionId } from "../shared/session-identity.ts";
 import { cleanupOldChainDirs } from "../shared/settings.ts";
-import { clearLegacyResultAnimationTimer, renderWidget, renderSubagentResult } from "../tui/render.ts";
+import { clearLegacyResultAnimationTimer, renderSubagentResult } from "../tui/render.ts";
 import { SubagentParams } from "./schemas.ts";
 import { mkdirWithEpermRetry } from "./mkdir-with-retry.ts";
 import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
@@ -264,6 +264,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		asyncJobs: new Map(),
 		foregroundRuns: new Map(),
 		foregroundControls: new Map(),
+		retainedNestedRoutes: new Map(),
 		lastForegroundControlId: null,
 		pendingForegroundControlNotices: new Map(),
 		cleanupTimers: new Map(),
@@ -289,7 +290,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	startResultWatcher();
 	primeExistingResults();
 
-	const { ensurePoller, handleStarted, handleComplete, resetJobs } = createAsyncJobTracker(pi, state, ASYNC_DIR);
+	const { ensurePoller, rerenderWidget, handleStarted, handleComplete, resetJobs } = createAsyncJobTracker(pi, state, ASYNC_DIR);
 	const executor = createSubagentExecutor({
 		pi,
 		state,
@@ -343,9 +344,13 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		return new SubagentControlNoticeComponent({ ...details, noticeText: formatSubagentControlNotice(details, content) }, theme);
 	});
 
-	const executeSubagentCollapsed = (id: string, params: SubagentParamsLike, signal: AbortSignal, onUpdate: ((result: AgentToolResult<Details>) => void) | undefined, ctx: ExtensionContext) => {
+	const executeSubagentCollapsed = async (id: string, params: SubagentParamsLike, signal: AbortSignal, onUpdate: ((result: AgentToolResult<Details>) => void) | undefined, ctx: ExtensionContext) => {
 		if (ctx.hasUI) ctx.ui.setToolsExpanded(false);
-		return executor.execute(id, params, signal, onUpdate, ctx);
+		try {
+			return await executor.execute(id, params, signal, onUpdate, ctx);
+		} finally {
+			if (state.asyncJobs.size > 0 || state.retainedNestedRoutes.size > 0) ensurePoller();
+		}
 	};
 
 	const slashBridge = registerSlashSubagentBridge({
@@ -510,11 +515,7 @@ DIAGNOSTICS:
 		if (event.toolName !== "subagent") return;
 		if (!ctx.hasUI) return;
 		state.lastUiContext = ctx;
-		if (state.asyncJobs.size > 0) {
-			renderWidget(ctx, Array.from(state.asyncJobs.values()));
-			ctx.ui.requestRender?.();
-			ensurePoller();
-		}
+		rerenderWidget(ctx);
 	});
 
 	const cleanupSessionArtifacts = (ctx: ExtensionContext) => {

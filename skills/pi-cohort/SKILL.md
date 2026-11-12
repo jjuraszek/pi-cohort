@@ -56,7 +56,8 @@ A child saying "done" is evidence, not verification. `reviewed` means a reviewer
 | Field | Effect |
 |---|---|
 | `model` | overrides the agent's model for this task |
-| `label`, `phase` | status/graph readability only |
+| `label` | Name a child on live and result rows as `<agent> - <label>`; set it on single calls, `tasks[]` items, or chain tasks. Preserve item interpolation in dynamic templates and keep a parallel group's label on its header. |
+| `phase` | Group chain steps in status/graphs. |
 | `output` | file the child's result is saved to; absolute in parallel mode |
 | `outputMode: "file-only"` | result goes to `output` only; the parent receives a file reference (use for large handoffs) |
 | `reads` | files injected into the child before its task; `false` disables the agent's `defaultReads` |
@@ -72,7 +73,7 @@ A child saying "done" is evidence, not verification. `reviewed` means a reviewer
 Lifecycle (`queued`, `running`, `paused`, `complete`, `failed`) is separate from attention. `needs_attention` means no activity past the threshold; it is not a failure.
 
 - `status` (optionally `id`): active runs and their children.
-- Use `interrupt` with optional `id` and zero-based `index` to stop one running child and let its siblings finish; read the [result contracts](../../doc/programmatic-api.md#foreground-stop-by-index) for foreground and background outcomes. Omit `index` for the whole-run pause behavior; use a nested run id only without `index`. Treat bare `interrupt` as excluding hidden nested descendants. Then choose: `resume` with clearer instructions, replace the task, ask the user, or stop.
+- Use `interrupt` with the id at the start of a child's row to stop that child and its subtree while its siblings finish; read the [result contracts](../../doc/programmatic-api.md#foreground-stop-by-id) for foreground and background outcomes. Use a run id to stop its whole subtree, or omit `id` to select the current run. Pass at least four id characters; resolve six-character collisions with a longer prefix from the error or `/interrupt-child` completion. Keep `index` for `resume`. Then choose: `resume` with clearer instructions, replace the task, ask the user, or stop.
 - `resume` (`id`, `message`, `index` for multi-child runs): revives a finished, failed, or paused child from its persisted session file as a new child process. A running child cannot be resumed; a child with no `.jsonl` session fails with that reason.
 - Set thresholds with `control: { needsAttentionAfterMs, inFlightSilenceCeilingMs, inFlightSilenceKillMs, maxRuntimeMs, notifyOn }` beside `tasks`; compute the silence kill as `max(inFlightSilenceKillMs, inFlightSilenceCeilingMs + needsAttentionAfterMs)`. Read `reference/config-fields.md` for the independent foreground runtime cap.
 - Long-running async job: its task must instruct it to emit observable progress (log lines, counts, phase names). A silent long job is a defect. Pair it with a monitor, giving it the `Async dir:` from the start message:

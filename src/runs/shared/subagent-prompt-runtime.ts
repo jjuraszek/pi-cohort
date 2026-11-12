@@ -1,7 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI, ToolExposure } from "@earendil-works/pi-coding-agent";
-import { SUBAGENT_FANOUT_CHILD_ENV } from "./pi-args.ts";
+import { SUBAGENT_FANOUT_CHILD_ENV, SUBAGENT_OWNER_PID_ENV } from "./pi-args.ts";
+import { checkPidLiveness } from "../background/stale-run-reconciler.ts";
 import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV, STRUCTURED_OUTPUT_TOOL_NAME, getStructuredOutputValidationDiagnostic, validateStructuredOutputValue } from "./structured-output.ts";
 import type { JsonSchemaObject } from "../../shared/types.ts";
 
@@ -9,6 +10,7 @@ const SUBAGENT_INHERIT_PROJECT_CONTEXT_ENV = "PI_SUBAGENT_INHERIT_PROJECT_CONTEX
 const SUBAGENT_INHERIT_SKILLS_ENV = "PI_SUBAGENT_INHERIT_SKILLS";
 let reasked = false;
 let attempted = false;
+const monitoredRuntimes = new WeakSet<ExtensionAPI>();
 
 function lastAssistantStopReason(messages: unknown[]): string | undefined {
 	for (let i = messages.length - 1; i >= 0; i--) {
@@ -216,6 +218,22 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI): void {
 		event: string,
 		handler: (event: unknown, ctx?: { sessionManager?: { getBranch(): unknown[] } }) => unknown,
 	) => void;
+	const ownerPid = Number(process.env[SUBAGENT_OWNER_PID_ENV]);
+	if (Number.isInteger(ownerPid) && ownerPid > 0 && !monitoredRuntimes.has(pi)) {
+		monitoredRuntimes.add(pi);
+		const pollTimer = setInterval(() => {
+			if (checkPidLiveness(ownerPid) !== "dead") return;
+			clearInterval(pollTimer);
+			const exitTimer = setTimeout(() => process.exit(143), 3000);
+			exitTimer.unref();
+			process.kill(process.pid, "SIGTERM");
+		}, 1000);
+		pollTimer.unref();
+		onRuntimeEvent("session_shutdown", () => {
+			// Disposal can hang after this notification, so an armed exit deadline must survive.
+			clearInterval(pollTimer);
+		});
+	}
 	const structuredOutputPath = process.env[STRUCTURED_OUTPUT_CAPTURE_ENV];
 	const structuredSchemaPath = process.env[STRUCTURED_OUTPUT_SCHEMA_ENV];
 	if (structuredOutputPath && structuredSchemaPath) {

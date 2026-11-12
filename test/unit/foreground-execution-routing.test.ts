@@ -371,9 +371,48 @@ describe("runSync external maxRuntimeMs", () => {
 		assert.equal(output.modelAttempts[0].error, output.error);
 		assert.deepEqual(h.finishes, [succeeded ? "delivered" : "retained"]);
 		assert.equal(output.executionSurface?.retained, !succeeded);
-		assert.equal(removeListener.mock.calls.length, 1);
-		assert.equal(removeListener.mock.calls[0].arguments[0], "abort");
+		assert.equal(removeListener.mock.calls.length, 2, "remove admission and runtime-cap abort listeners");
+		assert.ok(removeListener.mock.calls.every(call => call.arguments[0] === "abort"));
 	});
+
+	for (const scenario of [
+		{ phase: "creation", stop: "cap" },
+		{ phase: "ready", stop: "cap" },
+		{ phase: "ready", stop: "caller" },
+	] as const) {
+		it(`normalizes admission refusal after external ${scenario.phase} fulfills following ${scenario.stop}`, async t => {
+			t.mock.timers.enable({ apis: ["setTimeout"] });
+			let now = 0;
+			const caller = new AbortController();
+			const h = dependencies(externalSelection);
+			h.deps.monotonicNow = () => now;
+			h.deps.createExternalOwner = async options => {
+				h.ownerOptions.push(options);
+				const stopDuringStartup = async () => {
+					if (scenario.stop === "caller") caller.abort();
+					now = 1000;
+					t.mock.timers.tick(1000);
+					assert.equal(options.signal.aborted, true);
+				};
+				if (scenario.phase === "creation") await stopDuringStartup();
+				else Object.defineProperty(h.owner, "ready", { get: stopDuringStartup });
+				return h.owner;
+			};
+			const output = await runSync("/runtime", [makeAgent("worker", { model: "one/model", fallbackModels: ["two/model"] })], "worker", "Task", {
+				runId: "external-startup-refusal", acceptance: noAcceptance, signal: caller.signal,
+				controlConfig: resolveControlConfig(undefined, { maxRuntimeMs: 1000 }),
+			}, h.deps);
+			assert.equal(output.exitCode, scenario.stop === "cap" ? 1 : 0);
+			assert.equal(output.error, scenario.stop === "cap" ? capError : undefined);
+			assert.equal(output.interrupted, scenario.stop === "cap" ? undefined : true);
+			assert.equal(output.modelAttempts, undefined);
+			assert.equal(h.ownerOptions.length, 1);
+			assert.equal(h.attempts.length, 0);
+			assert.equal(h.nativeCalls(), 0);
+			assert.deepEqual(h.finishes, ["retained"]);
+			assert.deepEqual(output.executionSurface, { handle, retained: true });
+		});
+	}
 
 	for (const phase of ["startup", "ready"] as const) it(`rewrites external ${phase} failure after the cap`, async t => {
 		t.mock.timers.enable({ apis: ["setTimeout"] });
@@ -474,7 +513,7 @@ describe("runSync execution backend routing", () => {
 				// Native execution imports named builtins; synchronize both installation and restoration.
 				syncBuiltinESMExports();
 				const output = await runSync(dir, [makeAgent("worker", { model: "one/model", fallbackModels: ["two/model"], completionGuard: false })], "worker", "Task", {
-					runtime: selected, runId: "native-real", acceptance: noAcceptance,
+					runtime: selected, runId: "native-real", id: "abcdef12-1234-4234-8234-123456789abc", parentSessionLabel: "routing parent", acceptance: noAcceptance,
 				}, { selectBackend: async () => {
 					if (scenario === "entry disappeared") fs.unlinkSync(selected.piEntryPath);
 					return nativeSelection;
@@ -486,7 +525,7 @@ describe("runSync execution backend routing", () => {
 				assert.equal(launches.length, scenario === "entry disappeared" ? 0 : 1);
 				if (launches.length) assert.deepEqual(launches[0], {
 					command: selected.nodeExecPath,
-					args: [selected.piEntryPath, "--mode", "json", "-p", "--no-session", "--name", "worker native-r", "--model", "one/model", "--extension",
+					args: [selected.piEntryPath, "--mode", "json", "-p", "--no-session", "--name", "worker abcdef from routing parent", "--model", "one/model", "--extension",
 						fileURLToPath(new URL("../../src/runs/shared/subagent-prompt-runtime.ts", import.meta.url)),
 						"--no-skills", "--system-prompt", path.join(promptDirs[0], "worker.md"), "Task: Task"],
 				});

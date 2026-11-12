@@ -75,10 +75,11 @@ Pass per-call attention and runtime overrides as `subagent({ ..., control: {...}
 
 ## Execution-time overrides (skill, singular)
 
-`skill` (csv) on a top-level call, a `tasks[]` item, or a `chain[]` step injects skills into that one child at dispatch; it never edits the agent definition.
+Set `skill` (csv) on a top-level call, a `tasks[]` item, or a `chain[]` step to inject skills into that child for this dispatch; keep management edits in `config`.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `skill` | string (csv) | Skills injected into one child for this dispatch. |
+| `skill` | string (csv) | Inject skills into one child for this dispatch. |
+| `label` | string | Set a single-call or `tasks[]` child label, or a sequential/static/dynamic chain task label, to render `<agent> - <label>` on live and result rows. Preserve item interpolation in dynamic template labels; keep a parallel group's own label on its group header. |
 
 For the full per-task field list, see SKILL.md "Per-task overrides".

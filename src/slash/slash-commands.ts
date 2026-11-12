@@ -5,6 +5,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Key, matchesKey } from "@earendil-works/pi-tui";
 import { discoverAgents, discoverAgentsAll, type ChainConfig } from "../agents/agents.ts";
 import type { SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
+import { listStopTargets, uniqueStopPrefix } from "../runs/background/run-id-resolver.ts";
 import { isDynamicParallelStep, isParallelStep, type ChainStep } from "../shared/settings.ts";
 import { wrapStatus } from "../shared/status-format.ts";
 import { assertJsonSchemaObject } from "../runs/shared/structured-output.ts";
@@ -557,34 +558,29 @@ export function registerSlashCommands(
 		},
 	});
 
+	const stopCompletions = (prefix: string) => {
+		const targets = listStopTargets({ state });
+		return listStopTargets({ state, sessionOnly: true }).filter((target) => target.kind === "child" && target.state === "running")
+			.flatMap((target) => {
+				const value = uniqueStopPrefix(target.id, targets);
+				if (value.length === target.id.length) return [];
+				return [{ value, label: `${value} ${target.name}${target.label ? ` - ${target.label}` : ""}` }];
+			}).filter(({ value }) => value.startsWith(prefix));
+	};
 	pi.registerCommand("interrupt-child", {
-		description: "Stop one running child: /interrupt-child <index> [run-id]",
-		getArgumentCompletions: (prefix) => {
-			const runs = [...state.foregroundControls.entries()];
-			return runs.flatMap(([id, control]) => [...control.childInterrupts.keys()].map((index) => {
-				const value = runs.length > 1 ? `${index} ${id}` : String(index);
-				return { value, label: value };
-			})).filter(({ value }) => value.startsWith(prefix));
-		},
+		description: "Stop a child and its subtree: /interrupt-child <id>",
+		getArgumentCompletions: stopCompletions,
 		handler: async (args, ctx) => {
-			const [rawIndex, requestedId, ...extra] = args.trim().split(/\s+/);
-			if (!/^\d+$/.test(rawIndex) || extra.length > 0) {
-				ctx.ui.notify("Usage: /interrupt-child <index> [run-id]", "error");
+			const [id, ...extra] = args.trim().split(/\s+/);
+			if (!id || extra.length > 0) {
+				const targets = listStopTargets({ state });
+				const running = listStopTargets({ state, sessionOnly: true }).filter((target) => target.state === "running");
+				const rows = running.map((target) => `${uniqueStopPrefix(target.id, targets)} ${target.name}`).join("\n");
+				ctx.ui.notify(`Usage: /interrupt-child <id>\n${rows || "No subagent is running."}`, "error");
 				return;
 			}
-			let id = requestedId;
-			if (!id) {
-				const ids = [...state.foregroundControls.keys()];
-				if (ids.length > 1) {
-					ctx.ui.notify(`Choose a foreground run: ${ids.join(", ")}. Use /interrupt-child <index> <run-id>.`, "error");
-					return;
-				}
-				id = ids[0];
-			}
 			try {
-				const response = await requestSlashRun(pi, ctx, randomUUID(), {
-					action: "interrupt", index: Number(rawIndex), ...(id ? { id } : {}),
-				});
+				const response = await requestSlashRun(pi, ctx, randomUUID(), { action: "interrupt", id });
 				ctx.ui.notify(extractSlashMessageText(response.result.content), response.isError ? "error" : "info");
 			} catch (error) {
 				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");

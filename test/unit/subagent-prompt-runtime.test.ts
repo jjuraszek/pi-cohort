@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import { validateToolArguments } from "@earendil-works/pi-ai";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { SUBAGENT_FANOUT_CHILD_ENV } from "../../src/runs/shared/pi-args.ts";
@@ -18,6 +18,7 @@ import registerSubagentPromptRuntime, {
 } from "../../src/runs/shared/subagent-prompt-runtime.ts";
 
 const envSnapshot = {
+	PI_SUBAGENT_OWNER_PID: process.env.PI_SUBAGENT_OWNER_PID,
 	PI_SUBAGENT_INHERIT_PROJECT_CONTEXT: process.env.PI_SUBAGENT_INHERIT_PROJECT_CONTEXT,
 	PI_SUBAGENT_INHERIT_SKILLS: process.env.PI_SUBAGENT_INHERIT_SKILLS,
 	PI_SUBAGENT_FANOUT_CHILD: process.env.PI_SUBAGENT_FANOUT_CHILD,
@@ -42,7 +43,15 @@ const PROMPT_WITH_EXPLICIT_SKILL = [
 	"\nCurrent date: 2026-04-16",
 ].join("");
 
+beforeEach(() => {
+	delete process.env.PI_SUBAGENT_OWNER_PID;
+	delete process.env[STRUCTURED_OUTPUT_CAPTURE_ENV];
+	delete process.env[STRUCTURED_OUTPUT_SCHEMA_ENV];
+});
+
 afterEach(() => {
+	if (envSnapshot.PI_SUBAGENT_OWNER_PID === undefined) delete process.env.PI_SUBAGENT_OWNER_PID;
+	else process.env.PI_SUBAGENT_OWNER_PID = envSnapshot.PI_SUBAGENT_OWNER_PID;
 	if (envSnapshot.PI_SUBAGENT_INHERIT_PROJECT_CONTEXT === undefined) delete process.env.PI_SUBAGENT_INHERIT_PROJECT_CONTEXT;
 	else process.env.PI_SUBAGENT_INHERIT_PROJECT_CONTEXT = envSnapshot.PI_SUBAGENT_INHERIT_PROJECT_CONTEXT;
 	if (envSnapshot.PI_SUBAGENT_INHERIT_SKILLS === undefined) delete process.env.PI_SUBAGENT_INHERIT_SKILLS;
@@ -53,6 +62,70 @@ afterEach(() => {
 	else process.env[STRUCTURED_OUTPUT_CAPTURE_ENV] = envSnapshot.PI_SUBAGENT_STRUCTURED_OUTPUT_CAPTURE;
 	if (envSnapshot.PI_SUBAGENT_STRUCTURED_OUTPUT_SCHEMA === undefined) delete process.env[STRUCTURED_OUTPUT_SCHEMA_ENV];
 	else process.env[STRUCTURED_OUTPUT_SCHEMA_ENV] = envSnapshot.PI_SUBAGENT_STRUCTURED_OUTPUT_SCHEMA;
+});
+
+describe("subagent owner liveness", () => {
+	it("polls once per runtime, tolerates alive/unknown, then signals once and forces exit after three seconds", (t) => {
+		process.env.PI_SUBAGENT_OWNER_PID = "12345";
+		t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
+		let liveness = "alive";
+		const signals: Array<[number, unknown]> = [];
+		t.mock.method(process, "kill", (pid: number, signal: unknown) => {
+			signals.push([pid, signal]);
+			if (signal === 0 && liveness !== "alive") throw Object.assign(new Error(liveness), { code: liveness === "unknown" ? "EPERM" : "ESRCH" });
+			return true;
+		});
+		const exit = t.mock.method(process, "exit", () => {});
+		const pi = { on() {}, registerTool() {} };
+		registerSubagentPromptRuntime(pi);
+		registerSubagentPromptRuntime(pi);
+		t.mock.timers.tick(1000);
+		assert.deepEqual(signals, [[12345, 0]]);
+		liveness = "unknown";
+		t.mock.timers.tick(1000);
+		assert.deepEqual(signals.at(-1), [12345, 0]);
+		assert.equal(exit.mock.callCount(), 0);
+		liveness = "dead";
+		t.mock.timers.tick(1000);
+		assert.deepEqual(signals, [[12345, 0], [12345, 0], [12345, 0], [process.pid, "SIGTERM"]]);
+		t.mock.timers.tick(2999);
+		assert.equal(exit.mock.callCount(), 0);
+		t.mock.timers.tick(1);
+		assert.deepEqual(exit.mock.calls.map((call) => call.arguments), [[143]]);
+		assert.equal(signals.length, 4);
+	});
+
+	for (const dead of [false, true]) {
+		it(`${dead ? "preserves the armed exit deadline" : "clears polling"} on shutdown`, (t) => {
+			process.env.PI_SUBAGENT_OWNER_PID = "12345";
+			t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
+			const kill = t.mock.method(process, "kill", (_pid: number, signal: unknown) => {
+				if (dead && signal === 0) throw Object.assign(new Error("gone"), { code: "ESRCH" });
+				return true;
+			});
+			const exit = t.mock.method(process, "exit", () => {});
+			let shutdown: (() => void) | undefined;
+			registerSubagentPromptRuntime({ on(name: string, handler: () => void) { if (name === "session_shutdown") shutdown = handler; }, registerTool() {} });
+			if (dead) t.mock.timers.tick(1000);
+			assert.ok(shutdown);
+			shutdown();
+			const calls = kill.mock.callCount();
+			t.mock.timers.tick(2999);
+			assert.equal(exit.mock.callCount(), 0);
+			t.mock.timers.tick(1);
+			assert.equal(kill.mock.callCount(), calls);
+			assert.deepEqual(exit.mock.calls.map((call) => call.arguments), dead ? [[143]] : []);
+		});
+	}
+
+	it("disables polling for an empty owner pid", (t) => {
+		process.env.PI_SUBAGENT_OWNER_PID = "";
+		t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
+		const kill = t.mock.method(process, "kill", () => true);
+		registerSubagentPromptRuntime({ on() {}, registerTool() {} });
+		t.mock.timers.tick(5000);
+		assert.equal(kill.mock.callCount(), 0);
+	});
 });
 
 describe("subagent prompt runtime", () => {

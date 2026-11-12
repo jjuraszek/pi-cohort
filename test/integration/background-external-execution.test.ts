@@ -47,7 +47,7 @@ const net = require("node:net");
 const args = process.argv.slice(2);
 fs.writeFileSync(require("node:path").join(process.cwd(), "child.pid"), String(process.pid));
 fs.appendFileSync(require("node:path").join(process.cwd(), "child.pids"), process.pid + "\\n");
-${argsPath ? `fs.appendFileSync(${JSON.stringify(`${argsPath}.count`)}, "1\\n"); fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(args)); fs.writeFileSync(${JSON.stringify(`${argsPath}.parent-session-id`)}, process.env.PI_SUBAGENT_PARENT_SESSION_ID ?? "");` : ""}
+${argsPath ? `fs.appendFileSync(${JSON.stringify(`${argsPath}.count`)}, "1\\n"); fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(args)); fs.writeFileSync(${JSON.stringify(`${argsPath}.parent-session-id`)}, process.env.PI_SUBAGENT_PARENT_SESSION_ID ?? ""); fs.writeFileSync(${JSON.stringify(`${argsPath}.control-env`)}, JSON.stringify({ path: process.env.PI_SUBAGENT_PARENT_PATH, ownerPid: process.env.PI_SUBAGENT_OWNER_PID }));` : ""}
 const sessionFile = args[args.indexOf("--session") + 1];
 if (!sessionFile) { console.error("no --session"); process.exit(1); }
 if (${JSON.stringify(outcome)} === "missing-result") process.exit(0);
@@ -370,7 +370,7 @@ for (const outcome of ["success", "fail", "interrupted", "missing-result", "malf
 				inheritProjectContext: false, inheritSkills: false,
 			}, {
 				previousOutput: "", outputs: {}, placeholder: "", cwd: tempDir, sessionEnabled: true,
-				id: "bg-interrupt", flatIndex: 0, flatStepCount: 1, outputFile: path.join(tempDir, "output.log"),
+				id: "bg-interrupt", childId: "child-interrupt", flatIndex: 0, flatStepCount: 1, outputFile: path.join(tempDir, "output.log"),
 				registerInterrupt: callback => { interrupt = callback; },
 				onChildEvent: event => { if (event.type === "message_end") interrupt?.(); },
 				executionBackendCoordinator: createDetachedExecutionBackendCoordinator({ protocolVersion: 1, registrations: [] }),
@@ -436,7 +436,8 @@ for (const scenario of ["fork", "fresh", "missing", "headerless", "untrusted"] a
 				...(scenario === "fresh" ? {} : { sessionFile }),
 			}, {
 				cwd: tempDir, outputs: { target: { text: tempDir, agent: "producer", stepIndex: 0 } }, previousOutput: "", placeholder: "{previous}",
-				sessionEnabled: true, sessionDir: tempDir, id: "stamp", flatIndex: 0, flatStepCount: 1,
+				sessionEnabled: true, sessionDir: tempDir, id: "stamp", childId: "child-stamp", flatIndex: 0, flatStepCount: 1,
+				parentPath: [{ runId: "outer-run", childId: "outer-child" }],
 				outputFile: path.join(tempDir, "output.log"),
 				onAttemptStart() {
 					if (scenario === "fork" || scenario === "untrusted") assert.equal(fs.readFileSync(sessionFile, "utf8"), JSON.stringify({ ...header, cwd: tempDir }) + "\n" + history);
@@ -456,6 +457,10 @@ for (const scenario of ["fork", "fresh", "missing", "headerless", "untrusted"] a
 			} else {
 				assert.equal(result.exitCode, 0, result.error);
 				assert.equal(requests.length, 1);
+				const controlEnv = JSON.parse(fs.readFileSync(`${argsPath}.control-env`, "utf8"));
+				assert.equal(controlEnv.ownerPid, "");
+				assert.deepEqual(JSON.parse(controlEnv.path), [{ runId: "outer-run", childId: "outer-child" },
+					{ runId: "stamp", childId: "child-stamp", stepIndex: 0, agent: "worker" }]);
 			}
 		} finally {
 			dispose();
@@ -495,7 +500,7 @@ test("runSingleStep retains the surface and removes its prompt directory when an
 			cwd: tempDir,
 			sessionEnabled: true,
 			sessionDir: tempDir,
-			id: "bg-runner-throw",
+			id: "bg-runner-throw", childId: "child-throw",
 			flatIndex: 0,
 			parentSessionLabel: "P",
 			parentSessionId: "parent-session-id",
@@ -520,7 +525,7 @@ test("runSingleStep retains the surface and removes its prompt directory when an
 		assert.equal(fixtureInvocationCount(argsPath), 1, "must not fall back to native execution");
 		assert.equal(fs.existsSync(promptTempDir(argsPath)), false);
 		const childArgs = JSON.parse(fs.readFileSync(argsPath, "utf-8")) as string[];
-		assert.equal(childArgs[childArgs.indexOf("--name") + 1], "worker bg-runne from P");
+		assert.equal(childArgs[childArgs.indexOf("--name") + 1], "worker child- from P");
 		assert.ok(childArgs.includes("--approve"));
 		assert.equal(fs.readFileSync(`${argsPath}.parent-session-id`, "utf-8"), "parent-session-id");
 	} finally {
@@ -559,7 +564,7 @@ test("runSingleStep sanitizes an external startup failure without falling back t
 			placeholder: "",
 			cwd: tempDir,
 			sessionEnabled: true,
-			id: "bg-runner-startup",
+			id: "bg-runner-startup", childId: "child-startup",
 			flatIndex: 0,
 			flatStepCount: 1,
 			outputFile: path.join(tempDir, "output-0.log"),
@@ -617,7 +622,7 @@ test("runSingleStep treats an external output-save EISDIR as a retained failed l
 			cwd: tempDir,
 			sessionEnabled: true,
 			sessionDir: tempDir,
-			id: "bg-runner-output",
+			id: "bg-runner-output", childId: "child-output",
 			flatIndex: 0,
 			flatStepCount: 1,
 			outputFile: path.join(tempDir, "output-0.log"),
@@ -680,7 +685,7 @@ test("runSingleStep retains an external leaf when its async output file cannot b
 			placeholder: "",
 			cwd: tempDir,
 			sessionEnabled: true,
-			id: "bg-runner-async-output",
+			id: "bg-runner-async-output", childId: "child-async-output",
 			flatIndex: 0,
 			flatStepCount: 1,
 			outputFile,
@@ -758,7 +763,7 @@ test("runSingleStep retains external leaves when artifact writes or finish fail"
 					cleanupDays: 1,
 				},
 				sessionDir: tempDir,
-				id: runId,
+				id: runId, childId: "child-artifact",
 				flatIndex: 0,
 				flatStepCount: 1,
 				outputFile: path.join(tempDir, "output-0.log"),
@@ -857,7 +862,7 @@ import { registerExecutionBackend } from ${JSON.stringify(pathToFileURL(path.res
 ${cleanupHosts.toString()}
 ${makeBackend.toString()}
 const hosts = [], requests = [], lifecycle = { releases: 0, closes: 0, suppressExitEvidence: ${mode !== "user-abort"} };
-${mode === "user-abort" ? 'const interruptTimer = setInterval(() => { if (fs.existsSync("abort-ready")) { clearInterval(interruptTimer); fs.writeFileSync("interrupt-request-all.json", JSON.stringify({ requestedAt: Date.now() })); process.kill(process.pid, "SIGUSR2"); } }, 10);' : ''}
+${mode === "user-abort" ? 'const interruptTimer = setInterval(() => { if (fs.existsSync("abort-ready")) { clearInterval(interruptTimer); fs.writeFileSync("interrupt-request-" + JSON.parse(fs.readFileSync("status.json", "utf8")).runId + ".json", JSON.stringify({ targetId: JSON.parse(fs.readFileSync("status.json", "utf8")).runId, requestedAt: Date.now() })); process.kill(process.pid, "SIGUSR2"); } }, 10);' : ''}
 registerExecutionBackend(makeBackend(${JSON.stringify(backendName)}, "", requests, hosts, lifecycle));
 const rename = fs.renameSync;
 let checkedPause = false;
@@ -879,6 +884,8 @@ process.argv[1] = ${JSON.stringify(runnerPath)}; process.argv[2] = ${JSON.string
 await import(${JSON.stringify(pathToFileURL(runnerPath).href)});
 `);
 		const runner = spawn(process.execPath, [entryPath], { cwd: tempDir, stdio: ["ignore", "pipe", "pipe"] });
+		const watchdog = setTimeout(() => runner.kill("SIGKILL"), 45_000);
+		runner.once("exit", () => clearTimeout(watchdog));
 		let stderr = "";
 		runner.stderr.on("data", chunk => { stderr += chunk; });
 		try {
@@ -948,7 +955,7 @@ test("noninterrupted fallback reuses the host and closes only after output persi
 	try {
 		const result = await runSingleStep({ agent: "worker", task: "Inspect", modelCandidates: ["first", "second"], completionGuard: false, inheritProjectContext: false, inheritSkills: false }, {
 			previousOutput: "", outputs: {}, placeholder: "", cwd: tempDir, sessionEnabled: true,
-			id: "fallback", flatIndex: 0, flatStepCount: 1, outputFile,
+			id: "fallback", childId: "child-fallback", flatIndex: 0, flatStepCount: 1, outputFile,
 			executionBackendCoordinator: createDetachedExecutionBackendCoordinator({ protocolVersion: 1, registrations: [] }),
 			executionBackendConfig: { protocolVersion: 1, registrations: [], userPreference: name },
 		});

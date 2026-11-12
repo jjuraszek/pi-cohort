@@ -26,6 +26,7 @@ export const SUBAGENT_PARENT_DEPTH_ENV = "PI_SUBAGENT_PARENT_DEPTH";
 export const SUBAGENT_PARENT_PATH_ENV = "PI_SUBAGENT_PARENT_PATH";
 export const SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV = "PI_SUBAGENT_PARENT_CAPABILITY_TOKEN";
 export const SUBAGENT_PARENT_SESSION_ID_ENV = "PI_SUBAGENT_PARENT_SESSION_ID";
+export const SUBAGENT_OWNER_PID_ENV = "PI_SUBAGENT_OWNER_PID";
 
 interface BuildPiArgsInput {
 	baseArgs: string[];
@@ -47,6 +48,7 @@ interface BuildPiArgsInput {
 	cwd?: string;
 	promptFileStem?: string;
 	runId?: string;
+	childId?: string;
 	childAgentName?: string;
 	childIndex?: number;
 	/** Parent session display name, or its id when unnamed; names the child session. */
@@ -87,10 +89,9 @@ export function applyThinkingSuffix(model: string | undefined, thinking: string 
 }
 
 function childSessionName(input: BuildPiArgsInput): string | undefined {
-	if (!input.childAgentName || !input.runId) return undefined;
-	const index = input.childIndex ? `/${input.childIndex}` : "";
+	if (!input.childAgentName || !input.childId) return undefined;
 	const parent = input.parentSessionLabel ? ` from ${input.parentSessionLabel}` : "";
-	return `${input.childAgentName} ${input.runId.slice(0, 8)}${index}${parent}`;
+	return `${input.childAgentName} ${input.childId.slice(0, 6)}${parent}`;
 }
 
 export function buildPiArgs(input: BuildPiArgsInput, fileSystem: BuildPiArgsFileSystem = fs): BuildPiArgsResult {
@@ -209,6 +210,7 @@ export function buildPiArgs(input: BuildPiArgsInput, fileSystem: BuildPiArgsFile
 		...parseNestedPathEnv(process.env[SUBAGENT_PARENT_PATH_ENV]),
 		...(parentRunId ? [{
 			runId: parentRunId,
+			...(input.childId ? { childId: input.childId } : {}),
 			...(parentChildIndex && /^\d+$/.test(parentChildIndex) ? { stepIndex: Number(parentChildIndex) } : {}),
 			...(input.childAgentName ? { agent: input.childAgentName } : {}),
 		}] : []),
@@ -225,7 +227,8 @@ export function buildPiArgs(input: BuildPiArgsInput, fileSystem: BuildPiArgsFile
 	env[SUBAGENT_PARENT_RUN_ID_ENV] = fanoutAuthorized ? parentRunId : "";
 	env[SUBAGENT_PARENT_CHILD_INDEX_ENV] = fanoutAuthorized ? parentChildIndex : "";
 	env[SUBAGENT_PARENT_DEPTH_ENV] = fanoutAuthorized ? String(parentDepth) : "";
-	env[SUBAGENT_PARENT_PATH_ENV] = fanoutAuthorized ? encodeNestedPathEnv(parentPath) : "";
+	env[SUBAGENT_PARENT_PATH_ENV] = encodeNestedPathEnv(parentPath);
+	env[SUBAGENT_OWNER_PID_ENV] = String(process.pid);
 	env[SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV] = fanoutAuthorized
 		? input.parentCapabilityToken ?? process.env[SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV] ?? ""
 		: "";

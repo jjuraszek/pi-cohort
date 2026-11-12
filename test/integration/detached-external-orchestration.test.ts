@@ -8,6 +8,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, test } from "node:test";
 import { createMockPi } from "../support/mock-pi.ts";
 import type { RunnerStep } from "../../src/runs/shared/parallel-utils.ts";
+import { RUN_STATE_ROOT_DIR, type NestedRouteInfo } from "../../src/shared/types.ts";
+import { createNestedRoute, findNestedRun, projectNestedEvents } from "../../src/runs/shared/nested-events.ts";
+import { resolveSubagentRunId } from "../../src/runs/background/run-id-resolver.ts";
+import { requestAsyncStop } from "../../src/runs/shared/stop-control.ts";
 
 interface PersistedResult {
 	id: string;
@@ -31,8 +35,11 @@ interface PersistedResult {
 }
 
 interface PersistedStatus {
+	runId: string;
 	state: string;
+	stopping?: true;
 	steps: Array<{
+		id: string;
 		agent: string;
 		status: string;
 		acceptance?: { status?: string };
@@ -112,25 +119,31 @@ function launchRun(
 		mode?: string;
 		dynamicFanoutMaxItems?: number;
 		barrier?: { participants: number; taskPrefix: string };
+		nestedRoute?: NestedRouteInfo;
+		nestedSelf?: { parentRunId: string; depth: number; path: Array<{ runId: string; childId?: string }> };
+		nativeMock?: ReturnType<typeof createMockPi>;
 	} = {},
 ): RunFixture {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), `pi-cohort-detached-${name}-`));
 	roots.push(root);
 	const home = path.join(root, "home");
 	const bin = path.join(root, "bin");
-	const asyncDir = path.join(root, "async");
+	const asyncDir = options.nestedSelf && options.nestedRoute
+		? path.join(RUN_STATE_ROOT_DIR, "nested-subagent-runs", options.nestedRoute.rootRunId, name)
+		: path.join(root, "async");
+	if (options.nestedSelf) roots.push(asyncDir);
 	const resultPath = path.join(root, "result.json");
 	const tracePath = path.join(root, "trace.jsonl");
 	const logPath = path.join(root, "runner.log");
 	const barrierDir = options.barrier ? path.join(root, "barrier") : undefined;
 	fs.mkdirSync(home);
 	fs.mkdirSync(bin);
-	fs.mkdirSync(asyncDir);
+	fs.mkdirSync(asyncDir, { recursive: true });
 	if (barrierDir) fs.mkdirSync(barrierDir);
 	fs.writeFileSync(path.join(bin, "pi"), `#!/bin/sh\nexec "${process.execPath}" "${fixturePi}" "$@"\n`, { mode: 0o755 });
-	const mockPi = createMockPi();
-	fs.copyFileSync(fixturePi, mockPi.runtime.piEntryPath);
-	const configPath = path.join(root, "config.json");
+	const mockPi = options.nativeMock ?? createMockPi();
+	if (!options.nativeMock) fs.copyFileSync(fixturePi, mockPi.runtime.piEntryPath);
+	const configPath = path.join(asyncDir, "config.json");
 	fs.writeFileSync(configPath, JSON.stringify({
 		id: name,
 		runtime: mockPi.runtime,
@@ -142,7 +155,9 @@ function launchRun(
 		sessionDir: path.join(root, "sessions"),
 		resultMode: options.mode ?? (steps.length === 1 ? "single" : "chain"),
 		dynamicFanoutMaxItems: options.dynamicFanoutMaxItems,
-		executionBackends: backendConfig(),
+		nestedRoute: options.nestedRoute,
+		nestedSelf: options.nestedSelf,
+		executionBackends: options.nativeMock ? { ...backendConfig(), userPreference: "native" } : backendConfig(),
 	}));
 	const log = fs.openSync(logPath, "w");
 	fs.writeFileSync(path.join(asyncDir, "status.json"), JSON.stringify({ runId: name, runtime: mockPi.runtime, state: "queued" }));
@@ -154,7 +169,9 @@ function launchRun(
 			...process.env,
 			HOME: home,
 			USERPROFILE: home,
+			...(options.nestedRoute ? { PI_CODING_AGENT_DIR: path.dirname(RUN_STATE_ROOT_DIR) } : {}),
 			PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
+			MOCK_PI_QUEUE_DIR: options.nativeMock?.dir ?? process.env.MOCK_PI_QUEUE_DIR,
 			PI_COHORT_FIXTURE_TRACE: tracePath,
 			PI_COHORT_FIXTURE_BARRIER_DIR: barrierDir,
 			PI_COHORT_FIXTURE_BARRIER_PARTICIPANTS: options.barrier?.participants.toString(),
@@ -198,6 +215,7 @@ async function waitFor(predicate: () => boolean, fixture: RunFixture, label: str
 
 async function waitForResult(fixture: RunFixture): Promise<PersistedResult> {
 	await waitFor(() => fs.existsSync(fixture.resultPath), fixture, "persisted result");
+	await waitFor(() => fixture.child.exitCode !== null || fixture.child.signalCode !== null, fixture, "runner exit");
 	return fixture.result();
 }
 
@@ -340,11 +358,178 @@ describe("detached external orchestration through serialized runner config", () 
 		assert.equal(new Set(trace.filter(event => event.type === "attempt-start").map(event => event.attemptId)).size, 2);
 	});
 
+	for (const trigger of ["child", "whole", "SIGTERM", "crash"] as const) {
+		test(`${trigger} preserves the stop boundary across detached native and external descendants`, { skip: unixTransport }, async () => {
+			const name = `subtree-${trigger}-${Date.now()}`;
+			const route = createNestedRoute(name);
+			const fixtures: RunFixture[] = [];
+			const native = createMockPi();
+			native.onCall({ steps: [{ delay: 60_000 }] });
+			const request = (fixture: RunFixture, targetId: string) => {
+				fs.writeFileSync(path.join(fixture.asyncDir, `interrupt-request-${targetId}.json`), JSON.stringify({ targetId }));
+				process.kill(fixture.child.pid!, "SIGUSR2");
+			};
+			try {
+				const parent = launchRun(name, [{ parallel: [
+					step("worker", "WAIT-FOR-INTERRUPT"),
+					step("worker", "WAIT-FOR-INTERRUPT"),
+					...(trigger === "child" ? [] : [step("worker", "MUST-NOT-START")]),
+				], concurrency: 2 }], { nestedRoute: route });
+				fixtures.push(parent);
+				await waitFor(() => parent.trace().filter(event => event.type === "attempt-start").length === 2, parent, "parent children");
+				const targetId = parent.status().steps[0].id;
+				const nestedSelf = { parentRunId: name, depth: 1, path: [{ runId: name, childId: targetId }] };
+				const external = launchRun(`${name}-external`, [step("worker", "WAIT-FOR-INTERRUPT")], { nestedRoute: route, nestedSelf });
+				const nativeRun = launchRun(`${name}-native`, [step("worker", "Native descendant", { executionBackend: "native" })], { nestedRoute: route, nestedSelf, nativeMock: native });
+				fixtures.push(external, nativeRun);
+				await waitFor(() => external.trace().some(event => event.type === "attempt-start"), external, "external descendant start");
+				await waitFor(() => native.callCount() === 1, nativeRun, "native descendant start");
+				await waitFor(() => projectNestedEvents(route).children.filter(child => child.id === `${name}-external` || child.id === `${name}-native`).length === 2,
+					parent, "published detached descendants");
+				if (trigger === "crash") {
+					process.kill(-parent.child.pid!, "SIGKILL");
+					await new Promise(resolve => setTimeout(resolve, 200));
+					assert.equal(fs.existsSync(external.resultPath), false);
+					assert.equal(fs.existsSync(nativeRun.resultPath), false);
+					request(external, `${name}-external`);
+					request(nativeRun, `${name}-native`);
+				} else if (trigger === "SIGTERM") process.kill(parent.child.pid!, "SIGTERM");
+				else request(parent, trigger === "whole" ? name : targetId);
+				assert.equal((await waitForResult(external)).state, "paused");
+				assert.equal((await waitForResult(nativeRun)).state, "paused");
+				if (trigger === "child") {
+					assert.equal(parent.status().steps[1].status, "running");
+					assert.equal(fs.existsSync(parent.resultPath), false);
+					request(parent, parent.status().steps[1].id);
+				}
+				if (trigger !== "crash") {
+					assert.equal((await waitForResult(parent)).state, "paused");
+					assert.equal(parent.trace().filter(event => event.type === "attempt-start").length, 2);
+					if (trigger !== "child") assert.equal(parent.status().steps[2].status, "pending");
+					const late = launchRun(`${name}-late`, [step("worker", "Must not start")], { nestedRoute: route, nestedSelf, nativeMock: native });
+					fixtures.push(late);
+					assert.equal((await waitForResult(late)).state, "paused");
+					assert.equal(native.callCount(), 1, "late descendants must not spawn");
+				}
+			} finally {
+				for (const fixture of fixtures) {
+					if (fixture.child.exitCode === null && fixture.child.signalCode === null) {
+						try { process.kill(-fixture.child.pid!, "SIGTERM"); } catch (error) { if (error.code !== "ESRCH") throw error; }
+					}
+				}
+			}
+		});
+	}
+
+	test("root resolves a live child below five ancestors and seventeen siblings and stops only its subtree", { skip: unixTransport }, async () => {
+		const rootId = `deep-stop-${Date.now()}`;
+		const route = createNestedRoute(rootId);
+		const fixtures: RunFixture[] = [];
+		const native = createMockPi();
+		native.onCall({ steps: [{ delay: 60_000 }] });
+		let ancestry: Array<{ runId: string; childId: string }> = [];
+		try {
+			for (let depth = 1; depth <= 5; depth++) {
+				const name = `${rootId}-ancestor-${depth}`;
+				const ancestor = launchRun(name, [step("worker", "WAIT-FOR-INTERRUPT")], {
+					nestedRoute: route,
+					nestedSelf: { parentRunId: ancestry.at(-1)?.runId ?? rootId, depth, path: ancestry },
+				});
+				fixtures.push(ancestor);
+				await waitFor(() => ancestor.trace().some(event => event.type === "attempt-start")
+					&& findNestedRun(projectNestedEvents(route).children, name)?.steps?.[0]?.status === "running",
+					ancestor, `ancestor ${depth} live publication`);
+				ancestry = [...ancestry, { runId: name, childId: ancestor.status().steps[0].id }];
+			}
+			const name = `${rootId}-fanout`;
+			const parent = launchRun(name, [{ parallel: Array.from({ length: 18 }, () => step("worker", "WAIT-FOR-INTERRUPT")), concurrency: 18 }], {
+				nestedRoute: route, nestedSelf: { parentRunId: ancestry.at(-1)!.runId, depth: 6, path: ancestry },
+			});
+			fixtures.push(parent);
+			await waitFor(() => parent.trace().filter(event => event.type === "attempt-start").length === 18
+				&& findNestedRun(projectNestedEvents(route).children, name)?.steps?.filter(child => child.status === "running").length === 18,
+				parent, "all eighteen live children", 30_000);
+			const alive = (pid: number) => {
+				try { process.kill(pid, 0); return true; }
+				catch (error) { if (error.code === "ESRCH") return false; throw error; }
+			};
+			const childPids = parent.status().steps.map((child, index) => parent.trace().find(event => event.type === "launch" && event.childId === `${child.agent}-${index}`)!.pid!);
+			assert.ok(childPids.every(alive), "all eighteen child hosts are live before the stop");
+			const targetId = parent.status().steps[17].id;
+			const nestedSelf = { parentRunId: name, depth: 7, path: [...ancestry, { runId: name, childId: targetId }] };
+			const external = launchRun(`${rootId}-external`, [step("worker", "WAIT-FOR-INTERRUPT")], { nestedRoute: route, nestedSelf });
+			const nativeRun = launchRun(`${rootId}-native`, [step("worker", "Native descendant", { executionBackend: "native" })], { nestedRoute: route, nestedSelf, nativeMock: native });
+			fixtures.push(external, nativeRun);
+			await waitFor(() => external.trace().some(event => event.type === "attempt-start") && native.callCount() === 1
+				&& [external, nativeRun].every(fixture => findNestedRun(projectNestedEvents(route).children, fixture.status().runId)?.state === "running"),
+				external, "both detached descendants live");
+			const resolved = resolveSubagentRunId(targetId.slice(0, 6), { target: "interrupt", asyncDirRoot: [], nested: { routes: [route] } });
+			assert.equal(resolved?.id, targetId);
+			assert.equal(resolved?.kind, "child");
+			assert.equal(resolved?.owner.kind, "async", "root discovers the live owner from the authorized nested registry");
+			if (resolved?.owner.kind !== "async") assert.fail("expected background owner");
+			assert.equal(resolved.owner.location.asyncDir, parent.asyncDir);
+			requestAsyncStop(resolved.owner.location.asyncDir, resolved.id);
+			assert.equal((await waitForResult(external)).state, "paused");
+			assert.equal((await waitForResult(nativeRun)).state, "paused");
+			await waitFor(() => !alive(childPids[17]) && !alive(-nativeRun.child.pid!) && !alive(-external.child.pid!),
+				parent, "target and detached process groups exited");
+			assert.ok(childPids.slice(0, 17).every(alive), "the seventeen unrelated child processes survive");
+			await waitFor(() => parent.status().steps[17].status === "paused", parent, "target child stopped");
+			assert.equal(parent.status().stopping, undefined, "an individual child stop does not stop its owner run");
+			assert.equal(external.status().stopping, true);
+			assert.equal(nativeRun.status().stopping, true);
+			assert.equal(parent.status().steps.slice(0, 17).filter(child => child.status === "running").length, 17);
+			assert.equal(fs.existsSync(parent.resultPath), false);
+			assert.ok(fixtures.slice(0, 5).every(ancestor => ancestor.status().steps[0].status === "running"));
+			const late = launchRun(`${rootId}-late`, [step("worker", "Must not start")], { nestedRoute: route, nestedSelf, nativeMock: native });
+			fixtures.push(late);
+			assert.equal((await waitForResult(late)).state, "paused");
+			assert.equal(native.callCount(), 1, "closed admission refuses a late native launch");
+			requestAsyncStop(parent.asyncDir, name);
+			assert.equal((await waitForResult(parent)).state, "paused");
+			for (const ancestor of fixtures.slice(0, 5).reverse()) {
+				requestAsyncStop(ancestor.asyncDir, ancestor.status().runId);
+				assert.equal((await waitForResult(ancestor)).state, "paused");
+			}
+		} finally {
+			for (const fixture of fixtures) if (fixture.child.exitCode === null && fixture.child.signalCode === null) {
+				try { process.kill(-fixture.child.pid!, "SIGTERM"); } catch (error) { if (error.code !== "ESRCH") throw error; }
+			}
+		}
+	});
+
+	test("native policy termination sweeps a detached descendant before cleanup succeeds", { skip: unixTransport }, async () => {
+		const name = `policy-subtree-${Date.now()}`;
+		const route = createNestedRoute(name);
+		const native = createMockPi();
+		native.onCall({ delay: 1_500, output: "Done", keepAliveAfterFinalMessageMs: 60_000 });
+		const parent = launchRun(name, [step("worker", "Policy parent")], {
+			nestedRoute: route, nativeMock: native,
+		});
+		let descendant: RunFixture | undefined;
+		try {
+			await waitFor(() => native.callCount() === 1, parent, "native parent start");
+			descendant = launchRun(`${name}-external`, [step("worker", "WAIT-FOR-INTERRUPT")], {
+				nestedRoute: route,
+				nestedSelf: { parentRunId: name, depth: 1, path: [{ runId: name, childId: parent.status().steps[0].id }] },
+			});
+			await waitFor(() => descendant!.trace().some(event => event.type === "attempt-start"), descendant, "external descendant start");
+			assert.equal((await waitForResult(descendant)).state, "paused");
+			assert.equal((await waitForResult(parent)).success, true);
+		} finally {
+			for (const fixture of [parent, descendant]) if (fixture?.child.exitCode === null && fixture.child.signalCode === null) {
+				try { process.kill(-fixture.child.pid!, "SIGTERM"); } catch (error) { if (error.code !== "ESRCH") throw error; }
+			}
+		}
+	});
+
 	test("interrupt retains the surface and persists interrupted result and status", { skip: unixTransport }, async () => {
 		const fixture = launchRun("interrupt", [step("worker", "WAIT-FOR-INTERRUPT")]);
 		await waitFor(() => fixture.trace().some(event => event.type === "ready"), fixture, "scripted Pi ready marker");
 		await new Promise(resolve => setTimeout(resolve, 100));
-		fs.writeFileSync(path.join(fixture.asyncDir, "interrupt-request-all.json"), JSON.stringify({ requestedAt: Date.now() }));
+		const targetId = fixture.status().runId;
+		fs.writeFileSync(path.join(fixture.asyncDir, `interrupt-request-${targetId}.json`), JSON.stringify({ targetId, requestedAt: Date.now() }));
 		process.kill(fixture.child.pid!, "SIGUSR2");
 		const result = await waitForResult(fixture);
 		assert.equal(result.success, false);

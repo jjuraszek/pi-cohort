@@ -138,12 +138,13 @@ describe("renderSubagentResult fork indicator", () => {
 		assert.match(unwrap(expanded), /precisefailingtoolsequenceattheend\./);
 	});
 
-	it("uses glyph-first compact rendering for completed subagents", () => {
+	it("uses id-first compact rendering for completed subagents", () => {
 		const widget = renderSubagentResult!({
 			content: [{ type: "text", text: "done" }],
 			details: {
 				mode: "single",
 				results: [{
+					id: "abc12345-0000-4000-8000-000000000001",
 					agent: "reviewer",
 					task: "review",
 					exitCode: 0,
@@ -156,7 +157,7 @@ describe("renderSubagentResult fork indicator", () => {
 		}, { expanded: false }, theme);
 
 		const text = widget.render(120).join("\n");
-		assert.match(text, /^✓ reviewer/);
+		assert.match(text, /^abc123 ✓ reviewer/);
 		assert.match(text, /⟳ 2/);
 		assert.match(text, /3 tool uses/);
 		assert.match(text, /1\.2k token/);
@@ -172,6 +173,7 @@ describe("renderSubagentResult fork indicator", () => {
 				results: [{
 					agent: "reviewer",
 					task: "review",
+					id: "def45678-0000-4000-8000-000000000002",
 					exitCode: 1,
 					error: "boom",
 					messages: [],
@@ -181,7 +183,7 @@ describe("renderSubagentResult fork indicator", () => {
 		}, { expanded: false }, theme);
 
 		const text = widget.render(120).join("\n");
-		assert.match(text, /^✗ reviewer/);
+		assert.match(text, /^def456 ✗ reviewer/);
 		assert.match(text, /⎿  Error: boom/);
 	});
 
@@ -296,8 +298,10 @@ describe("renderSubagentResult fork indicator", () => {
 			content: [{ type: "text", text: "paused" }],
 			details: {
 				mode: "chain",
+				runId: "123abc45-0000-4000-8000-000000000003",
 				chainAgents: ["worker"],
 				results: [{
+					id: "456def78-0000-4000-8000-000000000004",
 					agent: "worker",
 					task: "pause",
 					exitCode: 0,
@@ -309,7 +313,7 @@ describe("renderSubagentResult fork indicator", () => {
 		}, { expanded: false }, theme);
 
 		const text = widget.render(120).join("\n");
-		assert.match(text, /^■ chain/);
+		assert.match(text, /^123abc ■ chain/);
 		assert.match(text, /⎿  Paused/);
 	});
 
@@ -520,6 +524,52 @@ describe("renderSubagentResult fork indicator", () => {
 		assert.match(text, /Agent 2\/2: reviewer/);
 		assert.doesNotMatch(text, /planner/);
 		assert.doesNotMatch(text, /Agent 1\/2: planner/);
+	});
+
+	for (const nestedState of ["running", "complete"] as const) it(`retains an earlier step with a ${nestedState} nested run and live descendants in expanded mixed chains`, () => {
+		const progress = ["settled", "planner", "scout", "reviewer"].map((agent, index) => ({
+			id: `child${index}-full`, index, agent, task: agent,
+			status: index < 2 ? "completed" as const : "running" as const,
+			recentTools: [], recentOutput: [], toolCount: 0, tokens: 0, durationMs: 1,
+		}));
+		const result = {
+			content: [{ type: "text" as const, text: "running" }],
+			details: {
+				mode: "chain" as const,
+				runId: "root00-full",
+				totalSteps: 3,
+				currentStepIndex: 2,
+				chainAgents: ["settled", "planner", "[scout+reviewer]"],
+				progress,
+				results: progress.map((entry) => ({
+					id: entry.id, agent: entry.agent, task: entry.task,
+					exitCode: 0, messages: [], usage: emptyUsage,
+					progress: {
+						...entry,
+						children: entry.index === 1 ? [{
+							id: "nested-full", parentRunId: "root00-full", depth: 1, path: [],
+							agent: "background", state: nestedState,
+							children: [{
+								id: "leaf00-full", parentRunId: "nested-full", depth: 2, path: [],
+								agent: "worker", state: "running" as const,
+							}],
+						}] : [],
+					},
+				})),
+			},
+		};
+
+		const collapsed = renderSubagentResult!(result, { expanded: false }, theme).render(120).join("\n");
+		assert.match(collapsed, /parallel group: 2 agents running · 0\/2 done/);
+		assert.doesNotMatch(collapsed, /planner|background|worker|settled/);
+
+		const expanded = renderSubagentResult!(result, { expanded: true }, theme).render(120).join("\n");
+		assert.match(expanded, /^child1 .*Step 2: planner/m);
+		assert.match(expanded, /^\s*nested .*background/m);
+		assert.match(expanded, /^\s*leaf00 .*worker · running/m);
+		assert.match(expanded, /^child2 .*Agent 1\/2: scout/m);
+		assert.match(expanded, /^child3 .*Agent 2\/2: reviewer/m);
+		assert.doesNotMatch(expanded, /settled/);
 	});
 
 	it("uses logical chain progress and agent labels for completed mixed chains", () => {

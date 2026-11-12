@@ -15,6 +15,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { stopForegroundTarget } from "../../src/runs/shared/stop-control.ts";
 import { createForkContextResolver } from "../../src/shared/fork-context.ts";
 import type { MockPi } from "../support/helpers.ts";
 import {
@@ -228,6 +229,51 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 			});
 		}
 	}
+
+	it("keeps two sequential predecessors and both siblings when a three-child parallel step is interrupted by child id", async () => {
+		for (const index of [0, 1]) mockPi.onCall({ taskIncludes: `Predecessor ${index}`, output: `Saved predecessor ${index}` });
+		for (const index of [0, 1, 2]) mockPi.onCall({ taskIncludes: `Later child ${index}`, delay: index === 1 ? 60_000 : 1_000, output: `Later output ${index}` });
+		const control = { runId: "predecessor-chain", mode: "chain", startedAt: 1, updatedAt: 1, children: new Map() };
+		const controller = new AbortController();
+		const steps = [
+			...[0, 1].map((index) => ({ agent: "echo", task: `Predecessor ${index}`, as: `predecessor_${index}` })),
+			{ parallel: [0, 1, 2].map((index) => ({ agent: "echo", task: `Later child ${index}`, as: `later_${index}` })) },
+			{ agent: "echo", task: "Must not run" },
+		];
+		const pending = executeChain(makeChainParams(steps, [makeAgent("echo", { completionGuard: false })], {
+			runId: control.runId, foregroundControl: control, signal: controller.signal,
+		}));
+		try {
+			const deadline = Date.now() + 5_000;
+			while (mockPi.callCount() < 5 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+			assert.equal(mockPi.callCount(), 5);
+			const [targetId] = [...control.children.entries()].find(([, child]) => child.index === 3);
+			assert.equal(stopForegroundTarget(control as any, targetId), true);
+			const result = await pending;
+			assert.equal(controller.signal.aborted, false);
+			assert.equal(mockPi.callCount(), 5, "no step after the failed group launches");
+			assert.equal(result.isError, true);
+			assert.equal(result.details.results.length, 5);
+			for (const index of [0, 1]) {
+				assert.equal(result.details.results[index].finalOutput, `Saved predecessor ${index}`);
+				assert.notEqual(result.details.results[index].interrupted, true);
+				assert.equal(result.details.outputs[`predecessor_${index}`].text, `Saved predecessor ${index}`);
+				assert.match(result.content[0].text, new RegExp(`Saved predecessor ${index}`));
+			}
+			assert.equal(result.details.results[3].id, targetId);
+			assert.equal(result.details.results[3].interrupted, true);
+			assert.equal(result.details.outputs.later_1, undefined);
+			for (const index of [0, 2]) {
+				assert.equal(result.details.results[index + 2].finalOutput, `Later output ${index}`);
+				assert.notEqual(result.details.results[index + 2].interrupted, true);
+				assert.equal(result.details.outputs[`later_${index}`].text, `Later output ${index}`);
+				assert.match(result.content[0].text, new RegExp(`Later output ${index}`));
+			}
+			assert.match(result.content[0].text, /Parallel step 3 failed:[\s\S]*Task 2 \(echo\): interrupted/);
+			assert.doesNotMatch(result.content[0].text, /Chain paused after interrupt/);
+			assert.ok([...control.children.values()].every((child) => !child.interrupt));
+		} finally { controller.abort(); await pending; }
+	});
 
 	function acceptanceReport(overrides: Record<string, unknown> = {}): string {
 		return [
@@ -597,7 +643,7 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 		}
 		assert.deepEqual(
 			callArgs.map((args) => args[args.indexOf("--name") + 1]).sort(),
-			["pa chainrun/1 from P", "pb chainrun/2 from P", "step1 chainrun from P"],
+			result.details.results.map((child) => `${child.agent} ${child.id.slice(0, 6)} from P`).sort(),
 		);
 	});
 
