@@ -156,9 +156,11 @@ Children inherit the parent session's [project trust](https://github.com/earendi
 
 | Child `cwd` | Flag |
 |---|---|
-| The parent's `cwd` | inherited |
-| The same repository-relative path in another worktree of the parent's repository | inherited |
-| A subdirectory, an ancestor, a repository initialized inside the parent's tree, anywhere else | none: pi resolves the child's own decision, and trust saved for an ancestor still reaches it |
+| Any directory in the parent's git worktree or another worktree with the same git common dir, including ancestors of the parent's `cwd` | inherited |
+| The parent's `cwd` or a directory below it on real paths, when neither is in git | inherited |
+| A separate repository or submodule nested inside the parent's tree, or an unrelated repository | none: pi resolves the child's own decision |
+| A git metadata directory, such as `.git`, `.git/objects`, or `.git/worktrees/name` | none |
+| Anywhere else, including outside the parent's tree when the parent is outside git (a sibling with a longer name is outside) | none |
 | Any, when the parent is trusted only because its `cwd` has no trust-requiring resources | none |
 
 Not a setting; `forwardParentFlags` does not affect it.

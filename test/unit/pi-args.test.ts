@@ -541,11 +541,12 @@ describe("buildPiArgs project trust", () => {
 		assert.ok(!args.includes("--no-approve"));
 	});
 
-	it("leaves the decision to a child in a subdirectory, which may hold a saved decision of its own", () => {
-		const { args } = buildPiArgs({ ...base, projectTrust: { trusted: true, root }, cwd: path.join(root, "src") });
-		assert.ok(!args.includes("--approve"));
-		assert.ok(!args.includes("--no-approve"));
-	});
+	for (const trusted of [true, false]) {
+		it(`passes the parent's trust=${trusted} to a child in a subdirectory`, () => {
+			const { args } = buildPiArgs({ ...base, projectTrust: { trusted, root }, cwd: path.join(root, "src") });
+			assert.deepEqual(args.filter((arg) => arg === "--approve" || arg === "--no-approve"), [trusted ? "--approve" : "--no-approve"]);
+		});
+	}
 });
 
 describe("buildPiArgs child session name", () => {

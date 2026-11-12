@@ -2,17 +2,17 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { runGit } from "./worktree.ts";
 
-/** Where a directory sits in a git repository: the repository's common dir (shared by all its worktrees) and the path below the worktree root. */
+/** A repository's common dir (shared by its worktrees), distinguishing worktree content from git metadata. */
 interface RepoLocation {
 	commonDir: string;
-	prefix: string;
+	insideWorkTree: boolean;
 }
 
 /** The parent session's project-trust decision and the directory it was made for. */
 export interface ProjectTrust {
 	trusted: boolean;
 	root: string;
-	/** The root's repository location, resolved once so each child launch spawns git for the child only. */
+	/** The root's cached repository location, when it belongs to a repository. */
 	repo?: RepoLocation;
 }
 
@@ -26,10 +26,10 @@ function realpathOrResolve(dir: string): string {
 }
 
 function repoLocation(cwd: string): RepoLocation | undefined {
-	const result = runGit(cwd, ["rev-parse", "--is-inside-work-tree", "--git-common-dir", "--show-prefix"]);
+	const result = runGit(cwd, ["rev-parse", "--is-inside-work-tree", "--git-common-dir"]);
 	if (result.status !== 0) return undefined;
-	const [insideWorkTree, common, prefix = ""] = result.stdout.split(/\r?\n/);
-	return insideWorkTree === "true" && common ? { commonDir: realpathOrResolve(path.resolve(cwd, common)), prefix } : undefined;
+	const [insideWorkTree, common] = result.stdout.split(/\r?\n/);
+	return common ? { commonDir: realpathOrResolve(path.resolve(cwd, common)), insideWorkTree: insideWorkTree === "true" } : undefined;
 }
 
 /**
@@ -44,14 +44,19 @@ export function resolveProjectTrust(cwd: string, trusted: boolean, hasTrustRequi
 }
 
 /**
- * Whether a child cwd is the directory the parent's decision was made for: the parent's cwd itself, or the same path in
- * another worktree of its repository. pi keys trust by directory, so any other directory, including one below the
- * parent's, resolves its own decision; a saved decision for an ancestor still reaches it through pi's nearest-ancestor lookup.
+ * Whether a child cwd belongs to the parent's project: any directory in a worktree sharing the parent's git common dir,
+ * or, outside git, the parent's directory and its descendants on real paths. Nested repositories and submodules are
+ * separate projects; git metadata never inherits trust.
  */
 export function inheritsTrust(childCwd: string, trust: ProjectTrust): boolean {
 	const child = realpathOrResolve(childCwd);
-	if (child === realpathOrResolve(trust.root)) return true;
-	if (!trust.repo) return false;
+	const root = realpathOrResolve(trust.root);
+	const parentRepo = trust.repo ?? repoLocation(root);
 	const repo = repoLocation(child);
-	return repo?.commonDir === trust.repo.commonDir && repo.prefix === trust.repo.prefix;
+	if (parentRepo) {
+		return parentRepo.insideWorkTree && repo?.insideWorkTree === true && repo.commonDir === parentRepo.commonDir;
+	}
+	if (repo) return false;
+	const relative = path.relative(root, child);
+	return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }

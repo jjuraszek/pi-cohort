@@ -102,7 +102,7 @@ export function buildPiArgs(input: BuildPiArgsInput, fileSystem: BuildPiArgsFile
 	}
 	// Without a saved decision an interactive child blocks on the trust prompt and
 	// a non-interactive one silently drops project settings, packages, and skills.
-	// The decision covers the parent's directory only: a child anywhere else decides for itself.
+	// The decision covers the parent's project only: a child in another project decides for itself.
 	if (input.projectTrust && inheritsTrust(input.cwd ?? process.cwd(), input.projectTrust)) {
 		args.push(input.projectTrust.trusted ? "--approve" : "--no-approve");
 	}

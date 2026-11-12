@@ -57,7 +57,7 @@ describe("inheritsTrust", () => {
 		worktree = path.join(createTempDir(), "pi-worktree-x-0");
 		git(repo, "worktree", "add", "-q", worktree, "-b", "pi-parallel-x-0", "HEAD");
 		fs.mkdirSync(path.join(repo, "sub", "dir"), { recursive: true });
-		fs.mkdirSync(path.join(worktree, "sub"), { recursive: true });
+		fs.mkdirSync(path.join(worktree, "sub", "dir"), { recursive: true });
 	});
 
 	after(() => {
@@ -77,7 +77,14 @@ describe("inheritsTrust", () => {
 		assert.ok(inheritsTrust(path.join(worktree, "sub"), trustIn(path.join(repo, "sub"))));
 	});
 
-	for (const relative of ["sub/dir", ".git", ".git/objects", ".git/worktrees/pi-worktree-x-0"]) {
+	for (const childTree of ["parent", "linked"] as const) {
+		it(`is true for a subdirectory at a different path in the ${childTree} worktree`, () => {
+			const childRoot = childTree === "parent" ? repo : worktree;
+			assert.ok(inheritsTrust(path.join(childRoot, "sub", "dir"), trustIn(repo)));
+		});
+	}
+
+	for (const relative of [".git", ".git/objects", ".git/worktrees/pi-worktree-x-0"]) {
 		it(`is false for ${relative}, which is not the parent's directory`, () => {
 			const child = path.join(repo, relative);
 			assert.ok(fs.statSync(child).isDirectory());
@@ -85,28 +92,73 @@ describe("inheritsTrust", () => {
 		});
 	}
 
-	it("is false for an ancestor of the parent's cwd, in the repository or another worktree", () => {
-		assert.ok(!inheritsTrust(repo, trustIn(path.join(repo, "sub"))));
-		assert.ok(!inheritsTrust(worktree, trustIn(path.join(repo, "sub"))));
+	it("is true for an ancestor of the parent's cwd, in the repository or another worktree", () => {
+		assert.ok(inheritsTrust(repo, trustIn(path.join(repo, "sub"))));
+		assert.ok(inheritsTrust(worktree, trustIn(path.join(repo, "sub"))));
 	});
 
-	it("is false for a separately initialized repository nested under the parent's cwd", () => {
-		const nested = path.join(repo, "vendor", "foreign");
-		fs.mkdirSync(nested, { recursive: true });
-		try {
-			git(nested, "init", "-q");
-			assert.ok(!inheritsTrust(nested, trustIn(repo)));
-		} finally {
-			fs.rmSync(path.join(repo, "vendor"), { recursive: true, force: true });
+	for (const kind of ["repository", "submodule"]) {
+		it(`is false for a separate ${kind} nested under the parent's cwd`, () => {
+			const nested = path.join(repo, "vendor", "foreign");
+			try {
+				if (kind === "repository") {
+					fs.mkdirSync(nested, { recursive: true });
+					git(nested, "init", "-q");
+				} else {
+					git(repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", repo, "vendor/foreign");
+				}
+				fs.mkdirSync(path.join(nested, "sub"));
+				for (const child of [nested, path.join(nested, "sub")]) {
+					assert.equal(inheritsTrust(child, trustIn(repo)), false);
+				}
+			} finally {
+				fs.rmSync(path.join(repo, "vendor"), { recursive: true, force: true });
+			}
+		});
+	}
+
+	it("outside git, uses path-segment containment and excludes nested repositories and metadata", () => {
+		const root = path.join(elsewhere, "parent");
+		const nested = path.join(root, "nested");
+		for (const relative of ["parent/sub/dir", "parent/..cache", "parent-other", "..cache", "parent/nested/sub"]) {
+			fs.mkdirSync(path.join(elsewhere, relative), { recursive: true });
 		}
+		git(nested, "init", "-q");
+		const cases: Array<[string, boolean]> = [
+			[root, true],
+			[path.join(root, "sub", "dir"), true],
+			[path.join(root, "..cache"), true],
+			[`${root}-other`, false],
+			[path.join(root, "..", "..cache"), false],
+			[elsewhere, false],
+			[repo, false],
+			[nested, false],
+			[path.join(nested, "sub"), false],
+			[path.join(nested, ".git"), false],
+			[path.join(nested, ".git", "objects"), false],
+		];
+		if (process.platform === "win32") {
+			const otherDrive = path.parse(root).root[0].toUpperCase() === "C" ? "D:\\" : "C:\\";
+			cases.push([otherDrive, false]);
+		}
+		for (const [child, expected] of cases) {
+			assert.equal(inheritsTrust(child, trustIn(root)), expected, child);
+		}
+		assert.equal(inheritsTrust(elsewhere, trustIn(repo)), false);
+		assert.equal(inheritsTrust(nested, trustIn(repo)), false);
 	});
 
-	it("outside git, is true only for the parent's own directory", () => {
-		const child = path.join(elsewhere, "..cache");
-		fs.mkdirSync(child);
-		assert.ok(inheritsTrust(elsewhere, trustIn(elsewhere)));
-		assert.ok(!inheritsTrust(child, trustIn(elsewhere)));
-		assert.ok(!inheritsTrust(elsewhere, trustIn(repo)));
-		assert.ok(!inheritsTrust(repo, trustIn(elsewhere)));
+	it("uses real paths for containment, including symlinks into and out of the parent's tree", () => {
+		const root = path.join(elsewhere, "links");
+		fs.mkdirSync(path.join(root, "sub"), { recursive: true });
+		const alias = path.join(elsewhere, "alias");
+		const escape = path.join(root, "escape");
+		const foreign = path.join(root, "foreign");
+		fs.symlinkSync(root, alias, "junction");
+		fs.symlinkSync(elsewhere, escape, "junction");
+		fs.symlinkSync(repo, foreign, "junction");
+		for (const [child, expected] of [[path.join(alias, "sub"), true], [escape, false], [foreign, false]] as const) {
+			assert.equal(inheritsTrust(child, trustIn(alias)), expected, child);
+		}
 	});
 });
