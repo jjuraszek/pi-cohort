@@ -1,4 +1,4 @@
-import { stopId } from "../../tui/render-helpers.ts";
+import { nestedRunName, stopId } from "../../tui/render-helpers.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
@@ -63,22 +63,16 @@ function stepLineLabel(status: AsyncStatus, index: number): string {
 	return `Step ${index + 1}`;
 }
 
-function nestedRunDisplayName(run: NestedRunSummary): string {
-	if (run.agent) return run.label ? `${run.agent} - ${run.label}` : run.agent;
-	if (run.agents?.length) return run.agents.join(", ");
-	return run.mode ?? "nested run";
-}
-
 function formatNestedExactStatus(rootRunId: string, run: NestedRunSummary): string {
 	const lines = [
-		`${stopId(run.id)} ${nestedRunDisplayName(run)} ${run.state}`,
+		`${stopId(run.id)} ${nestedRunName(run)} ${run.state}`,
 		`Nested run: ${run.id}`,
 		`Root: ${rootRunId}`,
 		`Parent: ${run.parentRunId}${run.parentStepIndex !== undefined ? ` step ${run.parentStepIndex + 1}` : ""}`,
 		`State: ${run.state}`,
 		run.activityState || run.lastActivityAt ? `Activity: ${formatActivityLabel(run.lastActivityAt, run.activityState)}` : undefined,
 		run.mode ? `Mode: ${run.mode}` : undefined,
-		`Agent: ${nestedRunDisplayName(run)}`,
+		`Agent: ${nestedRunName(run)}`,
 		run.currentStep !== undefined ? `Progress: step ${run.currentStep + 1}/${run.chainStepCount ?? run.steps?.length ?? 1}` : undefined,
 		run.asyncDir ? `Dir: ${run.asyncDir}` : undefined,
 		run.sessionFile ? `Session: ${run.sessionFile}` : undefined,

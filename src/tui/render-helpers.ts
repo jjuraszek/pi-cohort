@@ -1,4 +1,5 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
+import type { NestedRunSummary } from "../shared/types.ts";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 function fuzzyScore(query: string, text: string): number {
@@ -60,6 +61,19 @@ export function budgetLines(lines: RenderLine[], budget: number): RenderLine[] {
 
 export function stopId(id: string | undefined): string {
 	return id?.slice(0, 6) ?? "";
+}
+
+export function formatWidgetAgents(agents: string[]): string {
+	const distinct = [...new Set(agents)];
+	if (distinct.length === 1 && agents.length > 1) return `${distinct[0]} ×${agents.length}`;
+	if (agents.length > 3) return `${agents.slice(0, 2).join(", ")} +${agents.length - 2} more`;
+	return agents.join(", ");
+}
+
+export function nestedRunName(run: NestedRunSummary): string {
+	if (run.agent) return run.label ? `${run.agent} - ${run.label}` : run.agent;
+	if (run.agents?.length) return formatWidgetAgents(run.agents);
+	return run.mode ?? "nested run";
 }
 
 export function row(content: string, width: number, theme: Theme): string {

@@ -3,7 +3,7 @@
  */
 
 import * as path from "node:path";
-import { budgetLines, detailLine, stopId, targetLine, type RenderLine } from "./render-helpers.ts";
+import { budgetLines, detailLine, formatWidgetAgents, nestedRunName, stopId, targetLine, type RenderLine } from "./render-helpers.ts";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { getMarkdownTheme, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text, visibleWidth, type Component } from "@earendil-works/pi-tui";
@@ -276,13 +276,6 @@ export function widgetRenderKey(job: WidgetJob): string {
 		updatedAt: job.updatedAt,
 		totalTokens: job.totalTokens,
 	});
-}
-
-function formatWidgetAgents(agents: string[]): string {
-	const distinct = [...new Set(agents)];
-	if (distinct.length === 1 && agents.length > 1) return `${distinct[0]} ×${agents.length}`;
-	if (agents.length > 3) return `${agents.slice(0, 2).join(", ")} +${agents.length - 2} more`;
-	return agents.join(", ");
 }
 
 export function widgetJobName(job: AsyncJobState): string {
@@ -720,12 +713,6 @@ function widgetStepActivityLine(step: NonNullable<AsyncJobState["steps"]>[number
 function widgetOutputPath(job: AsyncJobState, step: NonNullable<AsyncJobState["steps"]>[number]): string | undefined {
 	if (typeof step.index !== "number") return undefined;
 	return path.join(job.asyncDir, `output-${step.index}.log`);
-}
-
-export function nestedRunName(run: NestedRunSummary): string {
-	if (run.agent) return run.label ? `${run.agent} - ${run.label}` : run.agent;
-	if (run.agents?.length) return formatWidgetAgents(run.agents);
-	return run.mode ?? "nested run";
 }
 
 function nestedStatusGlyph(state: NestedRunSummary["state"] | NestedStepSummary["status"], theme: Theme, seed?: number): string {

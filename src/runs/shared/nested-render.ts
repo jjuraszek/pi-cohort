@@ -1,5 +1,5 @@
 import { hasLiveNestedDescendants } from "./nested-events.ts";
-import { budgetLines, detailLine, stopId, targetLine, type RenderLine } from "../../tui/render-helpers.ts";
+import { budgetLines, detailLine, nestedRunName, stopId, targetLine, type RenderLine } from "../../tui/render-helpers.ts";
 import { formatDuration, formatTokens, shortenPath } from "../../shared/formatters.ts";
 import { formatActivityLabel } from "../../shared/status-format.ts";
 import type { ActivityState, NestedRunSummary, NestedStepSummary } from "../../shared/types.ts";
@@ -42,12 +42,6 @@ export function formatNestedAggregate(children: NestedRunSummary[] | undefined):
 	return `+${counts.total} nested run${counts.total === 1 ? "" : "s"}${parts.length ? ` (${parts.join(", ")})` : ""}`;
 }
 
-function nestedRunLabel(run: NestedRunSummary): string {
-	if (run.agent) return run.label ? `${run.agent} - ${run.label}` : run.agent;
-	if (run.agents?.length) return run.agents.length === 1 ? run.agents[0]! : `${run.agents.slice(0, 2).join(", ")}${run.agents.length > 2 ? ` +${run.agents.length - 2}` : ""}`;
-	return run.mode ?? "nested run";
-}
-
 function formatNestedActivity(input: {
 	activityState?: ActivityState;
 	lastActivityAt?: number;
@@ -79,7 +73,7 @@ function formatNestedRunLines(children: NestedRunSummary[] | undefined, options:
 			if (depth > options.maxDepth && !hasLiveNestedDescendants([child])) continue;
 			const activity = child.state === "running" ? formatNestedActivity(child) : undefined;
 			const error = child.error ? ` | error: ${child.error}` : "";
-			lines.push(targetLine(`${indent}${stopId(child.id)} ↳ ${nestedRunLabel(child)} ${child.state}${activity ? ` | ${activity}` : ""}${error}`, hasLiveNestedDescendants([child])));
+			lines.push(targetLine(`${indent}${stopId(child.id)} ↳ ${nestedRunName(child)} ${child.state}${activity ? ` | ${activity}` : ""}${error}`, hasLiveNestedDescendants([child])));
 			if (options.commandHints) lines.push(detailLine(`${indent}  Status: subagent({ action: "status", id: "${child.id}" })`));
 			for (const [stepIndex, step] of (child.steps ?? []).entries()) {
 				if (depth > options.maxDepth && step.status !== "running" && step.status !== "pending" && !hasLiveNestedDescendants(step.children)) continue;

@@ -4,7 +4,8 @@ import { ASYNC_DIR, LEGACY_ASYNC_DIR, RESULTS_DIR, type SubagentState, type Asyn
 import { findAsyncRunPrefixMatches, resolveAsyncRunLocation, winningAsyncRunEntries, type AsyncRunLocation } from "./async-resume.ts";
 import { assertSafeNestedId, findNestedRunMatchesById, projectNestedEvents, resolveNestedAsyncDir, type NestedRoute, type NestedRunMatch, type NestedRunResolutionScope } from "../shared/nested-events.ts";
 import { checkPidLiveness } from "./stale-run-reconciler.ts";
-import { nestedRunName, widgetJobName } from "../../tui/render.ts";
+import { widgetJobName } from "../../tui/render.ts";
+import { nestedRunName } from "../../tui/render-helpers.ts";
 
 export type ResolvedSubagentRunId =
 	| { kind: "foreground"; id: string }

@@ -10,6 +10,8 @@ import { createNestedRoute, nestedRouteEnv, projectNestedEvents, writeNestedEven
 import { registerForegroundInterrupt, stopForegroundTarget, type ForegroundControl } from "../../src/runs/shared/stop-control.ts";
 import { startNestedControlInboxListener } from "../../src/extension/fanout-child.ts";
 import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
+import { buildWidgetLines } from "../../src/tui/render.ts";
+import { formatNestedRunStatusLines } from "../../src/runs/shared/nested-render.ts";
 
 const routeRoots: string[] = [];
 
@@ -323,8 +325,19 @@ describe("subagent run id resolver", () => {
 				writeNestedEvent(route, { type: "subagent.nested.updated", ts: 100, parentRunId: route.rootRunId,
 					child: { id: "abcdef-run", parentRunId: route.rootRunId, depth: 1, path: [{ runId: route.rootRunId }],
 						state: "running", ...run, steps: [{ id: "abcdef-child", index: 0, agent: "scout", label: "Inspect", status: "running" }] } });
-				assert.throws(() => resolveSubagentRunId("abcdef", { target: "interrupt", asyncDirRoot: root, nested: { routes: [route] } }),
-					{ message: `Ambiguous stop id 'abcdef': run:abcdef-r ${displayed}, child:abcdef-c scout. Provide a longer id.` });
+				const registry = projectNestedEvents(route);
+				const statusName = formatNestedRunStatusLines(registry.children)[0]!.match(/^\s*abcdef ↳ (.+) running$/)?.[1];
+				const theme = { fg: (_name: string, text: string) => text, bold: (text: string) => text };
+				const widgetName = buildWidgetLines([], theme as any, 160, true, [registry])
+					.find((line) => /^\s*abcdef ↳/.test(line))?.match(/↳ . (.+) · running ·/)?.[1];
+				assert.equal(widgetName, displayed);
+				assert.throws(() => resolveSubagentRunId("abcdef", { target: "interrupt", asyncDirRoot: root, nested: { routes: [route] } }), (error: Error) => {
+					assert.equal(error.message, `Ambiguous stop id 'abcdef': run:abcdef-r ${displayed}, child:abcdef-c scout. Provide a longer id.`);
+					const errorName = error.message.match(/run:abcdef-r (.+), child:/)?.[1];
+					assert.equal(errorName, widgetName);
+					assert.equal(errorName, statusName);
+					return true;
+				});
 			} finally { fs.rmSync(root, { recursive: true, force: true }); }
 		});
 	}
