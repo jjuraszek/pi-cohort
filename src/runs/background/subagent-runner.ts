@@ -10,7 +10,7 @@ import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { formatInterruptedCleanup } from "../../shared/formatters.ts";
 import { appendJsonl, getArtifactPaths } from "../../shared/artifacts.ts";
 import { getPiSpawnCommand, parsePiRuntime, PiRuntimeLaunchError, type PiRuntimeIdentity } from "../shared/pi-spawn.ts";
-import { captureSingleOutputSnapshot, finalizeSingleOutput, formatFileOnlyFailure, formatSavedOutputReference, resolveSingleOutput, type SingleOutputSnapshot } from "../shared/single-output.ts";
+import { captureSingleOutputSnapshot, finalizeSingleOutput, formatFileOnlyFailure, formatSavedOutputReference, getSingleOutputErrorMessages, resolveSingleOutput, type SingleOutputSnapshot } from "../shared/single-output.ts";
 import {
 	type ActivityState,
 	type ArtifactConfig,
@@ -870,7 +870,10 @@ export async function runSingleStep(
 					cleanupTempDir(tempDir); // F1: caller (not helper) cleans up tempDir
 				}
 
-				const hiddenError = run.exitCode === 0 && !run.interrupted && !run.error ? detectSubagentError(run.messages) : null;
+				const hiddenError = run.exitCode === 0 && !run.interrupted && !run.error
+					? detectSubagentError(getSingleOutputErrorMessages(
+						run.messages, outputSnapshot, captureSingleOutputSnapshot(step.outputPath),
+					)) : null;
 				const blockedOutput = stripAcceptanceReport(getFinalOutput(run.messages));
 				const blockedError = run.exitCode === 0 && !run.interrupted && !run.error && !hiddenError?.hasError && blockedLine(blockedOutput)
 					? blockedOutput
@@ -1021,7 +1024,10 @@ export async function runSingleStep(
 			break;
 		}
 
-		const hiddenError = run.exitCode === 0 && !run.error ? detectSubagentError(run.messages) : null;
+		const hiddenError = run.exitCode === 0 && !run.error
+			? detectSubagentError(getSingleOutputErrorMessages(
+				run.messages, outputSnapshot, captureSingleOutputSnapshot(step.outputPath),
+			)) : null;
 		const blockedOutput = stripAcceptanceReport(getFinalOutput(run.messages));
 		const blockedError = run.exitCode === 0 && !run.interrupted && !run.error && !hiddenError?.hasError && blockedLine(blockedOutput)
 			? blockedOutput

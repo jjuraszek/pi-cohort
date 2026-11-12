@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { Message } from "@earendil-works/pi-ai";
 import type { OutputMode, SavedOutputReference } from "../../shared/types.ts";
 
 export interface SingleOutputSnapshot {
@@ -134,6 +135,26 @@ export function captureSingleOutputSnapshot(outputPath: string | undefined): Sin
 	}
 }
 
+export function hasSingleOutputChanged(
+	beforeRun: SingleOutputSnapshot | undefined,
+	afterRun: SingleOutputSnapshot | undefined,
+): boolean {
+	return afterRun?.exists === true && (!beforeRun?.exists
+		|| afterRun.mtimeMs !== beforeRun.mtimeMs
+		|| afterRun.size !== beforeRun.size);
+}
+
+export function getSingleOutputErrorMessages(
+	messages: Message[],
+	beforeRun: SingleOutputSnapshot | undefined,
+	afterRun: SingleOutputSnapshot | undefined,
+): Message[] {
+	if (!hasSingleOutputChanged(beforeRun, afterRun)) return messages;
+	// A changed file forgives recovered errors, not failures after the last successful tool.
+	const lastSuccess = messages.findLastIndex((message) => message.role === "toolResult" && message.isError !== true);
+	return messages.slice(lastSuccess + 1);
+}
+
 function persistSingleOutput(
 	outputPath: string | undefined,
 	fullOutput: string,
@@ -158,9 +179,7 @@ export function resolveSingleOutput(
 	let changedSinceStart = false;
 	try {
 		const stat = fs.statSync(outputPath);
-		changedSinceStart = !beforeRun?.exists
-			|| stat.mtimeMs !== beforeRun.mtimeMs
-			|| stat.size !== beforeRun.size;
+		changedSinceStart = hasSingleOutputChanged(beforeRun, { exists: true, mtimeMs: stat.mtimeMs, size: stat.size });
 	} catch (error) {
 		const code = error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
 		if (code !== "ENOENT" && code !== "ENOTDIR") {
