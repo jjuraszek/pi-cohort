@@ -1005,6 +1005,7 @@ describe("interrupt-child slash command", () => {
 					assert.equal(control.children.size, 3);
 					assert.equal(settled, false);
 					const route = control.nestedRoute!;
+					control.nestedChildren = []; // A projection before the nested event is still empty.
 					writeNestedEvent(route, { type: "subagent.nested.updated", ts: Date.now(), parentRunId: runId,
 						child: { id: "nested-run", parentRunId: runId, depth: 1, path: [{ runId }], state: "running", agent: "worker",
 							steps: [{ id: "nested-child", agent: "worker", label: "nested work", status: "running" }] } });
@@ -1019,8 +1020,15 @@ describe("interrupt-child slash command", () => {
 						assert.deepEqual(h.notifications.at(-1), { message: "Nested stop accepted", type: "info" });
 						assert.equal(settled, false, "nested routing must work while the caller waits");
 						assert.notEqual(control.stopRequested, true);
-						assert.ok(h.command.getArgumentCompletions!("nested-c").some((entry) => entry.value === "nested-c"));
-						assert.match(h.command.getArgumentCompletions!("nested-c")[0].label, /nested work/);
+						const completionDeadline = Date.now() + 5_000;
+						let completion;
+						do {
+							completion = h.command.getArgumentCompletions!("nested-c").find((entry) => entry.value === "nested-c");
+							if (completion) break;
+							await new Promise((resolve) => setTimeout(resolve, 10));
+						} while (Date.now() < completionDeadline);
+						assert.ok(completion, "nested-c completion must appear within 5 seconds");
+						assert.match(completion.label, /nested work/);
 					} finally { clearInterval(responder); }
 					await h.command.handler("missing-child", h.ctx);
 					assert.match(h.notifications.at(-1)!.message, /No running subagent matches 'missing-child'/);
