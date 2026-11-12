@@ -575,24 +575,58 @@ describe("subagent async widget rendering", () => {
 				{ id: "ddd333-writer", agent: "writer", status: "pending" },
 				{ id: "eee444-editor", agent: "editor", status: "pending" },
 			];
-			fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify({
-				runId: "run-chain", mode: "chain", state: "running", startedAt: Date.now(), lastUpdate: Date.now(),
-				currentStep: 1, chainStepCount: 4, parallelGroups: [{ start: 1, count: 2, stepIndex: 1 }], steps,
-			}));
 			tracker.handleStarted({ id: "run-chain", asyncDir: runDir, mode: "chain", agents: steps.map((step) => step.agent) });
 			assert.equal(intervals.mock.calls.length, 1);
-			intervals.mock.calls[0].arguments[0]();
-
-			const job = state.asyncJobs.get("run-chain");
-			assert.equal(job.activeParallelGroup, true);
-			for (const expanded of [false, true]) {
-				for (const width of [32, 180]) {
-					const text = buildWidgetLines([job], theme, width, expanded).join("\n");
-					for (const step of steps.filter((step) => step.status === "pending" || step.status === "running")) {
-						assert.match(text, new RegExp(`^\\s*${step.id.slice(0, 6)} `, "m"));
+			for (const inactiveGroups of [false, true]) await t.test(inactiveGroups ? "completed and pending groups" : "pending sequential steps", () => {
+				const chainStepCount = inactiveGroups ? 3 : 4;
+				const parallelGroups = [
+					...(inactiveGroups ? [{ start: 0, count: 1, stepIndex: 0 }] : []),
+					{ start: 1, count: 2, stepIndex: 1 },
+					...(inactiveGroups ? [{ start: 3, count: 2, stepIndex: 2 }] : []),
+				];
+				const nodes = steps.map((step, flatIndex) => ({
+					id: step.id, kind: "agent", agent: step.agent, label: step.agent,
+					status: step.status === "complete" ? "completed" : step.status, flatIndex,
+				}));
+				fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify({
+					runId: "run-chain", mode: "chain", state: "running", startedAt: Date.now(), lastUpdate: Date.now(),
+					currentStep: inactiveGroups ? 2 : 1, chainStepCount, parallelGroups, steps,
+					workflowGraph: { runId: "run-chain", mode: "chain", phases: [], nodes: [
+						inactiveGroups ? { id: "before", kind: "parallel-group", label: "before", status: "completed", stepIndex: 0, children: nodes.slice(0, 1) }
+							: { ...nodes[0], kind: "step", stepIndex: 0 },
+						{ id: "review", kind: inactiveGroups ? "dynamic-parallel-group" : "parallel-group", label: "review", status: "running", stepIndex: 1, children: nodes.slice(1, 3) },
+						...(inactiveGroups ? [{ id: "after", kind: "parallel-group", label: "after", status: "pending", stepIndex: 2, children: nodes.slice(3) }]
+							: nodes.slice(3).map((node, index) => ({ ...node, kind: "step", stepIndex: index + 2 }))),
+					] },
+				}));
+				intervals.mock.calls[0].arguments[0]();
+				const job = state.asyncJobs.get("run-chain");
+				assert.equal(job.activeParallelGroup, true);
+				assert.deepEqual(job.agents, ["reviewer", "auditor"]);
+				assert.equal(job.stepsTotal, 2);
+				assert.equal(job.runningSteps, 1);
+				assert.equal(job.completedSteps, 1);
+				const positions = inactiveGroups
+					? ["Agent 1/1", "Agent 1/2", "Agent 2/2", "Agent 1/2", "Agent 2/2"]
+					: ["Step 1/4", "Agent 1/2", "Agent 2/2", "Step 3/4", "Step 4/4"];
+				for (const expanded of [false, true]) for (const width of [32, 180]) for (const multiple of [false, true]) {
+					const jobs = multiple ? [job, { asyncId: "other-run", asyncDir: root, status: "running", agents: ["other"] }] : [job];
+					const ui = createUiContext(expanded);
+					renderWidget(ui.ctx as never, jobs);
+					const widget = ui.widgets.at(-1) as (_tui: unknown, widgetTheme: typeof theme) => { render(width: number): string[] };
+					for (const lines of [buildWidgetLines(jobs, theme, width, expanded), widget(undefined, theme).render(width)]) {
+						const text = lines.join("\n");
+						assert.deepEqual(lines.filter((line) => /Parallel group \d/.test(line)).map((line) => line.trim()), ["Parallel group 2: review"]);
+						for (const [index, step] of steps.entries()) {
+							const rows = lines.filter((line) => new RegExp(`^\\s*${step.id.slice(0, 6)} `).test(line));
+							assert.equal(rows.length, 1, `one row for ${step.id} at width ${width}, expanded=${expanded}, multiple=${multiple}`);
+							assert.ok(rows[0].includes(`${positions[index]}:`), rows[0]);
+							if (width === 180) assert.ok(rows[0].includes(`${step.agent} · ${step.status}`), rows[0]);
+						}
+						if (width === 180) assert.match(text, new RegExp(`step 2/${chainStepCount} · parallel group: 1 agent running · 1/2 done`));
 					}
 				}
-			}
+			});
 		} finally {
 			tracker.resetJobs();
 			if (state.poller) clearInterval(state.poller);
