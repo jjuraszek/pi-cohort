@@ -508,14 +508,20 @@ function pendingChildLine(progress: AgentProgress | undefined, label: string, ag
 		: `Workflow ${label.toLowerCase()}: ${agent} · pending`;
 }
 
-function buildChainRenderEntries(details: Details, label: MultiProgressLabel): ChainRenderEntry[] | undefined {
+function buildChainRenderEntries(details: Details, label: MultiProgressLabel, expanded = false): ChainRenderEntry[] | undefined {
 	if (details.mode === "parallel") return Array.from({ length: Math.max(details.results.length, ...(details.progress ?? []).map((entry) => entry.index + 1)) }, (_, index) => ({
 		kind: "result", resultIndex: index, rowNumber: index + 1, agentName: details.results[index]?.agent ?? details.progress?.find((entry) => entry.index === index)?.agent ?? "agent",
 	}));
 	if (details.mode !== "chain" || !label.hasParallelInChain) return undefined;
 	const entries: ChainRenderEntry[] = [];
 	for (const span of buildChainStepSpans(details)) {
-		if (label.showActiveGroupOnly && (span.start < label.groupStartIndex || span.start >= label.groupEndIndex)) continue;
+		if (label.showActiveGroupOnly && (span.start < label.groupStartIndex || span.start >= label.groupEndIndex)) {
+			const hasLiveChildren = expanded && (
+				details.results.slice(span.start, span.start + span.count).some((result) => hasLiveNestedDescendants(result.progress?.children))
+				|| details.progress?.some((progress) => progress.index >= span.start && progress.index < span.start + span.count && hasLiveNestedDescendants(progress.children))
+			);
+			if (!hasLiveChildren) continue;
+		}
 		if (span.isParallel && span.label && span.count > 0) entries.push({ kind: "group", stepIndex: span.stepIndex, label: span.label });
 		if (span.isParallel && span.count === 0) {
 			entries.push({
@@ -1261,7 +1267,7 @@ export function renderSubagentResult(
 	const useResultsDirectly = multiLabel.hasParallelInChain || !d.chainAgents?.length;
 	const displayStart = 0;
 	const displayEnd = useResultsDirectly ? d.results.length : d.chainAgents!.length;
-	const chainEntries = buildChainRenderEntries(d, multiLabel);
+	const chainEntries = buildChainRenderEntries(d, multiLabel, expanded);
 	const renderEntries = chainEntries ?? Array.from({ length: displayEnd - displayStart }, (_, offset): ChainRenderEntry => {
 		const i = displayStart + offset;
 		const r = d.results[i];

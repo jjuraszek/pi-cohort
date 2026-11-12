@@ -1861,16 +1861,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 		activityTimer.unref?.();
 	}
 
-	const pauseStep = (index: number) => {
-		const step = statusPayload.steps[index];
-		const now = Date.now();
-		step.status = "paused";
-		step.activityState = undefined;
-		step.endedAt = now;
-		step.durationMs = step.startedAt ? now - step.startedAt : undefined;
-		step.lastActivityAt = now;
-		statusPayload.lastUpdate = now;
-	};
 	const stopTarget = (targetId: string): void => {
 		if (statusPayload.state !== "running") return;
 		const wholeRun = targetId === id;
@@ -1885,12 +1875,10 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			statusPayload.activityState = undefined;
 			for (const entry of children.values()) {
 				if (entry.state !== "running") continue;
-				pauseStep(entry.index);
 				entry.interrupt?.();
 			}
 		} else if (child) {
 			child.stopRequested = true;
-			pauseStep(child.index);
 			child.interrupt?.();
 		}
 		sweepBackgroundDescendants(config.nestedRoute, targetId);

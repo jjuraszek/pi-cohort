@@ -112,6 +112,69 @@ for (const async of [false, true]) {
 	});
 }
 
+for (const target of ["child", "run"] as const) {
+	it(`async ${target} stop keeps a child running until teardown settles`, { skip: process.platform === "win32" ? "requires POSIX signals" : undefined }, async () => {
+		const { mock, cwd, state, execute } = fixture();
+		const ready = path.join(cwd, "ready");
+		const signals = path.join(cwd, "signals");
+		const release = path.join(cwd, "release");
+		fs.writeFileSync(mock.runtime.piEntryPath, `
+			import fs from "node:fs";
+			process.on("SIGINT", () => fs.appendFileSync(${JSON.stringify(signals)}, "SIGINT\\n"));
+			process.on("SIGTERM", () => fs.appendFileSync(${JSON.stringify(signals)}, "SIGTERM\\n"));
+			fs.writeFileSync(${JSON.stringify(ready)}, String(process.pid));
+			setInterval(() => {
+				if (fs.existsSync(${JSON.stringify(release)})) process.exit(0);
+			}, 10);
+		`);
+		mock.install();
+		let resultPath: string | undefined;
+		let pid: number | undefined;
+		try {
+			const started = await execute({ agent: "echo", task: "Hold native shutdown open", async: true, clarify: false,
+				acceptance: { level: "none", reason: "Observe stopping lifecycle" } });
+			const id = started.details.asyncId;
+			assert.ok(id, JSON.stringify(started));
+			const dir = path.join(ASYNC_DIR, id);
+			resultPath = path.join(RESULTS_DIR, `${id}.json`);
+			state.asyncJobs.set(id, { asyncId: id, asyncDir: dir, status: "running" });
+			const status = () => JSON.parse(fs.readFileSync(path.join(dir, "status.json"), "utf8"));
+			await waitFor(() => fs.existsSync(ready), "child signal handlers registered");
+			pid = status().pid;
+			const childId = status().steps[0].id;
+			const targetId = target === "child" ? childId : id;
+			const first = await execute({ action: "interrupt", id: targetId });
+			assert.notEqual(first.isError, true);
+			await waitFor(() => fs.existsSync(signals) && !fs.existsSync(path.join(dir, `interrupt-request-${targetId}.json`)), "first stop processed while teardown is held open");
+			const repeat = await execute({ action: "interrupt", id: childId });
+			assert.notEqual(repeat.isError, true, "a stopping child accepts another stop until real settlement");
+			await waitFor(() => !fs.existsSync(path.join(dir, `interrupt-request-${childId}.json`)), "repeat stop processed");
+			assert.equal(status().steps[0].status, "running");
+			assert.equal(status().steps[0].endedAt, undefined);
+			assert.equal(fs.existsSync(resultPath), false);
+			fs.writeFileSync(release, "");
+			await waitFor(() => fs.existsSync(resultPath!), "released child settled");
+			assert.equal(fs.readFileSync(signals, "utf8").split("\n").filter((signal) => signal === "SIGINT").length, 1, "repeat stop sends no second child interruption");
+			assert.equal(status().steps[0].status, "paused");
+			assert.equal(typeof status().steps[0].endedAt, "number");
+			const settled = await execute({ action: "interrupt", id: childId });
+			assert.equal(settled.isError, true);
+			assert.match(settled.content[0].text, /is no longer running: interrupted/);
+		} finally {
+			fs.writeFileSync(release, "");
+			if (resultPath) await waitFor(() => fs.existsSync(resultPath!), "fixture result cleanup");
+			if (pid) await waitFor(() => {
+				try { process.kill(pid!, 0); return false; } catch (error) {
+					if (error.code !== "ESRCH") throw error;
+					return true;
+				}
+			}, "fixture runner exit");
+			mock.uninstall();
+			removeTempDir(cwd);
+		}
+	});
+}
+
 it("pending, failed, settled, ambiguous and missing ids do not signal or write requests", async (t) => {
 	const { cwd, state, execute } = fixture();
 	try {

@@ -526,6 +526,52 @@ describe("renderSubagentResult fork indicator", () => {
 		assert.doesNotMatch(text, /Agent 1\/2: planner/);
 	});
 
+	for (const nestedState of ["running", "complete"] as const) it(`retains an earlier step with a ${nestedState} nested run and live descendants in expanded mixed chains`, () => {
+		const progress = ["settled", "planner", "scout", "reviewer"].map((agent, index) => ({
+			id: `child${index}-full`, index, agent, task: agent,
+			status: index < 2 ? "completed" as const : "running" as const,
+			recentTools: [], recentOutput: [], toolCount: 0, tokens: 0, durationMs: 1,
+		}));
+		const result = {
+			content: [{ type: "text" as const, text: "running" }],
+			details: {
+				mode: "chain" as const,
+				runId: "root00-full",
+				totalSteps: 3,
+				currentStepIndex: 2,
+				chainAgents: ["settled", "planner", "[scout+reviewer]"],
+				progress,
+				results: progress.map((entry) => ({
+					id: entry.id, agent: entry.agent, task: entry.task,
+					exitCode: 0, messages: [], usage: emptyUsage,
+					progress: {
+						...entry,
+						children: entry.index === 1 ? [{
+							id: "nested-full", parentRunId: "root00-full", depth: 1, path: [],
+							agent: "background", state: nestedState,
+							children: [{
+								id: "leaf00-full", parentRunId: "nested-full", depth: 2, path: [],
+								agent: "worker", state: "running" as const,
+							}],
+						}] : [],
+					},
+				})),
+			},
+		};
+
+		const collapsed = renderSubagentResult!(result, { expanded: false }, theme).render(120).join("\n");
+		assert.match(collapsed, /parallel group: 2 agents running · 0\/2 done/);
+		assert.doesNotMatch(collapsed, /planner|background|worker|settled/);
+
+		const expanded = renderSubagentResult!(result, { expanded: true }, theme).render(120).join("\n");
+		assert.match(expanded, /^child1 .*Step 2: planner/m);
+		assert.match(expanded, /^\s*nested .*background/m);
+		assert.match(expanded, /^\s*leaf00 .*worker · running/m);
+		assert.match(expanded, /^child2 .*Agent 1\/2: scout/m);
+		assert.match(expanded, /^child3 .*Agent 2\/2: reviewer/m);
+		assert.doesNotMatch(expanded, /settled/);
+	});
+
 	it("uses logical chain progress and agent labels for completed mixed chains", () => {
 		const progress = [
 			{ index: 0, agent: "planner", status: "completed" as const, task: "plan", recentTools: [], recentOutput: [], toolCount: 0, tokens: 0, durationMs: 1 },
