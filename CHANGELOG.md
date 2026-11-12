@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [7.7.6] - 2026-11-12
 
 ### Fixed
 - Children that exit successfully after writing their output file no longer fail on earlier tool errors or error-looking bash output when they omit a closing reply, in foreground and both background execution paths.
