@@ -802,9 +802,13 @@ function foregroundStyleWidgetStepLines(
 }
 
 function activeWidgetGroupLines(job: WidgetJob): RenderLine[] {
-	if (!job.activeParallelGroup) return [];
-	return (job.workflowGraph?.nodes ?? []).filter((node) => node.label && (node.kind === "parallel-group" || node.kind === "dynamic-parallel-group") && node.children?.some((child) => child.flatIndex !== undefined && child.flatIndex === job.currentStep))
-		.map((node) => detailLine(`  Parallel group ${(node.stepIndex ?? 0) + 1}: ${node.label}`));
+	const currentStep = job.currentStep;
+	if (!job.activeParallelGroup || currentStep === undefined) return [];
+	// Runner ranges include skipped expansion slots that graph child indexes omit.
+	const group = job.parallelGroups?.find((group) => currentStep >= group.start && currentStep < group.start + group.count);
+	if (!group) return [];
+	const node = job.workflowGraph?.nodes.find((node) => node.stepIndex === group.stepIndex && (node.kind === "parallel-group" || node.kind === "dynamic-parallel-group"));
+	return node?.label ? [detailLine(`  Parallel group ${group.stepIndex + 1}: ${node.label}`)] : [];
 }
 
 function widgetStepPosition(job: AsyncJobState, index: number): [itemTitle: "Agent" | "Step", rowNumber: number, total: number] {

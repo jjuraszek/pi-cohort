@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { buildWidgetLines, widgetRenderKey } from "../../src/tui/render.ts";
 import { formatNestedRunStatusLines } from "../../src/runs/shared/nested-render.ts";
+import { buildWorkflowGraphSnapshot } from "../../src/runs/shared/workflow-graph.ts";
 import type { AsyncJobState, NestedRunSummary } from "../../src/shared/types.ts";
 
 const theme = {
@@ -124,6 +125,49 @@ describe("nested widget rendering", () => {
 			assert.match(text, /Parallel group .*Audit group/);
 			assert.match(text, /^\s*workaa .*worker - audit auth/m);
 			assert.doesNotMatch(text, /worker - Audit group/);
+		}
+	});
+
+	it("selects only the active static group header after an empty dynamic group is skipped", () => {
+		// subagent-runner.ts:1503-1516,1992-2041 retains a placeholder that workflow-graph.ts:169 does not allocate.
+		const steps = [
+			{ id: "seedaa-child", agent: "producer", status: "complete" },
+			{ agent: "expand:worker", label: "Audit group", status: "complete" },
+			{ id: "workaa-child", agent: "reviewer", label: "final audit", status: "running" },
+		];
+		const workflowGraph = buildWorkflowGraphSnapshot({
+			runId: "rootaa-run",
+			steps: [
+				{ agent: "producer", task: "Return []", as: "items", outputSchema: { type: "array" } },
+				{ expand: { from: { output: "items", path: "" }, onEmpty: "skip" },
+					parallel: { agent: "worker", task: "Audit {item}" }, collect: { as: "audits" }, label: "Audit group" },
+				{ parallel: [{ agent: "reviewer", task: "Review", label: "final audit" }] },
+			],
+			stepStatuses: steps,
+			currentFlatIndex: 2,
+			dynamicGroupStatuses: { 1: { status: "completed" } },
+		});
+		const value = { asyncId: "rootaa-run", asyncDir: "/tmp/group", mode: "chain", status: "running",
+			steps: steps.map((step, index) => ({ ...step, index })), agents: ["reviewer"], stepsTotal: 1, runningSteps: 1, completedSteps: 0,
+			activeParallelGroup: true, currentStep: 2, chainStepCount: 3,
+			parallelGroups: [{ stepIndex: 1, start: 1, count: 1 }, { stepIndex: 2, start: 2, count: 1 }], workflowGraph };
+		assert.equal(workflowGraph.nodes[2]?.children?.[0]?.flatIndex, 1);
+		assert.notEqual(workflowGraph.nodes[2]?.children?.[0]?.flatIndex, value.currentStep);
+		for (const expanded of [false, true]) {
+			const lines = buildWidgetLines([value] as any, theme, 180, expanded);
+			assert.deepEqual(lines.filter((line) => /Parallel group \d/.test(line)).map((line) => line.trim()), ["Parallel group 3: Parallel task"]);
+			assert.match(lines.join("\n"), /^\s*workaa .*reviewer - final audit/m);
+		}
+	});
+
+	it("omits group headers before the start event has a current step or workflow graph", () => {
+		const value: AsyncJobState = { asyncId: "rootaa-run", asyncDir: "/tmp/group", mode: "chain", status: "queued",
+			agents: ["worker"], stepsTotal: 1, chainStepCount: 1, activeParallelGroup: true,
+			parallelGroups: [{ stepIndex: 0, start: 0, count: 1 }] };
+		for (const expanded of [false, true]) {
+			const text = buildWidgetLines([value], theme, 180, expanded).join("\n");
+			assert.match(text, /rootaa .*chain/);
+			assert.doesNotMatch(text, /Parallel group \d/);
 		}
 	});
 
