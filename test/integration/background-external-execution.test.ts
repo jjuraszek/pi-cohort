@@ -484,17 +484,14 @@ test(`runSingleStep retains the surface after an external ${failure} failure`, u
 	const parentSettingsPath = path.join(PINNED_AGENT_DIR, "settings.json");
 	const parentSettings = fs.existsSync(parentSettingsPath) ? fs.readFileSync(parentSettingsPath, "utf-8") : undefined;
 	const finishSecret = "SENTINEL_OBSERVER_RELEASE_SECRET";
-	const lifecycle: BackendLifecycle = { releases: 0, closes: 0, releaseError: finishSecret };
+	const closeReasons: string[] = [];
+	const lifecycle: BackendLifecycle = { releases: 0, closes: 0, releaseError: finishSecret, onClose: reason => closeReasons.push(reason) };
 	const backendName = `fake-bg-runner-throw-${process.pid}`;
 	const dispose = registerExecutionBackend(makeBackend(backendName, binDir, requests, hosts, lifecycle));
 	const savedPath = process.env.PATH;
 	process.env.PATH = `${binDir}${path.delimiter}${savedPath ?? ""}`;
 
 	try {
-		if (failure === "settings-build") {
-			fs.mkdirSync(PINNED_AGENT_DIR, { recursive: true });
-			fs.writeFileSync(parentSettingsPath, "{ invalid json");
-		}
 		const result = await runSingleStep({
 			agent: "worker",
 			task: "Exercise the throwing external attempt",
@@ -510,6 +507,12 @@ test(`runSingleStep retains the surface after an external ${failure} failure`, u
 			sessionEnabled: true,
 			sessionDir: tempDir,
 			id: "bg-runner-throw", childId: "child-throw",
+			onAttemptStart: () => {
+				if (failure === "settings-build") {
+					fs.mkdirSync(PINNED_AGENT_DIR, { recursive: true });
+					fs.writeFileSync(parentSettingsPath, "{ invalid json");
+				}
+			},
 			flatIndex: 0,
 			parentSessionLabel: "P",
 			parentSessionId: "parent-session-id",
@@ -530,11 +533,13 @@ test(`runSingleStep retains the surface after an external ${failure} failure`, u
 		assert.equal(result.executionSurface?.retained, true);
 		assert.equal(result.executionSurface?.handle.backend, backendName);
 		assert.equal(lifecycle.releases, 1);
-		assert.equal(lifecycle.closes, 0);
 		assert.equal(requests.length, 1);
 		if (failure === "settings-build") {
 			assert.equal(fs.existsSync(`${argsPath}.count`), false, "a settings-build failure must not launch a child");
+			assert.ok(hosts.every(host => host.exitCode !== null || host.signalCode !== null), "the unused host must exit before finalization");
+			assert.ok(closeReasons.every(reason => reason === "explicit_cleanup"), "an unused host may need cleanup but must not be marked delivered");
 		} else {
+			assert.equal(lifecycle.closes, 0);
 			assert.equal(fixtureInvocationCount(argsPath), 1, "must not fall back to native execution");
 			assert.equal(fs.existsSync(promptTempDir(argsPath)), false);
 			const childArgs = JSON.parse(fs.readFileSync(argsPath, "utf-8")) as string[];

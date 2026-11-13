@@ -155,8 +155,25 @@ describe("child settings override", { skip }, () => {
 
 	for (const mode of ["single", "parallel"] as const) {
 		it(`persists a failed child when async ${mode} settings cannot be built`, { skip: !asyncAvailable ? "jiti not available" : undefined }, async () => {
-			const invalidSettings = "{ invalid json";
-			fs.writeFileSync(parentSettingsPath, invalidSettings);
+			const linkedFile = path.join(parentAgentDir, "settings-failure-fixture.json");
+			const failedLinkPath = path.join(tempDir, "failed-link.json");
+			const preload = path.join(tempDir, "deny-settings-link.cjs");
+			const reason = "EPERM: fixture denies child settings symlink";
+			fs.writeFileSync(linkedFile, "{}");
+			fs.writeFileSync(preload, `
+const fs = require("node:fs");
+const symlinkSync = fs.symlinkSync;
+fs.symlinkSync = function(source, target, ...args) {
+	if (source === ${JSON.stringify(linkedFile)}) {
+		fs.writeFileSync(${JSON.stringify(failedLinkPath)}, JSON.stringify(target));
+		throw new Error(${JSON.stringify(reason)});
+	}
+	return symlinkSync.call(this, source, target, ...args);
+};
+require("node:module").syncBuiltinESMExports();
+`);
+			const savedNodeOptions = process.env.NODE_OPTIONS;
+			process.env.NODE_OPTIONS = `${savedNodeOptions ?? ""} --require=${JSON.stringify(preload)}`;
 			mockPi.reset();
 			mockPi.onCall({ output: "sibling completed", delay: 200 });
 			try {
@@ -171,7 +188,9 @@ describe("child settings override", { skip }, () => {
 				assert.equal(persisted.state, "failed");
 				assert.equal(persisted.success, false);
 				assert.equal(persisted.results[0]?.success, false);
-				assert.match(persisted.results[0]?.error ?? "", /^Cannot apply the child's settings override: .+/);
+				assert.equal(persisted.results[0]?.error, `Cannot apply the child's settings override: ${reason}`);
+				const failedLink = JSON.parse(fs.readFileSync(failedLinkPath, "utf-8"));
+				assert.equal(fs.existsSync(path.dirname(path.dirname(failedLink))), false, "the failed overlay's temp directory must be removed");
 				const status = JSON.parse(fs.readFileSync(path.join(typesMod!.ASYNC_DIR, launch.details.asyncId, "status.json"), "utf-8"));
 				assert.equal(status.state, "failed");
 				assert.equal(status.steps[0].status, "failed");
@@ -185,9 +204,11 @@ describe("child settings override", { skip }, () => {
 					assert.equal(persisted.results[1]?.output, "sibling completed");
 					assert.equal(status.steps[1].status, "complete");
 				}
-				assert.equal(fs.readFileSync(parentSettingsPath, "utf-8"), invalidSettings);
+				assert.deepEqual(JSON.parse(fs.readFileSync(parentSettingsPath, "utf-8")), PARENT_SETTINGS);
 			} finally {
-				fs.writeFileSync(parentSettingsPath, JSON.stringify(PARENT_SETTINGS));
+				if (savedNodeOptions === undefined) delete process.env.NODE_OPTIONS;
+				else process.env.NODE_OPTIONS = savedNodeOptions;
+				fs.rmSync(linkedFile, { force: true });
 			}
 		});
 	}
