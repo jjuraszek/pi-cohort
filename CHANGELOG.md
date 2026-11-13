@@ -3,7 +3,7 @@
 ## Unreleased
 
 ### Fixed
-- `inheritProjectContext: false` and `inheritSkills: false` now drop the project context and skills catalog from a child's system prompt on pi 1.5+. pi renders those sections from `systemPromptOptions.contextFiles` and `.skills` inside `<project_context>` / `<skills>` tags, so the header-based text strippers never matched; the `before_agent_start` hook now empties those collections before the text pass.
+- `inheritProjectContext: false` keeps project instruction files (AGENTS.md / CLAUDE.md) out of child system prompts on pi 1.5+ by starting children with pi's `--no-context-files` flag. Before, the text stripper missed pi 1.5's `<project_context>` rendering and let the whole project context reach the child.
 
 ## [8.0.0] - 2026-11-12
 
