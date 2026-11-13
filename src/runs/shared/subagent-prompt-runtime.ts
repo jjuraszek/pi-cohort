@@ -6,8 +6,6 @@ import { checkPidLiveness } from "../background/stale-run-reconciler.ts";
 import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV, STRUCTURED_OUTPUT_TOOL_NAME, getStructuredOutputValidationDiagnostic, validateStructuredOutputValue } from "./structured-output.ts";
 import type { JsonSchemaObject } from "../../shared/types.ts";
 
-const SUBAGENT_INHERIT_PROJECT_CONTEXT_ENV = "PI_SUBAGENT_INHERIT_PROJECT_CONTEXT";
-const SUBAGENT_INHERIT_SKILLS_ENV = "PI_SUBAGENT_INHERIT_SKILLS";
 let reasked = false;
 let attempted = false;
 const monitoredRuntimes = new WeakSet<ExtensionAPI>();
@@ -61,39 +59,11 @@ const PARENT_ONLY_CUSTOM_MESSAGE_TYPES = new Set([
 	"subagent-control-notice",
 ]);
 const SUBAGENT_ORCHESTRATION_SKILL_NAME_PATTERN = /<name>\s*pi-cohort\s*<\/name>/;
-const PROJECT_CONTEXT_HEADER = "\n\n# Project Context\n\nProject-specific instructions and guidelines:\n\n";
-const SKILLS_HEADER = "\n\nThe following skills provide specialized instructions for specific tasks.";
-const DATE_HEADER = "\nCurrent date:";
 
 function readBooleanEnv(name: string): boolean | undefined {
 	const value = process.env[name];
 	if (value === undefined) return undefined;
 	return value !== "0";
-}
-
-function findSectionEnd(prompt: string, startIndex: number, nextHeaders: string[]): number {
-	let endIndex = prompt.length;
-	for (const header of nextHeaders) {
-		const index = prompt.indexOf(header, startIndex);
-		if (index !== -1 && index < endIndex) {
-			endIndex = index;
-		}
-	}
-	return endIndex;
-}
-
-export function stripProjectContext(prompt: string): string {
-	const startIndex = prompt.indexOf(PROJECT_CONTEXT_HEADER);
-	if (startIndex === -1) return prompt;
-	const endIndex = findSectionEnd(prompt, startIndex + PROJECT_CONTEXT_HEADER.length, [SKILLS_HEADER, DATE_HEADER]);
-	return `${prompt.slice(0, startIndex)}${prompt.slice(endIndex)}`;
-}
-
-export function stripInheritedSkills(prompt: string): string {
-	const startIndex = prompt.indexOf(SKILLS_HEADER);
-	if (startIndex === -1) return prompt;
-	const endIndex = findSectionEnd(prompt, startIndex + SKILLS_HEADER.length, [DATE_HEADER]);
-	return `${prompt.slice(0, startIndex)}${prompt.slice(endIndex)}`;
 }
 
 export function stripSubagentOrchestrationSkill(prompt: string): string {
@@ -112,16 +82,9 @@ function stripChildBoundaryInstructions(prompt: string): string {
 
 export function rewriteSubagentPrompt(
 	prompt: string,
-	options: { inheritProjectContext: boolean; inheritSkills: boolean; fanoutChild?: boolean },
+	options: { fanoutChild?: boolean } = {},
 ): string {
-	let rewritten = prompt;
-	if (!options.inheritProjectContext) {
-		rewritten = stripProjectContext(rewritten);
-	}
-	if (!options.inheritSkills) {
-		rewritten = stripInheritedSkills(rewritten);
-	}
-	rewritten = stripSubagentOrchestrationSkill(rewritten);
+	let rewritten = stripSubagentOrchestrationSkill(prompt);
 	rewritten = stripChildBoundaryInstructions(rewritten);
 	const boundary = options.fanoutChild ? CHILD_FANOUT_BOUNDARY_INSTRUCTIONS : CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS;
 	const structured = process.env[STRUCTURED_OUTPUT_CAPTURE_ENV] ? `\n\n${STRUCTURED_OUTPUT_INSTRUCTIONS}` : "";
@@ -327,15 +290,9 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI): void {
 	});
 
 	onRuntimeEvent("before_agent_start", async (event: { systemPrompt: string }) => {
-		const inheritProjectContext = readBooleanEnv(SUBAGENT_INHERIT_PROJECT_CONTEXT_ENV);
-		const inheritSkills = readBooleanEnv(SUBAGENT_INHERIT_SKILLS_ENV);
 		const fanoutChild = readBooleanEnv(SUBAGENT_FANOUT_CHILD_ENV);
-		if (inheritProjectContext === undefined && inheritSkills === undefined && fanoutChild === undefined) return;
-		const rewritten = rewriteSubagentPrompt(event.systemPrompt, {
-			inheritProjectContext: inheritProjectContext ?? true,
-			inheritSkills: inheritSkills ?? true,
-			fanoutChild: fanoutChild === true,
-		});
+		if (fanoutChild === undefined) return;
+		const rewritten = rewriteSubagentPrompt(event.systemPrompt, { fanoutChild });
 		if (rewritten === event.systemPrompt) return;
 		return { systemPrompt: rewritten };
 	});

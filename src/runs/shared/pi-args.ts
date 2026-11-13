@@ -237,8 +237,6 @@ export function buildPiArgs(input: BuildPiArgsInput, fileSystem: BuildPiArgsFile
 		: "";
 	// Always set, so a grandchild sees its immediate parent rather than an inherited ancestor.
 	env[SUBAGENT_PARENT_SESSION_ID_ENV] = input.parentSessionId ?? "";
-	env.PI_SUBAGENT_INHERIT_PROJECT_CONTEXT = input.inheritProjectContext ? "1" : "0";
-	env.PI_SUBAGENT_INHERIT_SKILLS = input.inheritSkills ? "1" : "0";
 	if (input.runId) {
 		env[SUBAGENT_RUN_ID_ENV] = input.runId;
 	}

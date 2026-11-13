@@ -180,8 +180,8 @@ Important fields:
 | `fallbackModels` | Ordered backup models for provider/model failures such as quota, auth, timeout, or unavailable model. Ordinary task failures do not trigger fallback. |
 | `thinking` | Appended as a `:level` suffix at runtime unless a suffix is already present; unset means the parent session's level; `off` is emitted as `:off`. |
 | `systemPromptMode` | `replace` by default; `append` keeps Pi's base prompt. |
-| `inheritProjectContext` | Keeps or strips inherited project instruction blocks. |
-| `inheritSkills` | Keeps or strips Pi's discovered skills catalog. |
+| `inheritProjectContext` | Set `false` to start the child with `--no-context-files`, excluding project instruction files. |
+| `inheritSkills` | Set `false` to start the child with `--no-skills`, disabling Pi's discovered skills catalog. |
 | `defaultContext` | Optional `fresh` or `fork` launch context default for this agent. |
 | `skills` | Injects specific skills directly, regardless of `inheritSkills`. |
 | `output` | Chain output default. Top-level single/parallel calls opt in with `output: true` or a path; Clarify edits also opt in for that invocation. |
