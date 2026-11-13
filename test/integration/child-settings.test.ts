@@ -30,7 +30,7 @@ interface ExecutorModule {
 
 const executorMod = await tryImport<ExecutorModule>("./src/runs/foreground/subagent-executor.ts");
 const asyncMod = await tryImport<{ isAsyncAvailable(runtime: unknown): boolean }>("./src/runs/background/async-execution.ts");
-const typesMod = await tryImport<{ RESULTS_DIR: string }>("./src/shared/types.ts");
+const typesMod = await tryImport<{ RESULTS_DIR: string; ASYNC_DIR: string }>("./src/shared/types.ts");
 const agentDirMod = await tryImport<{ PINNED_AGENT_DIR: string }>("./src/shared/agent-dir.ts");
 const available = !!(executorMod && asyncMod && typesMod && agentDirMod);
 const asyncAvailable = available && asyncMod!.isAsyncAvailable(createMockPi().runtime);
@@ -42,7 +42,11 @@ const skip = !available ? "pi packages not available" : !isolated ? "needs the i
 const PARENT_SETTINGS = { theme: "dark", contextPrune: { pruneOn: "agent-message", keep: 3 } };
 const NEXT_PROMPT = { contextPrune: { pruneOn: "next-prompt" } };
 
-async function waitForAsyncResultFile(id: string, timeoutMs = 30_000): Promise<{ results: Array<{ output?: string }> }> {
+async function waitForAsyncResultFile(id: string, timeoutMs = 30_000): Promise<{
+	state: string;
+	success: boolean;
+	results: Array<{ output?: string; error?: string; success: boolean; skipped?: boolean }>;
+}> {
 	const resultPath = path.join(typesMod!.RESULTS_DIR, `${id}.json`);
 	const deadline = Date.now() + timeoutMs;
 	while (!fs.existsSync(resultPath)) {
@@ -148,6 +152,45 @@ describe("child settings override", { skip }, () => {
 		);
 		assert.equal(mockPi.callCount(), 0);
 	});
+
+	for (const mode of ["single", "parallel"] as const) {
+		it(`persists a failed child when async ${mode} settings cannot be built`, { skip: !asyncAvailable ? "jiti not available" : undefined }, async () => {
+			const invalidSettings = "{ invalid json";
+			fs.writeFileSync(parentSettingsPath, invalidSettings);
+			mockPi.reset();
+			mockPi.onCall({ output: "sibling completed", delay: 200 });
+			try {
+				const failing = { agent: "scout", task: "Read the files", settings: { quietStartup: true } };
+				const params = mode === "single" ? failing : {
+					tasks: [failing, { agent: "scout", task: "Read other files" }],
+					failFast: false,
+				};
+				const launch = await execute(`async-${mode}-settings-failure`, { ...params, async: true });
+				assert.ok(launch.details.asyncId, launch.content[0]?.text);
+				const persisted = await waitForAsyncResultFile(launch.details.asyncId);
+				assert.equal(persisted.state, "failed");
+				assert.equal(persisted.success, false);
+				assert.equal(persisted.results[0]?.success, false);
+				assert.match(persisted.results[0]?.error ?? "", /^Cannot apply the child's settings override: .+/);
+				const status = JSON.parse(fs.readFileSync(path.join(typesMod!.ASYNC_DIR, launch.details.asyncId, "status.json"), "utf-8"));
+				assert.equal(status.state, "failed");
+				assert.equal(status.steps[0].status, "failed");
+				assert.equal(status.steps[0].exitCode, 1);
+				assert.equal(status.steps[0].error, persisted.results[0].error);
+				assert.ok(status.endedAt);
+				assert.equal(mockPi.callCount(), mode === "single" ? 0 : 1, "the failing child must not launch on the parent's settings");
+				if (mode === "parallel") {
+					assert.equal(persisted.results[1]?.success, true);
+					assert.equal(persisted.results[1]?.skipped, undefined);
+					assert.equal(persisted.results[1]?.output, "sibling completed");
+					assert.equal(status.steps[1].status, "complete");
+				}
+				assert.equal(fs.readFileSync(parentSettingsPath, "utf-8"), invalidSettings);
+			} finally {
+				fs.writeFileSync(parentSettingsPath, JSON.stringify(PARENT_SETTINGS));
+			}
+		});
+	}
 
 	it("applies an async child's override", { skip: !asyncAvailable ? "jiti not available" : undefined }, async () => {
 		const launch = await execute("async-single", { agent: "one-shot", task: "a", async: true, settings: { theme: "call" } });
