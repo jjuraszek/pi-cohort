@@ -110,6 +110,17 @@ function stripChildBoundaryInstructions(prompt: string): string {
 	return rewritten.replace(/^(?:[ \t]*\r?\n)+/, "");
 }
 
+export type InheritedPromptCollections = { contextFiles?: unknown[]; skills?: unknown[] };
+
+export function dropInheritedPromptCollections(
+	options: InheritedPromptCollections | undefined,
+	inherit: { inheritProjectContext: boolean; inheritSkills: boolean },
+): void {
+	if (!options) return;
+	if (!inherit.inheritProjectContext && Array.isArray(options.contextFiles)) options.contextFiles.length = 0;
+	if (!inherit.inheritSkills && Array.isArray(options.skills)) options.skills.length = 0;
+}
+
 export function rewriteSubagentPrompt(
 	prompt: string,
 	options: { inheritProjectContext: boolean; inheritSkills: boolean; fanoutChild?: boolean },
@@ -326,11 +337,17 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI): void {
 		return { messages: stripped };
 	});
 
-	onRuntimeEvent("before_agent_start", async (event: { systemPrompt: string }) => {
+	onRuntimeEvent("before_agent_start", async (event: { systemPrompt: string; systemPromptOptions?: InheritedPromptCollections }) => {
 		const inheritProjectContext = readBooleanEnv(SUBAGENT_INHERIT_PROJECT_CONTEXT_ENV);
 		const inheritSkills = readBooleanEnv(SUBAGENT_INHERIT_SKILLS_ENV);
 		const fanoutChild = readBooleanEnv(SUBAGENT_FANOUT_CHILD_ENV);
 		if (inheritProjectContext === undefined && inheritSkills === undefined && fanoutChild === undefined) return;
+		// pi >= 1.5 renders the prompt from these collections and re-renders `event.systemPrompt`
+		// after they change, so emptying them drops the sections before the text strippers run.
+		dropInheritedPromptCollections(event.systemPromptOptions, {
+			inheritProjectContext: inheritProjectContext ?? true,
+			inheritSkills: inheritSkills ?? true,
+		});
 		const rewritten = rewriteSubagentPrompt(event.systemPrompt, {
 			inheritProjectContext: inheritProjectContext ?? true,
 			inheritSkills: inheritSkills ?? true,
