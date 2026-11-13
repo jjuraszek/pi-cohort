@@ -18,6 +18,7 @@ import {
 	assertNoMcpDirectTools,
 } from "./agents.ts";
 import { serializeAgent } from "./agent-serializer.ts";
+import { childSettingsError, type ChildSettings } from "../runs/shared/child-settings.ts";
 import { serializeChain, serializeJsonChain } from "./chain-serializer.ts";
 import { discoverAvailableSkills } from "./skills.ts";
 import type { Details, StopCondition } from "../shared/types.ts";
@@ -272,6 +273,14 @@ function applyAgentConfig(target: AgentConfig, cfg: Record<string, unknown>): st
 		else if (typeof cfg.extensions === "string") target.extensions = parseCsv(cfg.extensions);
 		else return "config.extensions must be a comma-separated string, empty string, or false when provided.";
 	}
+	if (hasKey(cfg, "settings")) {
+		if (cfg.settings === false) target.settings = undefined;
+		else {
+			const error = childSettingsError(cfg.settings, "config.settings");
+			if (error) return error;
+			target.settings = cfg.settings as ChildSettings;
+		}
+	}
 	if (hasKey(cfg, "thinking")) {
 		if (cfg.thinking === false || cfg.thinking === "") target.thinking = undefined;
 		else if (typeof cfg.thinking === "string") target.thinking = cfg.thinking.trim() || undefined;
@@ -385,6 +394,7 @@ function formatAgentDetail(agent: AgentConfig): string {
 	if (agent.source === "builtin") lines.push(`Disabled: ${agent.disabled ? "true" : "false"}`);
 	if (agent.extensions !== undefined) lines.push(`Extensions: ${agent.extensions.length ? agent.extensions.join(", ") : "(none)"}`);
 	if (agent.thinking) lines.push(`Thinking: ${agent.thinking}`);
+	if (agent.settings) lines.push(`Settings: ${JSON.stringify(agent.settings)}`);
 	if (agent.output) lines.push(`Output: ${agent.output}`);
 	if (agent.defaultReads?.length) lines.push(`Reads: ${agent.defaultReads.join(", ")}`);
 	if (agent.defaultProgress) lines.push("Progress: true");

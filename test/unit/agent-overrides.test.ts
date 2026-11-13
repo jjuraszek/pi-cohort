@@ -346,6 +346,63 @@ describe("builtin agent overrides", () => {
 		);
 	});
 
+	it("applies a settings override to a builtin agent", () => {
+		writeJson(path.join(tempHome, ".pi", "agent", "settings.json"), {
+			subagents: { agentOverrides: { reviewer: { settings: { contextPrune: { pruneOn: "next-prompt" } } } } },
+		});
+
+		const reviewer = discoverAgents(tempProject, "both").agents.find((agent) => agent.name === "reviewer");
+		assert.equal(reviewer?.source, "builtin");
+		assert.deepEqual(reviewer?.settings, { contextPrune: { pruneOn: "next-prompt" } });
+	});
+
+	it("fills a custom agent's settings from agentOverrides only when its frontmatter sets none", () => {
+		writeJson(path.join(tempProject, ".pi", "settings.json"), {
+			subagents: { agentOverrides: {
+				plain: { settings: { quietStartup: true } },
+				tuned: { settings: { quietStartup: true } },
+			} },
+		});
+		writeProjectAgent(tempProject, "plain", `---\nname: plain\ndescription: Plain\n---\n\nWork.\n`);
+		writeProjectAgent(tempProject, "tuned", `---\nname: tuned\ndescription: Tuned\nsettings: {"quietStartup":false}\n---\n\nWork.\n`);
+
+		const agents = discoverAgents(tempProject, "both").agents;
+		assert.deepEqual(agents.find((agent) => agent.name === "plain")?.settings, { quietStartup: true });
+		assert.deepEqual(agents.find((agent) => agent.name === "tuned")?.settings, { quietStartup: false });
+	});
+
+	it("names the user-only key a settings override tries to set", () => {
+		const settingsPath = path.join(tempHome, ".pi", "agent", "settings.json");
+		writeJson(settingsPath, {
+			subagents: { agentOverrides: { reviewer: { settings: { httpProxy: "http://proxy.example" } } } },
+		});
+
+		assert.throws(
+			() => discoverAgents(tempProject, "both"),
+			(error: unknown) => error instanceof Error
+				&& error.message.includes(settingsPath)
+				&& error.message.includes("reviewer")
+				&& error.message.includes("settings.httpProxy cannot be overridden for a child"),
+		);
+	});
+
+	it("fails on a user-only key in a project settings override instead of skipping the level", () => {
+		const settingsPath = path.join(tempProject, ".pi", "settings.json");
+		writeJson(settingsPath, {
+			subagents: {
+				maxSubagentDepth: 1,
+				agentOverrides: { reviewer: { settings: { defaultProjectTrust: "always" } } },
+			},
+		});
+
+		assert.throws(
+			() => discoverAgents(tempProject, "both"),
+			(error: unknown) => error instanceof Error
+				&& error.message.includes(settingsPath)
+				&& error.message.includes("settings.defaultProjectTrust cannot be overridden for a child"),
+		);
+	});
+
 	it("builds false sentinels when an override clears builtin fields", () => {
 		const override = buildBuiltinOverrideConfig(
 			{

@@ -29,6 +29,7 @@ import { buildWorkflowGraphSnapshot } from "../shared/workflow-graph.ts";
 import { ChainOutputValidationError, validateChainOutputBindings } from "../shared/chain-outputs.ts";
 import { createStructuredOutputRuntime } from "../shared/structured-output.ts";
 import { resolveEffectiveAcceptance } from "../shared/acceptance.ts";
+import { mergeChildSettings, type ChildSettings } from "../shared/child-settings.ts";
 import { executionBackendRegistrations } from "../../execution-backend/registry.ts";
 import type { DetachedExecutionBackendConfig } from "../../execution-backend/types.ts";
 import {
@@ -122,6 +123,7 @@ interface AsyncSingleParams {
 	output?: string | boolean;
 	outputMode?: "inline" | "file-only";
 	modelOverride?: string;
+	settings?: ChildSettings;
 	availableModels?: AvailableModelInfo[];
 	maxSubagentDepth: number;
 	worktreeSetupHook?: string;
@@ -531,6 +533,7 @@ export function executeAsyncChain(
 			),
 			tools: a.tools,
 			extensions: a.extensions,
+			settings: mergeChildSettings(a.settings, s.settings),
 			completionGuard: a.completionGuard,
 			systemPrompt,
 			systemPromptMode: a.systemPromptMode,
@@ -843,6 +846,7 @@ export function executeAsyncSingle(
 						),
 						tools: agentConfig.tools,
 						extensions: agentConfig.extensions,
+						settings: mergeChildSettings(agentConfig.settings, params.settings),
 						completionGuard: agentConfig.completionGuard,
 						systemPrompt,
 						systemPromptMode: agentConfig.systemPromptMode,

@@ -18,8 +18,10 @@ import {
 	SUBAGENT_RUN_ID_ENV,
 	applyThinkingSuffix,
 	buildPiArgs,
+	cleanupTempDir,
 	runDirEnv,
 } from "../../src/runs/shared/pi-args.ts";
+import { PINNED_AGENT_DIR, SUBAGENT_BASE_AGENT_DIR_ENV } from "../../src/shared/agent-dir.ts";
 import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_TOOL_NAME } from "../../src/runs/shared/structured-output.ts";
 import { parentModelFullId } from "../../src/shared/model-info.ts";
 import { parseNestedPathEnv } from "../../src/runs/shared/nested-path.ts";
@@ -501,6 +503,35 @@ describe("buildPiArgs system prompt mode wiring", () => {
 		assert.equal(cleanupCalls, 1);
 		assert.equal(fs.existsSync(allocatedDir), false);
 	});
+});
+
+describe("buildPiArgs settings override", () => {
+	const base = { baseArgs: ["-p"], task: "hi", sessionEnabled: false, inheritProjectContext: false, inheritSkills: false };
+
+	it("launches the child on its own agent directory and names the parent's for it", () => {
+		const { env, tempDir } = buildPiArgs({ ...base, settings: { contextPrune: { pruneOn: "next-prompt" } } });
+		assert.ok(tempDir);
+		tempRoots.push(tempDir);
+
+		const childAgentDir = env.PI_CODING_AGENT_DIR;
+		assert.ok(childAgentDir);
+		assert.equal(path.dirname(childAgentDir), tempDir);
+		const settings = JSON.parse(fs.readFileSync(path.join(childAgentDir, "settings.json"), "utf-8"));
+		assert.equal(settings.contextPrune.pruneOn, "next-prompt");
+		assert.equal(env[SUBAGENT_BASE_AGENT_DIR_ENV], PINNED_AGENT_DIR);
+
+		cleanupTempDir(tempDir);
+		assert.equal(fs.existsSync(childAgentDir), false);
+	});
+
+	for (const [label, settings] of [["no", undefined], ["an empty", {}]] as const) {
+		it(`leaves the agent directory alone for ${label} override and clears an inherited overlay marker`, () => {
+			const { env, tempDir } = buildPiArgs({ ...base, settings });
+			assert.equal(tempDir, undefined);
+			assert.equal(Object.hasOwn(env, "PI_CODING_AGENT_DIR"), false);
+			assert.equal(env[SUBAGENT_BASE_AGENT_DIR_ENV], "");
+		});
+	}
 });
 
 describe("buildPiArgs forwarded flags", () => {

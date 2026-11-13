@@ -1,6 +1,6 @@
-# subagent field reference: `config` and call-time `control`
+# subagent field reference: `config`, call-time `control`, and child `settings`
 
-Scope: management `config` (`action: create|update`) and call-time `control`. The execution-time `skill` override is documented in SKILL.md "Per-task overrides"; the last section below only contrasts it with management `skills` so the two are not confused.
+Scope: management `config` (`action: create|update`), call-time `control`, and the child `settings` override. The execution-time `skill` override is documented in SKILL.md "Per-task overrides"; the last section below only contrasts it with management `skills` so the two are not confused.
 
 ## Management config (skills, plural)
 
@@ -24,6 +24,7 @@ Scope (for `config`): this is the management create/update path (`parseStepList`
 | `skills` | string (csv) \| false | Skills injected into the agent (management config; execution-time per-task field is singular `skill`); false/"" clears. | none |
 | `extensions` | string (csv) \| "" \| false | Extension list; "" means empty list, false clears. | inherit |
 | `thinking` | string \| false | Thinking level; false/"" clears. | inherit |
+| `settings` | object \| false | `settings.json` keys every child of this agent launches with; false clears. Read "Child settings override" below. | inherit |
 | `inheritProjectContext` | boolean | Inject project AGENTS.md context. | per-agent default |
 | `inheritSkills` | boolean | Inherit parent-visible skills. | per-agent default |
 | `defaultContext` | `"fresh"` \| `"fork"` \| false | Default context mode; false/"" clears. | `"fresh"` |
@@ -83,3 +84,42 @@ Set `skill` (csv) on a top-level call, a `tasks[]` item, or a `chain[]` step to 
 | `label` | string | Set a single-call or `tasks[]` child label, or a sequential/static/dynamic chain task label, to render `<agent> - <label>` on live and result rows. Preserve item interpolation in dynamic template labels; keep a parallel group's own label on its group header. |
 
 For the full per-task field list, see SKILL.md "Per-task overrides".
+
+## Child settings override (`settings`)
+
+Set `settings` to an object of `settings.json` keys to launch a child with those values in place of the parent's. Use any pi key or any extension's block; every key left out keeps the parent's value.
+
+```
+subagent({ tasks: [
+  { agent: "worker", task: "one-shot job", settings: { contextPrune: { pruneOn: "next-prompt" } } },
+  { agent: "worker", task: "job I will steer" }
+] })
+```
+
+| Where | Applies to |
+|---|---|
+| top-level `settings` beside `agent` + `task` | that single child |
+| `tasks[].settings`, `chain[].settings`, `chain[].parallel[].settings` | that one child; its siblings and the parent keep their settings |
+| `chain[].parallel.settings` on a dynamic fanout step | every expanded child of the step |
+| agent frontmatter `settings: {"key": value}` (JSON on one line), management `config.settings` | every launch of that agent |
+| `subagents.agentOverrides.<name>.settings` in `settings.json` | every launch of that agent, when its frontmatter sets no `settings` |
+
+Precedence per key, first defined wins:
+
+| 1 | 2 | 3 |
+|---|---|---|
+| `settings` on the call | the agent's `settings` | the parent's agent-directory `settings.json` |
+
+Objects merge key by key at every level; arrays and scalars replace.
+
+Rules:
+
+- Leave `defaultProjectTrust`, `httpProxy`, and `selfUpdateCommand` out: pi takes them only from the user's own `settings.json`, and the call fails before any child starts with `settings.<key> cannot be overridden for a child`, wherever the override is written, a project `.pi/settings.json` included.
+- Put a key in the project's `.pi/settings.json` to pin it for every session in that project: pi merges project settings over the agent directory, so a project value beats this override.
+- Put `settings` only on parallel members or the dynamic fanout template in a saved `.chain.json`: those pass through, but `mapSavedChainSteps` drops `settings` from sequential steps by copying a fixed field list.
+- Keep `settings` off children using an OAuth MCP server whose token may expire during the run: an overridden child shares `mcp-auth.json` with the parent but takes pi's MCP OAuth refresh lock in its own temporary directory, so two overridden children, or one and the parent session, can refresh the same MCP sign-in at once and a server that rotates refresh tokens can drop the sign-in.
+- Repeat `settings` at each level of nesting: a child's own children launch with the top-level session's settings, not the child's override.
+- Put an override that must survive `action: "resume"` in the agent's `settings`: a resumed child gets the agent's override, not the one from the original call.
+- Write a local path in the parent's `settings.json` that climbs out of the agent directory (`../shared/ext.ts`) as an absolute path: pi resolves relative paths against the child's temporary directory.
+
+The child runs with `PI_CODING_AGENT_DIR` set to a temporary agent directory: its `settings.json` is the merged file, every other entry links to the parent's directory, and it is removed when the child exits. `PI_SUBAGENT_BASE_AGENT_DIR` holds the parent's directory. The parent's `settings.json` is never written; a setting the child saves is discarded with the directory. File links need symlink permission. A launch that cannot build the directory fails with `Cannot apply the child's settings override: <reason>`.

@@ -180,6 +180,33 @@ Inspect
 		assert.match(readText(got), /Completion guard: false/);
 	});
 
+	it("creates an agent with a settings override and clears it with false", () => {
+		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] } };
+		const created = handleCreate(
+			{ config: { name: "one-shot", description: "One-shot worker", scope: "project", settings: { contextPrune: { pruneOn: "next-prompt" } } } },
+			ctx,
+		);
+		assert.equal(created.isError, false, readText(created));
+		const filePath = path.join(tempDir, ".pi", "agents", "one-shot.md");
+		assert.match(fs.readFileSync(filePath, "utf-8"), /^settings: \{"contextPrune":\{"pruneOn":"next-prompt"\}\}$/m);
+		assert.match(readText(handleManagementAction("get", { agent: "one-shot" }, ctx)), /Settings: \{"contextPrune":\{"pruneOn":"next-prompt"\}\}/);
+
+		const cleared = handleUpdate({ agent: "one-shot", config: { settings: false } }, ctx);
+		assert.equal(cleared.isError, false, readText(cleared));
+		assert.doesNotMatch(fs.readFileSync(filePath, "utf-8"), /^settings:/m);
+	});
+
+	it("rejects a settings override for a user-only key before writing the agent", () => {
+		const result = handleCreate(
+			{ config: { name: "one-shot", description: "One-shot worker", scope: "project", settings: { defaultProjectTrust: "always" } } },
+			{ cwd: tempDir, modelRegistry: { getAvailable: () => [] } },
+		);
+
+		assert.equal(result.isError, true);
+		assert.equal(readText(result), "config.settings.defaultProjectTrust cannot be overridden for a child: pi takes it only from the user's own settings.json.");
+		assert.equal(fs.existsSync(path.join(tempDir, ".pi", "agents", "one-shot.md")), false);
+	});
+
 	it("rejects non-boolean completion guard config", () => {
 		const result = handleCreate(
 			{ config: { name: "test-runner", description: "Run tests", scope: "project", completionGuard: "false" } },

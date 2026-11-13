@@ -1,3 +1,5 @@
+import type { ChildSettings } from "./child-settings.ts";
+
 export interface RunnerSubagentStep {
 	agent: string;
 	task: string;
@@ -11,6 +13,7 @@ export interface RunnerSubagentStep {
 	modelCandidates?: string[];
 	tools?: string[];
 	extensions?: string[];
+	settings?: ChildSettings;
 	completionGuard?: boolean;
 	systemPrompt?: string | null;
 	systemPromptMode?: "append" | "replace";

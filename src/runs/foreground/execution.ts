@@ -43,11 +43,12 @@ import {
 import { buildSkillInjection, resolveSkillsWithFallback } from "../../agents/skills.ts";
 import { blockedLine } from "../shared/completion-guard.ts";
 import { getPiSpawnCommand, PiRuntimeLaunchError } from "../shared/pi-spawn.ts";
-import { PINNED_AGENT_DIR_OVERRIDE } from "../../shared/agent-dir.ts";
+import { pinChildAgentDir } from "../../shared/agent-dir.ts";
 import { createJsonlWriter } from "../../shared/jsonl-writer.ts";
 import { recordStop, stoppingAncestor, sweepBackgroundDescendants } from "../shared/stop-control.ts";
 import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
 import { buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
+import { mergeChildSettings } from "../shared/child-settings.ts";
 import { captureSingleOutputSnapshot, formatFileOnlyFailure, validateFileOnlyOutputMode } from "../shared/single-output.ts";
 import {
 	buildModelCandidates,
@@ -154,6 +155,7 @@ async function runSingleAttempt(
 		inheritSkills: agent.inheritSkills,
 		tools: agent.tools,
 		extensions: agent.extensions,
+		settings: agent.settings,
 		systemPrompt: shared.systemPrompt,
 		cwd: options.cwd ?? runtimeCwd,
 		promptFileStem: agent.name,
@@ -177,7 +179,8 @@ async function runSingleAttempt(
 	let interruptedByControl = false;
 	let pendingControlEvents: ControlEvent[] = init.pendingControlEvents;
 	const controlConfig = init.controlConfig;
-	const spawnEnv = { ...process.env, ...sharedEnv, ...getSubagentDepthEnv(options.maxSubagentDepth), ...(PINNED_AGENT_DIR_OVERRIDE ? { PI_CODING_AGENT_DIR: PINNED_AGENT_DIR_OVERRIDE } : {}) };
+	const spawnEnv = { ...process.env, ...sharedEnv, ...getSubagentDepthEnv(options.maxSubagentDepth) };
+	pinChildAgentDir(spawnEnv);
 	let observedMutationAttempt = false;
 
 	const exitCode = await new Promise<number>((resolve, reject) => {
@@ -822,7 +825,11 @@ async function runOwnedSync(
 			options.availableModels,
 			options.preferredModelProvider,
 		);
-		const effectiveAgent: AgentConfig = { ...agent, thinking: agent.thinking ?? options.parentThinking };
+		const effectiveAgent: AgentConfig = {
+			...agent,
+			thinking: agent.thinking ?? options.parentThinking,
+			settings: mergeChildSettings(agent.settings, options.settings),
+		};
 		const attemptedModels: string[] = [];
 		const modelAttempts: ModelAttempt[] = [];
 		const aggregateUsage = emptyUsage();

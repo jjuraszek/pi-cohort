@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import type { AcceptanceInput, ExtensionConfig, OutputMode, StopCondition } from "../shared/types.ts";
 import { getAgentDir } from "../shared/utils.ts";
 import { KNOWN_FIELDS } from "./agent-serializer.ts";
+import { childSettingsError, userOnlySettingsKey, type ChildSettings } from "../runs/shared/child-settings.ts";
 import { parseChain, parseJsonChain } from "./chain-serializer.ts";
 import { mergeAgentsForScope } from "./agent-selection.ts";
 import { parseFrontmatter } from "./frontmatter.ts";
@@ -23,6 +24,13 @@ class InvalidExecutionBackendSettingError extends Error {
 	constructor(message: string) {
 		super(message);
 		this.name = "InvalidExecutionBackendSettingError";
+	}
+}
+
+class UserOnlyChildSettingError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "UserOnlyChildSettingError";
 	}
 }
 type SystemPromptMode = "append" | "replace";
@@ -60,6 +68,7 @@ export interface BuiltinAgentOverrideBase {
 	skills?: string[];
 	tools?: string[];
 	completionGuard?: boolean;
+	settings?: ChildSettings;
 }
 
 interface BuiltinAgentOverrideConfig {
@@ -77,6 +86,7 @@ interface BuiltinAgentOverrideConfig {
 	toolsPrepend?: string[];
 	toolsAppend?: string[];
 	completionGuard?: boolean;
+	settings?: ChildSettings;
 }
 
 interface BuiltinAgentOverrideInfo {
@@ -103,6 +113,8 @@ export interface AgentConfig {
 	filePath: string;
 	skills?: string[];
 	extensions?: string[];
+	/** settings.json keys every child of this agent overrides. */
+	settings?: ChildSettings;
 	output?: string;
 	defaultReads?: string[];
 	defaultProgress?: boolean;
@@ -212,6 +224,7 @@ function cloneOverrideBase(agent: AgentConfig): BuiltinAgentOverrideBase {
 		skills: agent.skills ? [...agent.skills] : undefined,
 		tools: agent.tools ? [...agent.tools] : undefined,
 		completionGuard: agent.completionGuard,
+		settings: agent.settings,
 	};
 }
 
@@ -233,6 +246,7 @@ function cloneOverrideValue(override: BuiltinAgentOverrideConfig): BuiltinAgentO
 		...(override.toolsPrepend !== undefined ? { toolsPrepend: [...override.toolsPrepend] } : {}),
 		...(override.toolsAppend !== undefined ? { toolsAppend: [...override.toolsAppend] } : {}),
 		...(override.completionGuard !== undefined ? { completionGuard: override.completionGuard } : {}),
+		...(override.settings !== undefined ? { settings: override.settings } : {}),
 	};
 }
 
@@ -428,6 +442,15 @@ function parseBuiltinOverrideEntry(
 		}
 	}
 
+	if ("settings" in input) {
+		const error = childSettingsError(input.settings, "settings");
+		if (error) {
+			const message = `Builtin override '${name}' in '${filePath}' has invalid 'settings': ${error}`;
+			throw userOnlySettingsKey(input.settings) ? new UserOnlyChildSettingError(message) : new Error(message);
+		}
+		override.settings = input.settings as ChildSettings;
+	}
+
 	if ("systemPrompt" in input) {
 		if (typeof input.systemPrompt === "string") override.systemPrompt = input.systemPrompt;
 		else throw new Error(`Builtin override '${name}' in '${filePath}' has invalid 'systemPrompt'; expected a string.`);
@@ -534,8 +557,9 @@ function readMergedProjectSubagentSettings(cwd: string): SubagentSettings {
 		try {
 			levelSettings = readSubagentSettings(settingsPath);
 		} catch (error) {
-			// Invalid backend policy must not silently fall back to native execution.
-			if (error instanceof InvalidExecutionBackendSettingError) {
+			// Invalid backend policy must not silently fall back to native execution,
+			// and a refused child setting must not take the level's other keys down with it.
+			if (error instanceof InvalidExecutionBackendSettingError || error instanceof UserOnlyChildSettingError) {
 				throw error;
 			}
 			const message = error instanceof Error ? error.message : String(error);
@@ -615,6 +639,7 @@ function applyBuiltinOverride(
 		next.tools = composeOverrideTools(effective, override.toolsPrepend, override.toolsAppend);
 	}
 	if (override.completionGuard !== undefined) next.completionGuard = override.completionGuard;
+	if (override.settings !== undefined) next.settings = override.settings;
 
 	return next;
 }
@@ -725,6 +750,9 @@ function applyCustomAgentOverride(
 	}
 	if (override.completionGuard !== undefined) {
 		fill("completionGuard", agent.completionGuard === undefined, override.completionGuard);
+	}
+	if (override.settings !== undefined) {
+		fill("settings", agent.settings === undefined, override.settings);
 	}
 
 	if (!anyFilled) return agent;
@@ -864,6 +892,18 @@ function isChainFileName(fileName: string): boolean {
 	return fileName.endsWith(".chain.md") || fileName.endsWith(".chain.json");
 }
 
+function parseFrontmatterSettings(raw: string, context: string): ChildSettings {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch {
+		throw new Error(`${context}: settings must be a JSON object on one line.`);
+	}
+	const error = childSettingsError(parsed, "settings");
+	if (error) throw new Error(`${context}: ${error}`);
+	return parsed as ChildSettings;
+}
+
 function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 	const agents: AgentConfig[] = [];
 
@@ -936,6 +976,10 @@ function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 				.filter(Boolean);
 		}
 
+		const settings = frontmatter.settings === undefined
+			? undefined
+			: parseFrontmatterSettings(frontmatter.settings, `Agent '${localName}' in '${filePath}'`);
+
 		const extraFields: Record<string, string> = {};
 		for (const [key, value] of Object.entries(frontmatter)) {
 			if (!KNOWN_FIELDS.has(key)) extraFields[key] = value;
@@ -966,6 +1010,7 @@ function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 			filePath,
 			skills: skills && skills.length > 0 ? skills : undefined,
 			extensions,
+			settings,
 			output: frontmatter.output,
 			defaultReads: defaultReads && defaultReads.length > 0 ? defaultReads : undefined,
 			defaultProgress: frontmatter.defaultProgress === "true",

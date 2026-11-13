@@ -5,6 +5,7 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ProjectTrust } from "../runs/shared/project-trust.ts";
+import type { ChildSettings } from "../runs/shared/child-settings.ts";
 import { PINNED_AGENT_DIR } from "./agent-dir.ts";
 import type { PiRuntimeIdentity } from "../runs/shared/pi-spawn.ts";
 import type { Message } from "@earendil-works/pi-ai";
@@ -845,6 +846,8 @@ export interface RunSyncOptions {
 	projectTrust?: ProjectTrust;
 	/** Override the agent's default model (format: "provider/id" or just "id") */
 	modelOverride?: string;
+	/** settings.json keys for this child, merged over the agent's own `settings` */
+	settings?: ChildSettings;
 	/** Registry models available for heuristic bare-model resolution */
 	availableModels?: Array<{ provider: string; id: string; fullId: string }>;
 	/** Current parent-session provider to prefer for ambiguous bare model ids */

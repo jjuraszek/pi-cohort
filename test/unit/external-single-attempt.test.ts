@@ -175,6 +175,50 @@ describe("runExternalSingleAttempt", () => {
 		});
 	}
 
+	it("launches a child with a settings override on its own agent directory", () => {
+		const tempDir = createTempDir();
+		const parentAgentDir = path.join(tempDir, "profile");
+		fs.mkdirSync(parentAgentDir);
+		fs.writeFileSync(path.join(parentAgentDir, "settings.json"), JSON.stringify({ theme: "dark", contextPrune: { pruneOn: "agent-message", keep: 3 } }));
+		fs.writeFileSync(path.join(parentAgentDir, "auth.json"), "{}");
+		const script = `
+			import fs from "node:fs";
+			import path from "node:path";
+			const { runExternalSingleAttempt } = await import(${JSON.stringify(new URL("../../src/runs/foreground/external-single-attempt.ts", import.meta.url).href)});
+			const { makeAgent } = await import(${JSON.stringify(new URL("../support/helpers.ts", import.meta.url).href)});
+			const seen = {};
+			const owner = { async runAttempt(request) {
+				seen.environment = request.environment;
+				const childAgentDir = request.environment.PI_CODING_AGENT_DIR;
+				seen.entries = fs.readdirSync(childAgentDir).sort();
+				seen.settings = JSON.parse(fs.readFileSync(path.join(childAgentDir, "settings.json"), "utf-8"));
+				return ${JSON.stringify(baseAttemptResult())};
+			} };
+			await runExternalSingleAttempt({
+				owner, attemptId: "fresh", runtimeCwd: process.cwd(),
+				agent: makeAgent("worker", { settings: { contextPrune: { pruneOn: "next-prompt" } } }),
+				model: undefined, task: "Task",
+				options: { runtime: ${JSON.stringify(runtime)}, runId: "fresh", sessionFile: ${JSON.stringify(SESSION_FILE)} },
+				shared: { sessionEnabled: true, systemPrompt: "", attemptNotes: [] }
+			});
+			seen.removed = !fs.existsSync(seen.environment.PI_CODING_AGENT_DIR);
+			console.log(JSON.stringify(seen));
+		`;
+		try {
+			const output = execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+				cwd: tempDir, env: { ...process.env, PI_CODING_AGENT_DIR: parentAgentDir }, encoding: "utf8", timeout: 10_000,
+			});
+			const seen = JSON.parse(output);
+			assert.notEqual(seen.environment.PI_CODING_AGENT_DIR, parentAgentDir);
+			assert.equal(seen.environment.PI_SUBAGENT_BASE_AGENT_DIR, parentAgentDir);
+			assert.deepEqual(seen.entries, ["auth.json", "settings.json"]);
+			assert.deepEqual(seen.settings, { theme: "dark", contextPrune: { pruneOn: "next-prompt", keep: 3 } });
+			assert.equal(seen.removed, true);
+		} finally {
+			removeTempDir(tempDir);
+		}
+	});
+
 	it("preserves normal extension discovery when agent extensions are absent", async () => {
 		const { owner, calls } = makeOwner(() => baseAttemptResult());
 		const agent = makeAgent("worker");

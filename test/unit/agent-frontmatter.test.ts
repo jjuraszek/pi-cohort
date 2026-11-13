@@ -186,6 +186,53 @@ Validate changes
 	});
 });
 
+describe("agent frontmatter settings", () => {
+	function discoverWithSettings(settingsLine: string) {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cohort-agent-settings-"));
+		tempDirs.push(dir);
+		const agentsDir = path.join(dir, ".pi", "agents");
+		fs.mkdirSync(agentsDir, { recursive: true });
+		const filePath = path.join(agentsDir, "one-shot.md");
+		fs.writeFileSync(filePath, `---\nname: one-shot\ndescription: One-shot worker\n${settingsLine}\n---\n\nDo the task\n`, "utf-8");
+		return { filePath, discover: () => discoverAgents(dir, "project").agents.find((agent) => agent.name === "one-shot") };
+	}
+
+	it("round-trips a settings override through serialized frontmatter", () => {
+		const settings = { contextPrune: { pruneOn: "next-prompt" }, quietStartup: true };
+		const serialized = serializeAgent({
+			name: "one-shot",
+			description: "One-shot worker",
+			systemPrompt: "Do the task",
+			systemPromptMode: "replace",
+			inheritProjectContext: false,
+			inheritSkills: false,
+			source: "project",
+			filePath: "/tmp/one-shot.md",
+			settings,
+		});
+		const line = serialized.split("\n").find((candidate) => candidate.startsWith("settings:"));
+		assert.equal(line, 'settings: {"contextPrune":{"pruneOn":"next-prompt"},"quietStartup":true}');
+
+		const agent = discoverWithSettings(line).discover();
+		assert.deepEqual(agent?.settings, settings);
+		assert.equal(agent?.extraFields?.settings, undefined);
+	});
+
+	it("names the file and the key when frontmatter overrides a user-only setting", () => {
+		const { filePath, discover } = discoverWithSettings('settings: {"defaultProjectTrust":"always"}');
+		assert.throws(discover, (error: unknown) => error instanceof Error
+			&& error.message.includes(filePath)
+			&& error.message.includes("settings.defaultProjectTrust cannot be overridden for a child"));
+	});
+
+	it("rejects frontmatter settings that are not one line of JSON", () => {
+		const { filePath, discover } = discoverWithSettings("settings: contextPrune.pruneOn=next-prompt");
+		assert.throws(discover, (error: unknown) => error instanceof Error
+			&& error.message.includes(filePath)
+			&& error.message.includes("settings must be a JSON object on one line."));
+	});
+});
+
 describe("agent frontmatter maxSubagentDepth", () => {
 	it("serializes maxSubagentDepth into agent frontmatter", () => {
 		const agent: AgentConfig = {

@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import { pathToFileURL } from "node:url";
 import * as path from "node:path";
 import { after, test } from "node:test";
@@ -21,6 +22,7 @@ import { createExternalExecution as createExternalExecutionImpl } from "../../sr
 import { runExternalBackgroundAttempt as runExternalBackgroundAttemptImpl, type OnSynthesizedChildEvent } from "../../src/runs/background/external-attempt.ts";
 import { runSingleStep as runSingleStepImpl } from "../../src/runs/background/subagent-runner.ts";
 import { getArtifactPaths } from "../../src/shared/artifacts.ts";
+import { PINNED_AGENT_DIR } from "../../src/shared/agent-dir.ts";
 import { createMockPi, createTempDir, removeTempDir } from "../support/helpers.ts";
 
 const mockPi = createMockPi();
@@ -47,7 +49,7 @@ const net = require("node:net");
 const args = process.argv.slice(2);
 fs.writeFileSync(require("node:path").join(process.cwd(), "child.pid"), String(process.pid));
 fs.appendFileSync(require("node:path").join(process.cwd(), "child.pids"), process.pid + "\\n");
-${argsPath ? `fs.appendFileSync(${JSON.stringify(`${argsPath}.count`)}, "1\\n"); fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(args)); fs.writeFileSync(${JSON.stringify(`${argsPath}.parent-session-id`)}, process.env.PI_SUBAGENT_PARENT_SESSION_ID ?? ""); fs.writeFileSync(${JSON.stringify(`${argsPath}.control-env`)}, JSON.stringify({ path: process.env.PI_SUBAGENT_PARENT_PATH, ownerPid: process.env.PI_SUBAGENT_OWNER_PID }));` : ""}
+${argsPath ? `fs.appendFileSync(${JSON.stringify(`${argsPath}.count`)}, "1\\n"); fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(args)); fs.writeFileSync(${JSON.stringify(`${argsPath}.parent-session-id`)}, process.env.PI_SUBAGENT_PARENT_SESSION_ID ?? ""); fs.writeFileSync(${JSON.stringify(`${argsPath}.control-env`)}, JSON.stringify({ path: process.env.PI_SUBAGENT_PARENT_PATH, ownerPid: process.env.PI_SUBAGENT_OWNER_PID })); if (process.env.PI_SUBAGENT_BASE_AGENT_DIR) fs.writeFileSync(${JSON.stringify(`${argsPath}.settings`)}, fs.readFileSync(require("node:path").join(process.env.PI_CODING_AGENT_DIR, "settings.json")));` : ""}
 const sessionFile = args[args.indexOf("--session") + 1];
 if (!sessionFile) { console.error("no --session"); process.exit(1); }
 if (${JSON.stringify(outcome)} === "missing-result") process.exit(0);
@@ -470,7 +472,11 @@ for (const scenario of ["fork", "fresh", "missing", "headerless", "untrusted"] a
 	});
 }
 
-test("runSingleStep retains the surface and removes its prompt directory when an external attempt throws", unixOnly, async () => {
+for (const failure of ["attempt", "settings-build"] as const) {
+test(`runSingleStep retains the surface after an external ${failure} failure`, unixOnly, async t => {
+	// The settings-build case writes the parent's settings.json, so it runs only against the isolated test home.
+	const isolated = PINNED_AGENT_DIR === path.join(os.homedir(), ".pi", "agent") && path.basename(path.dirname(os.homedir())).startsWith("pct-");
+	if (failure === "settings-build" && !isolated) return t.skip("needs the isolated test home");
 	const tempDir = createTempDir("bg-runner-throw-");
 	const binDir = path.join(tempDir, "bin");
 	const argsPath = path.join(tempDir, "pi-args.json");
@@ -479,8 +485,11 @@ test("runSingleStep retains the surface and removes its prompt directory when an
 
 	const requests: ExecutionSurfaceRequest[] = [];
 	const hosts: ReturnType<typeof spawn>[] = [];
+	const parentSettingsPath = path.join(PINNED_AGENT_DIR, "settings.json");
+	const parentSettings = fs.existsSync(parentSettingsPath) ? fs.readFileSync(parentSettingsPath, "utf-8") : undefined;
 	const finishSecret = "SENTINEL_OBSERVER_RELEASE_SECRET";
-	const lifecycle: BackendLifecycle = { releases: 0, closes: 0, releaseError: finishSecret };
+	const closeReasons: string[] = [];
+	const lifecycle: BackendLifecycle = { releases: 0, closes: 0, releaseError: finishSecret, onClose: reason => closeReasons.push(reason) };
 	const backendName = `fake-bg-runner-throw-${process.pid}`;
 	const dispose = registerExecutionBackend(makeBackend(backendName, binDir, requests, hosts, lifecycle));
 	const savedPath = process.env.PATH;
@@ -491,6 +500,7 @@ test("runSingleStep retains the surface and removes its prompt directory when an
 			agent: "worker",
 			task: "Exercise the throwing external attempt",
 			systemPrompt: "runner fixture prompt",
+			settings: { quietStartup: true },
 			inheritProjectContext: false,
 			inheritSkills: false,
 		}, {
@@ -501,6 +511,12 @@ test("runSingleStep retains the surface and removes its prompt directory when an
 			sessionEnabled: true,
 			sessionDir: tempDir,
 			id: "bg-runner-throw", childId: "child-throw",
+			onAttemptStart: () => {
+				if (failure === "settings-build") {
+					fs.mkdirSync(PINNED_AGENT_DIR, { recursive: true });
+					fs.writeFileSync(parentSettingsPath, "{ invalid json");
+				}
+			},
 			flatIndex: 0,
 			parentSessionLabel: "P",
 			parentSessionId: "parent-session-id",
@@ -512,29 +528,42 @@ test("runSingleStep retains the surface and removes its prompt directory when an
 		});
 
 		assert.equal(result.exitCode, 1);
-		assert.equal(
-			result.error,
-			"External execution attempt failed (result_missing)\nExternal execution finish failed",
-		);
+		if (failure === "settings-build") {
+			assert.match(result.error ?? "", /^Cannot apply the child's settings override: .+\nExternal execution finish failed$/);
+		} else {
+			assert.equal(result.error, "External execution attempt failed (result_missing)\nExternal execution finish failed");
+		}
 		assert.ok(!result.error.includes(finishSecret), `must not leak backend finish errors: ${result.error}`);
 		assert.equal(result.executionSurface?.retained, true);
 		assert.equal(result.executionSurface?.handle.backend, backendName);
 		assert.equal(lifecycle.releases, 1);
-		assert.equal(lifecycle.closes, 0);
 		assert.equal(requests.length, 1);
-		assert.equal(fixtureInvocationCount(argsPath), 1, "must not fall back to native execution");
-		assert.equal(fs.existsSync(promptTempDir(argsPath)), false);
-		const childArgs = JSON.parse(fs.readFileSync(argsPath, "utf-8")) as string[];
-		assert.equal(childArgs[childArgs.indexOf("--name") + 1], "worker child- from P");
-		assert.ok(childArgs.includes("--approve"));
-		assert.equal(fs.readFileSync(`${argsPath}.parent-session-id`, "utf-8"), "parent-session-id");
+		if (failure === "settings-build") {
+			assert.equal(fs.existsSync(`${argsPath}.count`), false, "a settings-build failure must not launch a child");
+			assert.ok(hosts.every(host => host.exitCode !== null || host.signalCode !== null), "the unused host must exit before finalization");
+			assert.ok(closeReasons.every(reason => reason === "explicit_cleanup"), "an unused host may need cleanup but must not be marked delivered");
+		} else {
+			assert.equal(lifecycle.closes, 0);
+			assert.equal(fixtureInvocationCount(argsPath), 1, "must not fall back to native execution");
+			assert.equal(fs.existsSync(promptTempDir(argsPath)), false);
+			const childArgs = JSON.parse(fs.readFileSync(argsPath, "utf-8")) as string[];
+			assert.equal(childArgs[childArgs.indexOf("--name") + 1], "worker child- from P");
+			assert.ok(childArgs.includes("--approve"));
+			assert.equal(fs.readFileSync(`${argsPath}.parent-session-id`, "utf-8"), "parent-session-id");
+			assert.equal(JSON.parse(fs.readFileSync(`${argsPath}.settings`, "utf-8")).quietStartup, true);
+		}
 	} finally {
+		if (failure === "settings-build") {
+			if (parentSettings === undefined) fs.rmSync(parentSettingsPath, { force: true });
+			else fs.writeFileSync(parentSettingsPath, parentSettings);
+		}
 		process.env.PATH = savedPath;
 		dispose();
 		await cleanupHosts(hosts);
 		removeTempDir(tempDir);
 	}
 });
+}
 
 test("runSingleStep sanitizes an external startup failure without falling back to native execution", unixOnly, async () => {
 	const tempDir = createTempDir("bg-runner-startup-");

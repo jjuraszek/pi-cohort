@@ -8,7 +8,7 @@
  * before the task arg and forwards all other args unchanged.
  */
 import * as path from "node:path";
-import { PINNED_AGENT_DIR_OVERRIDE } from "../../shared/agent-dir.ts";
+import { pinChildAgentDir } from "../../shared/agent-dir.ts";
 import { fileURLToPath } from "node:url";
 import type { Message } from "@earendil-works/pi-ai";
 import type { Usage } from "../../shared/types.ts";
@@ -158,7 +158,7 @@ export async function runExternalBackgroundAttempt(
 		if (value !== undefined) mergedEnv[key] = value;
 	}
 
-	if (PINNED_AGENT_DIR_OVERRIDE) mergedEnv.PI_CODING_AGENT_DIR = PINNED_AGENT_DIR_OVERRIDE;
+	pinChildAgentDir(mergedEnv);
 
 	const onNewSessionMessage: OnNewSessionMessage | undefined = onChildEvent
 		? (message) => synthesizeChildEvents(message, onChildEvent)

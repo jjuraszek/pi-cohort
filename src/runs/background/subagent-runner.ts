@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { PINNED_AGENT_DIR_OVERRIDE } from "../../shared/agent-dir.ts";
+import { pinChildAgentDir } from "../../shared/agent-dir.ts";
 import type { ProjectTrust } from "../shared/project-trust.ts";
 import { resolveExtensionConfig } from "../../agents/agents.ts";
 import * as fs from "node:fs";
@@ -279,7 +279,7 @@ function runPiStreaming(
 		const spawnSpec = getPiSpawnCommand(args, runtime);
 		const outputStream = fs.createWriteStream(outputFile, { flags: "w" });
 		const spawnEnv = { ...process.env, ...(env ?? {}), ...getSubagentDepthEnv(maxSubagentDepth) };
-		if (PINNED_AGENT_DIR_OVERRIDE) spawnEnv.PI_CODING_AGENT_DIR = PINNED_AGENT_DIR_OVERRIDE;
+		pinChildAgentDir(spawnEnv);
 		const child = spawn(spawnSpec.command, spawnSpec.args, {
 			cwd,
 			stdio: ["ignore", "pipe", "pipe"],
@@ -837,46 +837,49 @@ async function runSingleStepAttempts(
 				if (!step.sessionFile) fs.mkdirSync(ctx.sessionDir!, { recursive: true });
 				const attemptSessionFile = step.sessionFile ?? path.join(ctx.sessionDir!, `session-${ctx.flatIndex}-attempt-${index}.jsonl`);
 				finalSessionFile = attemptSessionFile;
-				const { args, env, tempDir } = buildPiArgs({
-					baseArgs: [],
-					task,
-					sessionEnabled,
-					sessionDir,
-					// Always pass --session for external runs: the reporting protocol requires the session file path.
-					// Step.sessionFile takes precedence if explicitly set; otherwise use the per-attempt path.
-					sessionFile: step.sessionFile ?? attemptSessionFile,
-					model: candidate,
-					inheritProjectContext: step.inheritProjectContext,
-					inheritSkills: step.inheritSkills,
-					tools: step.tools,
-					extensions: step.extensions,
-					systemPrompt: step.systemPrompt,
-					systemPromptMode: step.systemPromptMode,
-					cwd: childCwd,
-					promptFileStem: step.agent,
-					runId: ctx.id,
-					childId: ctx.childId,
-					parentPath: ctx.parentPath ? [...ctx.parentPath, { runId: ctx.id, childId: ctx.childId, stepIndex: ctx.flatIndex, agent: step.agent }] : undefined,
-					childAgentName: step.agent,
-					childIndex: ctx.flatIndex,
-					parentSessionLabel: ctx.parentSessionLabel,
-					parentSessionId: ctx.parentSessionId,
-					parentEventSink: ctx.nestedRoute?.eventSink,
-					parentControlInbox: ctx.nestedRoute?.controlInbox,
-					parentRootRunId: ctx.nestedRoute?.rootRunId,
-					parentCapabilityToken: ctx.nestedRoute?.capabilityToken,
-					structuredOutput: effectiveStructuredOutput,
-					forwardedFlags: ctx.forwardedFlags,
-					projectTrust: ctx.projectTrust,
-				});
-				const mergedEnv: Record<string, string> = {};
-				for (const [k, v] of Object.entries({ ...process.env, ...env, ...getSubagentDepthEnv(step.maxSubagentDepth) })) {
-					if (v !== undefined) mergedEnv[k] = v;
-				}
-				mergedEnv[SUBAGENT_OWNER_PID_ENV] = "";
+				let piArgs: ReturnType<typeof buildPiArgs> | undefined;
 				let run: import("./external-attempt.ts").ExternalBackgroundAttemptResult;
 				try {
 					try {
+						piArgs = buildPiArgs({
+							baseArgs: [],
+							task,
+							sessionEnabled,
+							sessionDir,
+							// Always pass --session for external runs: the reporting protocol requires the session file path.
+							// Step.sessionFile takes precedence if explicitly set; otherwise use the per-attempt path.
+							sessionFile: step.sessionFile ?? attemptSessionFile,
+							model: candidate,
+							inheritProjectContext: step.inheritProjectContext,
+							inheritSkills: step.inheritSkills,
+							tools: step.tools,
+							extensions: step.extensions,
+							settings: step.settings,
+							systemPrompt: step.systemPrompt,
+							systemPromptMode: step.systemPromptMode,
+							cwd: childCwd,
+							promptFileStem: step.agent,
+							runId: ctx.id,
+							childId: ctx.childId,
+							parentPath: ctx.parentPath ? [...ctx.parentPath, { runId: ctx.id, childId: ctx.childId, stepIndex: ctx.flatIndex, agent: step.agent }] : undefined,
+							childAgentName: step.agent,
+							childIndex: ctx.flatIndex,
+							parentSessionLabel: ctx.parentSessionLabel,
+							parentSessionId: ctx.parentSessionId,
+							parentEventSink: ctx.nestedRoute?.eventSink,
+							parentControlInbox: ctx.nestedRoute?.controlInbox,
+							parentRootRunId: ctx.nestedRoute?.rootRunId,
+							parentCapabilityToken: ctx.nestedRoute?.capabilityToken,
+							structuredOutput: effectiveStructuredOutput,
+							forwardedFlags: ctx.forwardedFlags,
+							projectTrust: ctx.projectTrust,
+						});
+						const { args, env } = piArgs;
+						const mergedEnv: Record<string, string> = {};
+						for (const [k, v] of Object.entries({ ...process.env, ...env, ...getSubagentDepthEnv(step.maxSubagentDepth) })) {
+							if (v !== undefined) mergedEnv[k] = v;
+						}
+						mergedEnv[SUBAGENT_OWNER_PID_ENV] = "";
 						run = await runExternalBackgroundAttempt({
 							runtime: ctx.runtime,
 							owner: externalOwner,
@@ -897,13 +900,15 @@ async function runSingleStepAttempts(
 							interrupted,
 							messages: [],
 							usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
-							error: interrupted ? error.message : safeExternalFailure("attempt", error),
+							error: interrupted ? error.message : piArgs
+								? safeExternalFailure("attempt", error)
+								: error instanceof Error ? error.message : String(error),
 							finalOutput: "",
 							executionHandle: externalOwner.handle,
 						};
 					}
 				} finally {
-					cleanupTempDir(tempDir); // F1: caller (not helper) cleans up tempDir
+					cleanupTempDir(piArgs?.tempDir); // F1: caller (not helper) cleans up tempDir
 				}
 
 				const hiddenError = run.exitCode === 0 && !run.interrupted && !run.error
@@ -997,38 +1002,41 @@ async function runSingleStepAttempts(
 				// Missing/stale structured-output files are handled after the child exits.
 			}
 		}
-		const { args, env, tempDir } = buildPiArgs({
-			baseArgs: ["--mode", "json", "-p"],
-			task,
-			sessionEnabled,
-			sessionDir,
-			sessionFile: step.sessionFile,
-			model: candidate,
-			inheritProjectContext: step.inheritProjectContext,
-			inheritSkills: step.inheritSkills,
-			tools: step.tools,
-			extensions: step.extensions,
-			systemPrompt: step.systemPrompt,
-			systemPromptMode: step.systemPromptMode,
-			cwd: childCwd,
-			promptFileStem: step.agent,
-			runId: ctx.id,
-			childId: ctx.childId,
-			parentPath: ctx.parentPath ? [...ctx.parentPath, { runId: ctx.id, childId: ctx.childId, stepIndex: ctx.flatIndex, agent: step.agent }] : undefined,
-			childAgentName: step.agent,
-			childIndex: ctx.flatIndex,
-			parentSessionLabel: ctx.parentSessionLabel,
-			parentSessionId: ctx.parentSessionId,
-			parentEventSink: ctx.nestedRoute?.eventSink,
-			parentControlInbox: ctx.nestedRoute?.controlInbox,
-			parentRootRunId: ctx.nestedRoute?.rootRunId,
-			parentCapabilityToken: ctx.nestedRoute?.capabilityToken,
-			structuredOutput: effectiveStructuredOutput,
-			forwardedFlags: ctx.forwardedFlags,
-			projectTrust: ctx.projectTrust,
-		});
+		let piArgs: ReturnType<typeof buildPiArgs> | undefined;
 		let run: RunPiStreamingResult;
 		try {
+			piArgs = buildPiArgs({
+				baseArgs: ["--mode", "json", "-p"],
+				task,
+				sessionEnabled,
+				sessionDir,
+				sessionFile: step.sessionFile,
+				model: candidate,
+				inheritProjectContext: step.inheritProjectContext,
+				inheritSkills: step.inheritSkills,
+				tools: step.tools,
+				extensions: step.extensions,
+				settings: step.settings,
+				systemPrompt: step.systemPrompt,
+				systemPromptMode: step.systemPromptMode,
+				cwd: childCwd,
+				promptFileStem: step.agent,
+				runId: ctx.id,
+				childId: ctx.childId,
+				parentPath: ctx.parentPath ? [...ctx.parentPath, { runId: ctx.id, childId: ctx.childId, stepIndex: ctx.flatIndex, agent: step.agent }] : undefined,
+				childAgentName: step.agent,
+				childIndex: ctx.flatIndex,
+				parentSessionLabel: ctx.parentSessionLabel,
+				parentSessionId: ctx.parentSessionId,
+				parentEventSink: ctx.nestedRoute?.eventSink,
+				parentControlInbox: ctx.nestedRoute?.controlInbox,
+				parentRootRunId: ctx.nestedRoute?.rootRunId,
+				parentCapabilityToken: ctx.nestedRoute?.capabilityToken,
+				structuredOutput: effectiveStructuredOutput,
+				forwardedFlags: ctx.forwardedFlags,
+				projectTrust: ctx.projectTrust,
+			});
+			const { args, env } = piArgs;
 			run = await runPiStreaming(
 				args,
 				childCwd,
@@ -1056,11 +1064,12 @@ async function runSingleStepAttempts(
 				},
 			);
 		} catch (error) {
-			if (!(error instanceof PiRuntimeLaunchError)) throw error;
-			finalResult = { stderr: "", exitCode: 1, messages: [], usage: emptyUsage(), error: error.message, finalOutput: "" };
+			if (piArgs && !(error instanceof PiRuntimeLaunchError)) throw error;
+			const message = error instanceof Error ? error.message : String(error);
+			finalResult = { stderr: "", exitCode: 1, messages: [], usage: emptyUsage(), error: message, finalOutput: "" };
 			break;
 		} finally {
-			cleanupTempDir(tempDir); // F1: ensure no prompt-dir leak on throw
+			cleanupTempDir(piArgs?.tempDir); // F1: ensure no prompt-dir leak on throw
 		}
 
 		if (run.interrupted) {

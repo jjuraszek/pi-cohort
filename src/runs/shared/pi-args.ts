@@ -2,6 +2,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { PINNED_AGENT_DIR, SUBAGENT_BASE_AGENT_DIR_ENV } from "../../shared/agent-dir.ts";
+import { writeChildAgentDir, type ChildSettings } from "./child-settings.ts";
 import { encodeNestedPathEnv, parseNestedPathEnv, type NestedPathEntry } from "./nested-path.ts";
 import { inheritsTrust, type ProjectTrust } from "./project-trust.ts";
 import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV, STRUCTURED_OUTPUT_TOOL_NAME } from "./structured-output.ts";
@@ -41,6 +43,8 @@ interface BuildPiArgsInput {
 	inheritSkills: boolean;
 	tools?: string[];
 	extensions?: string[];
+	/** settings.json keys this child overrides; it launches with its own agent directory. */
+	settings?: ChildSettings;
 	forwardedFlags?: string[];
 	/** The parent's project-trust decision; undefined leaves it to the child. */
 	projectTrust?: ProjectTrust;
@@ -173,9 +177,15 @@ export function buildPiArgs(input: BuildPiArgsInput, fileSystem: BuildPiArgsFile
 	}
 
 	let tempDir: string | undefined;
+	let childAgentDir: string | undefined;
 	try {
-		if (input.systemPrompt !== undefined && input.systemPrompt !== null) {
+		if (input.settings && Object.keys(input.settings).length > 0) {
 			tempDir = fileSystem.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
+			childAgentDir = path.join(tempDir, "agent");
+			writeChildAgentDir(childAgentDir, input.settings);
+		}
+		if (input.systemPrompt !== undefined && input.systemPrompt !== null) {
+			tempDir ??= fileSystem.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
 			const stem = (input.promptFileStem ?? "prompt").replace(/[^\w.-]/g, "_");
 			const promptPath = path.join(tempDir, `${stem}.md`);
 			fileSystem.writeFileSync(promptPath, input.systemPrompt, { mode: 0o600 });
@@ -237,6 +247,9 @@ export function buildPiArgs(input: BuildPiArgsInput, fileSystem: BuildPiArgsFile
 		: "";
 	// Always set, so a grandchild sees its immediate parent rather than an inherited ancestor.
 	env[SUBAGENT_PARENT_SESSION_ID_ENV] = input.parentSessionId ?? "";
+	// Always set, so a child without an override does not take an ancestor's overlay for its own.
+	env[SUBAGENT_BASE_AGENT_DIR_ENV] = childAgentDir ? PINNED_AGENT_DIR : "";
+	if (childAgentDir) env.PI_CODING_AGENT_DIR = childAgentDir;
 	if (input.runId) {
 		env[SUBAGENT_RUN_ID_ENV] = input.runId;
 	}
