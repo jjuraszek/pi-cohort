@@ -11,40 +11,29 @@ import registerSubagentPromptRuntime, {
 	CHILD_FANOUT_BOUNDARY_INSTRUCTIONS,
 	CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS,
 	rewriteSubagentPrompt,
-	stripInheritedSkills,
 	stripParentOnlySubagentMessages,
-	stripProjectContext,
 	stripSubagentOrchestrationSkill,
 } from "../../src/runs/shared/subagent-prompt-runtime.ts";
 
 const envSnapshot = {
 	PI_SUBAGENT_OWNER_PID: process.env.PI_SUBAGENT_OWNER_PID,
-	PI_SUBAGENT_INHERIT_PROJECT_CONTEXT: process.env.PI_SUBAGENT_INHERIT_PROJECT_CONTEXT,
-	PI_SUBAGENT_INHERIT_SKILLS: process.env.PI_SUBAGENT_INHERIT_SKILLS,
 	PI_SUBAGENT_FANOUT_CHILD: process.env.PI_SUBAGENT_FANOUT_CHILD,
 	PI_SUBAGENT_STRUCTURED_OUTPUT_CAPTURE: process.env.PI_SUBAGENT_STRUCTURED_OUTPUT_CAPTURE,
 	PI_SUBAGENT_STRUCTURED_OUTPUT_SCHEMA: process.env.PI_SUBAGENT_STRUCTURED_OUTPUT_SCHEMA,
 };
 
-const SKILLS_SECTION = "\n\nThe following skills provide specialized instructions for specific tasks.\nUse the read tool to load a skill's file when the task matches its description.\nWhen a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.\n\n<available_skills>\n  <skill>\n    <name>safe-bash</name>\n    <description>desc</description>\n    <location>/tmp/SKILL.md</location>\n  </skill>\n  <skill>\n    <name>pi-cohort</name>\n    <description>delegate to subagents</description>\n    <location>/tmp/pi-cohort/SKILL.md</location>\n  </skill>\n</available_skills>";
+const SKILLS_SECTION = "<skills>\nThe following skills provide specialized instructions for specific tasks.\nUse the read tool to load a skill's file when the task matches its description.\nWhen a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.\n\n<available_skills>\n  <skill>\n    <name>safe-bash</name>\n    <description>desc</description>\n    <location>/tmp/SKILL.md</location>\n  </skill>\n  <skill>\n    <name>pi-cohort</name>\n    <description>delegate to subagents</description>\n    <location>/tmp/pi-cohort/SKILL.md</location>\n  </skill>\n</available_skills>\n</skills>";
 
 const BASE_PROMPT = [
 	"You are a subagent.",
-	"\n\n# Project Context\n\nProject-specific instructions and guidelines:\n\n## /repo/AGENTS.md\n\nProject rules\n\n",
+	"<project_context>\nProject-specific instructions and guidelines:\n\n<project_instructions path=\"/repo/AGENTS.md\">\nProject rules\n</project_instructions>\n</project_context>",
 	SKILLS_SECTION,
-	"\nCurrent date: 2026-04-16",
-	"\nCurrent working directory: /repo",
-].join("");
-
-const PROMPT_WITH_EXPLICIT_SKILL = [
-	"You are a subagent.\n\n<skill name=\"explicit\">\nKeep this section\n</skill>",
-	"\n\n# Project Context\n\nProject-specific instructions and guidelines:\n\n## /repo/AGENTS.md\n\nProject rules\n\n",
-	SKILLS_SECTION,
-	"\nCurrent date: 2026-04-16",
-].join("");
+	"<cwd>\n/repo\n</cwd>",
+].join("\n\n");
 
 beforeEach(() => {
 	delete process.env.PI_SUBAGENT_OWNER_PID;
+	delete process.env[SUBAGENT_FANOUT_CHILD_ENV];
 	delete process.env[STRUCTURED_OUTPUT_CAPTURE_ENV];
 	delete process.env[STRUCTURED_OUTPUT_SCHEMA_ENV];
 });
@@ -52,10 +41,6 @@ beforeEach(() => {
 afterEach(() => {
 	if (envSnapshot.PI_SUBAGENT_OWNER_PID === undefined) delete process.env.PI_SUBAGENT_OWNER_PID;
 	else process.env.PI_SUBAGENT_OWNER_PID = envSnapshot.PI_SUBAGENT_OWNER_PID;
-	if (envSnapshot.PI_SUBAGENT_INHERIT_PROJECT_CONTEXT === undefined) delete process.env.PI_SUBAGENT_INHERIT_PROJECT_CONTEXT;
-	else process.env.PI_SUBAGENT_INHERIT_PROJECT_CONTEXT = envSnapshot.PI_SUBAGENT_INHERIT_PROJECT_CONTEXT;
-	if (envSnapshot.PI_SUBAGENT_INHERIT_SKILLS === undefined) delete process.env.PI_SUBAGENT_INHERIT_SKILLS;
-	else process.env.PI_SUBAGENT_INHERIT_SKILLS = envSnapshot.PI_SUBAGENT_INHERIT_SKILLS;
 	if (envSnapshot.PI_SUBAGENT_FANOUT_CHILD === undefined) delete process.env.PI_SUBAGENT_FANOUT_CHILD;
 	else process.env.PI_SUBAGENT_FANOUT_CHILD = envSnapshot.PI_SUBAGENT_FANOUT_CHILD;
 	if (envSnapshot.PI_SUBAGENT_STRUCTURED_OUTPUT_CAPTURE === undefined) delete process.env[STRUCTURED_OUTPUT_CAPTURE_ENV];
@@ -162,51 +147,22 @@ describe("subagent prompt runtime", () => {
 		}
 	});
 
-	it("strips only the project context block", () => {
-		const rewritten = stripProjectContext(BASE_PROMPT);
-		assert.ok(!rewritten.includes("# Project Context"));
-		assert.ok(rewritten.includes("The following skills provide specialized instructions for specific tasks."));
-		assert.ok(rewritten.includes("Current date: 2026-04-16"));
-	});
-
-	it("strips only the inherited skills block", () => {
-		const rewritten = stripInheritedSkills(BASE_PROMPT);
-		assert.ok(rewritten.includes("# Project Context"));
-		assert.ok(!rewritten.includes("<available_skills>"));
-		assert.ok(rewritten.includes("Current date: 2026-04-16"));
-	});
-
-	it("can strip both inherited sections together", () => {
-		const rewritten = rewriteSubagentPrompt(BASE_PROMPT, {
-			inheritProjectContext: false,
-			inheritSkills: false,
-		});
-		assert.ok(!rewritten.includes("# Project Context"));
-		assert.ok(!rewritten.includes("<available_skills>"));
-		assert.ok(rewritten.includes("Current working directory: /repo"));
-	});
-
 	it("injects a child-only boundary that forbids proposing or running subagents", () => {
-		const rewritten = rewriteSubagentPrompt(BASE_PROMPT, {
-			inheritProjectContext: true,
-			inheritSkills: true,
-		});
+		const rewritten = rewriteSubagentPrompt(BASE_PROMPT);
 
 		assert.ok(rewritten.startsWith(CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS));
 		assert.ok(rewritten.includes("Do not propose or run subagents."));
 		assert.ok(rewritten.includes("If you need to edit files, call the actual edit/write tools."));
 		assert.ok(rewritten.includes("Do not print tool-call syntax, patches, or pseudo-tool calls as text."));
-		assert.equal(rewriteSubagentPrompt(rewritten, { inheritProjectContext: true, inheritSkills: true }).indexOf(CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS), 0);
-		assert.equal(rewriteSubagentPrompt(rewritten, { inheritProjectContext: true, inheritSkills: true }).lastIndexOf(CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS), 0);
+		assert.equal(rewriteSubagentPrompt(rewritten).indexOf(CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS), 0);
+		assert.equal(rewriteSubagentPrompt(rewritten).lastIndexOf(CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS), 0);
+		assert.ok(rewritten.includes('<project_instructions path="/repo/AGENTS.md">\nProject rules\n</project_instructions>'));
+		assert.ok(rewritten.includes("<cwd>\n/repo\n</cwd>"));
 	});
 
 	it("replaces inherited child boundaries with the fanout boundary when authorized", () => {
 		const strictPrompt = `${CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS}\n\n${BASE_PROMPT}`;
-		const rewritten = rewriteSubagentPrompt(strictPrompt, {
-			inheritProjectContext: true,
-			inheritSkills: true,
-			fanoutChild: true,
-		});
+		const rewritten = rewriteSubagentPrompt(strictPrompt, { fanoutChild: true });
 
 		assert.ok(rewritten.startsWith(CHILD_FANOUT_BOUNDARY_INSTRUCTIONS));
 		assert.ok(rewritten.includes("You may use the `subagent` tool only for the fanout work explicitly requested in this task."));
@@ -216,31 +172,15 @@ describe("subagent prompt runtime", () => {
 
 	it("replaces inherited fanout boundaries with the strict boundary when fanout is not authorized", () => {
 		const fanoutPrompt = `${CHILD_FANOUT_BOUNDARY_INSTRUCTIONS}\n\n${BASE_PROMPT}`;
-		const rewritten = rewriteSubagentPrompt(fanoutPrompt, {
-			inheritProjectContext: true,
-			inheritSkills: true,
-		});
+		const rewritten = rewriteSubagentPrompt(fanoutPrompt);
 
 		assert.ok(rewritten.startsWith(CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS));
 		assert.ok(!rewritten.includes("explicit fanout responsibility"));
 		assert.equal(rewritten.lastIndexOf(CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS), 0);
 	});
 
-	it("keeps explicitly injected skill content when inherited skills are stripped", () => {
-		const rewritten = rewriteSubagentPrompt(PROMPT_WITH_EXPLICIT_SKILL, {
-			inheritProjectContext: false,
-			inheritSkills: false,
-		});
-		assert.ok(rewritten.includes("<skill name=\"explicit\">"));
-		assert.ok(!rewritten.includes("<available_skills>"));
-		assert.ok(!rewritten.includes("# Project Context"));
-	});
-
-	it("strips the subagent orchestration skill even when inherited skills remain", () => {
-		const rewritten = rewriteSubagentPrompt(BASE_PROMPT, {
-			inheritProjectContext: true,
-			inheritSkills: true,
-		});
+	it("strips the subagent orchestration skill while keeping other skills", () => {
+		const rewritten = rewriteSubagentPrompt(BASE_PROMPT);
 
 		assert.ok(rewritten.includes("<name>safe-bash</name>"));
 		assert.ok(!rewritten.includes("<name>pi-cohort</name>"));
@@ -448,41 +388,36 @@ describe("subagent prompt runtime", () => {
 		assert.equal(messages[1], call, "filtering must not mutate the input");
 	});
 
-	it("rewrites the final child-visible prompt through before_agent_start", async () => {
-		let beforeAgentStart: ((event: { systemPrompt: string }) => Promise<{ systemPrompt: string } | undefined>) | undefined;
-		registerSubagentPromptRuntime({
-			on(event: string, handler: (payload: { systemPrompt: string }) => Promise<{ systemPrompt: string } | undefined>) {
-				if (event === "before_agent_start") beforeAgentStart = handler;
-			},
-		} as { on(event: string, handler: (payload: { systemPrompt: string }) => Promise<{ systemPrompt: string } | undefined>): void });
+	for (const fanoutChild of [undefined, "0", "1"]) {
+		for (const structured of [false, true]) {
+			it(`gates before_agent_start on fanout env=${fanoutChild} with structured output=${structured}`, async () => {
+				let beforeAgentStart: ((event: { systemPrompt: string }) => Promise<{ systemPrompt: string } | undefined>) | undefined;
+				registerSubagentPromptRuntime({
+					on(event: string, handler: (payload: { systemPrompt: string }) => Promise<{ systemPrompt: string } | undefined>) {
+						if (event === "before_agent_start") beforeAgentStart = handler;
+					},
+				} as { on(event: string, handler: (payload: { systemPrompt: string }) => Promise<{ systemPrompt: string } | undefined>): void });
 
-		assert.ok(beforeAgentStart, "expected before_agent_start handler");
-		process.env.PI_SUBAGENT_INHERIT_PROJECT_CONTEXT = "0";
-		process.env.PI_SUBAGENT_INHERIT_SKILLS = "0";
+				assert.ok(beforeAgentStart, "expected before_agent_start handler");
+				if (fanoutChild !== undefined) process.env[SUBAGENT_FANOUT_CHILD_ENV] = fanoutChild;
+				if (structured) process.env[STRUCTURED_OUTPUT_CAPTURE_ENV] = "/tmp/output.json";
 
-		const rewritten = await beforeAgentStart?.({ systemPrompt: BASE_PROMPT });
-		assert.ok(rewritten);
-		assert.ok(!rewritten.systemPrompt.includes("# Project Context"));
-		assert.ok(!rewritten.systemPrompt.includes("<available_skills>"));
-		assert.ok(rewritten.systemPrompt.includes("Current date: 2026-04-16"));
-	});
-
-	it("uses the fanout boundary through before_agent_start when fanout env is set", async () => {
-		let beforeAgentStart: ((event: { systemPrompt: string }) => Promise<{ systemPrompt: string } | undefined>) | undefined;
-		registerSubagentPromptRuntime({
-			on(event: string, handler: (payload: { systemPrompt: string }) => Promise<{ systemPrompt: string } | undefined>) {
-				if (event === "before_agent_start") beforeAgentStart = handler;
-			},
-		} as { on(event: string, handler: (payload: { systemPrompt: string }) => Promise<{ systemPrompt: string } | undefined>): void });
-
-		process.env.PI_SUBAGENT_INHERIT_PROJECT_CONTEXT = "1";
-		process.env.PI_SUBAGENT_INHERIT_SKILLS = "1";
-		process.env[SUBAGENT_FANOUT_CHILD_ENV] = "1";
-
-		const rewritten = await beforeAgentStart?.({ systemPrompt: BASE_PROMPT });
-		assert.ok(rewritten);
-		assert.ok(rewritten.systemPrompt.startsWith(CHILD_FANOUT_BOUNDARY_INSTRUCTIONS));
-	});
+				const rewritten = await beforeAgentStart({ systemPrompt: BASE_PROMPT });
+				if (fanoutChild === undefined) {
+					assert.equal(rewritten, undefined);
+					return;
+				}
+				assert.ok(rewritten);
+				const boundary = fanoutChild === "1" ? CHILD_FANOUT_BOUNDARY_INSTRUCTIONS : CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS;
+				assert.ok(rewritten.systemPrompt.startsWith(boundary));
+				assert.equal(rewritten.systemPrompt.includes("Your final action must be to call the `structured_output` tool"), structured);
+				assert.ok(rewritten.systemPrompt.includes("<project_context>"));
+				assert.ok(rewritten.systemPrompt.includes("<name>safe-bash</name>"));
+				assert.ok(!rewritten.systemPrompt.includes("<name>pi-cohort</name>"));
+				assert.ok(rewritten.systemPrompt.includes("<cwd>\n/repo\n</cwd>"));
+			});
+		}
+	}
 
 	it("filters parent-only artifacts from polluted fork context while preserving ordinary history", () => {
 		let sessionStart: ((event: unknown, ctx: { sessionManager: { getBranch(): unknown[] } }) => void) | undefined;

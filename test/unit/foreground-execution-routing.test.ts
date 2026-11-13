@@ -527,7 +527,7 @@ describe("runSync execution backend routing", () => {
 					command: selected.nodeExecPath,
 					args: [selected.piEntryPath, "--mode", "json", "-p", "--no-session", "--name", "worker abcdef from routing parent", "--model", "one/model", "--extension",
 						fileURLToPath(new URL("../../src/runs/shared/subagent-prompt-runtime.ts", import.meta.url)),
-						"--no-skills", "--system-prompt", path.join(promptDirs[0], "worker.md"), "Task: Task"],
+						"--no-context-files", "--no-skills", "--system-prompt", path.join(promptDirs[0], "worker.md"), "Task: Task"],
 				});
 				assert.equal(output.exitCode, scenario === "success" ? 0 : 1, JSON.stringify(output));
 				if (scenario !== "success") assert.ok(output.error?.includes(selected.piEntryPath));

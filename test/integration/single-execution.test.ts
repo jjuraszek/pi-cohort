@@ -1562,25 +1562,6 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		}
 	});
 
-	it("passes prompt inheritance env flags through to child execution", async () => {
-		mockPi.onCall({ echoEnv: ["PI_SUBAGENT_INHERIT_PROJECT_CONTEXT", "PI_SUBAGENT_INHERIT_SKILLS"] });
-		const agents = [makeAgent("echo", {
-			systemPromptMode: "replace",
-			inheritProjectContext: false,
-			inheritSkills: false,
-		})];
-
-		const result = await runSync(tempDir, agents, "echo", "Task", {
-			runId: "prompt-inheritance-env",
-		});
-
-		assert.equal(result.exitCode, 0);
-		assert.deepEqual(JSON.parse(result.finalOutput ?? "{}"), {
-			PI_SUBAGENT_INHERIT_PROJECT_CONTEXT: "0",
-			PI_SUBAGENT_INHERIT_SKILLS: "0",
-		});
-	});
-
 	it("passes fanout routing env only when builtin subagent is declared", async () => {
 		const envKeys = [
 			SUBAGENT_FANOUT_CHILD_ENV,
