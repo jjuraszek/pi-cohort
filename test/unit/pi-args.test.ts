@@ -161,6 +161,23 @@ describe("buildPiArgs model wiring", () => {
 });
 
 describe("buildPiArgs system prompt mode wiring", () => {
+	for (const inheritProjectContext of [false, true]) {
+		for (const inheritSkills of [false, true]) {
+			it(`sets discovery flags for inheritProjectContext=${inheritProjectContext}, inheritSkills=${inheritSkills}`, () => {
+				const { args } = buildPiArgs({
+					baseArgs: ["-p"],
+					task: "hello",
+					sessionEnabled: false,
+					inheritProjectContext,
+					inheritSkills,
+				});
+
+				assert.deepEqual(args.filter((arg) => arg === "--no-context-files"), inheritProjectContext ? [] : ["--no-context-files"]);
+				assert.deepEqual(args.filter((arg) => arg === "--no-skills"), inheritSkills ? [] : ["--no-skills"]);
+			});
+		}
+	}
+
 	it("uses --append-system-prompt by default", () => {
 		const { args } = buildPiArgs({
 			baseArgs: ["-p"],
@@ -202,8 +219,7 @@ describe("buildPiArgs system prompt mode wiring", () => {
 		const extensionArgs = args.filter((arg, index) => args[index - 1] === "--extension");
 		assert.ok(extensionArgs.some((arg) => arg.endsWith(path.join("src", "runs", "shared", "subagent-prompt-runtime.ts"))));
 		assert.equal(env.PI_SUBAGENT_CHILD, "1");
-		assert.equal(env.PI_SUBAGENT_INHERIT_PROJECT_CONTEXT, "0");
-		assert.equal(env.PI_SUBAGENT_INHERIT_SKILLS, "1");
+		assert.equal(env[SUBAGENT_FANOUT_CHILD_ENV], "0");
 	});
 
 

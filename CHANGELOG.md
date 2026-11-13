@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- `inheritProjectContext: false` keeps project instruction files (AGENTS.md / CLAUDE.md) out of child system prompts on pi 1.5+ by starting children with pi's `--no-context-files` flag. Before, the text stripper missed pi 1.5's `<project_context>` rendering and let the whole project context reach the child. (#68)
+
 ## [8.0.0] - 2026-11-12
 
 ### Fixed
