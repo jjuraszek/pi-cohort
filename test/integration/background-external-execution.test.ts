@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import { pathToFileURL } from "node:url";
 import * as path from "node:path";
 import { after, test } from "node:test";
@@ -472,7 +473,10 @@ for (const scenario of ["fork", "fresh", "missing", "headerless", "untrusted"] a
 }
 
 for (const failure of ["attempt", "settings-build"] as const) {
-test(`runSingleStep retains the surface after an external ${failure} failure`, unixOnly, async () => {
+test(`runSingleStep retains the surface after an external ${failure} failure`, unixOnly, async t => {
+	// The settings-build case writes the parent's settings.json, so it runs only against the isolated test home.
+	const isolated = PINNED_AGENT_DIR === path.join(os.homedir(), ".pi", "agent") && path.basename(path.dirname(os.homedir())).startsWith("pct-");
+	if (failure === "settings-build" && !isolated) return t.skip("needs the isolated test home");
 	const tempDir = createTempDir("bg-runner-throw-");
 	const binDir = path.join(tempDir, "bin");
 	const argsPath = path.join(tempDir, "pi-args.json");
