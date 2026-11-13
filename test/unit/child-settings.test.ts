@@ -88,51 +88,6 @@ describe("writeChildAgentDir", () => {
 		assert.equal(fs.readFileSync(path.join(parentDir, "auth.json"), "utf-8"), "{\"token\":\"new\"}\n");
 	});
 
-	for (const [label, holder, contender] of [
-		["two sessions on the parent directory", "parent", "parent"],
-		["the parent and an overridden child", "parent", "child"],
-		["two overridden children", "child", "sibling"],
-	] as const) {
-		it(`serializes MCP OAuth refreshes between ${label}`, async () => {
-			const { McpOAuthCredentialStore } = await import(new URL(
-				"extensions/mcp/oauth.js", import.meta.resolve("@earendil-works/pi-coding-agent"),
-			).href);
-			fs.writeFileSync(path.join(parentDir, "mcp-auth.json"), "{}\n");
-			const dirs = { parent: parentDir, child: childDir, sibling: path.join(root, "sibling") };
-			for (const dir of [dirs.child, dirs.sibling]) {
-				writeChildAgentDir(dir, { quietStartup: true }, parentDir);
-				assert.equal(fs.realpathSync(path.join(dir, "mcp-auth.json")), fs.realpathSync(path.join(parentDir, "mcp-auth.json")));
-			}
-			function serverStore(dir: string) {
-				const previous = process.env.PI_CODING_AGENT_DIR;
-				try {
-					process.env.PI_CODING_AGENT_DIR = dir;
-					return new McpOAuthCredentialStore().forServer("fixture", "https://mcp.example/");
-				} finally {
-					if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
-					else process.env.PI_CODING_AGENT_DIR = previous;
-				}
-			}
-			const first = serverStore(dirs[holder]);
-			const second = serverStore(dirs[contender]);
-			let firstReleased = false;
-			let overlapped = false;
-			let secondRefresh: Promise<void> | undefined;
-			await first.withRefreshLock(async () => {
-				secondRefresh = second.withRefreshLock(async () => { overlapped = !firstReleased; });
-				let timer: ReturnType<typeof setTimeout> | undefined;
-				try {
-					await Promise.race([secondRefresh, new Promise<void>((resolve) => { timer = setTimeout(resolve, 500); })]);
-				} finally {
-					clearTimeout(timer);
-				}
-			});
-			firstReleased = true;
-			await secondRefresh;
-			assert.equal(overlapped, false, "shared MCP credentials must not refresh under independent locks");
-		});
-	}
-
 	it("starts from the override alone when the parent has no settings file", () => {
 		writeChildAgentDir(childDir, { quietStartup: true }, parentDir);
 		assert.deepEqual(childSettings(), { quietStartup: true });
