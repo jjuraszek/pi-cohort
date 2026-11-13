@@ -1,0 +1,23 @@
+skill: gatekeep-pr
+session: 01a1d5cc-5157-772d-b84c-88e2aa214d71
+ts: 2026-11-13T16:51:55Z
+repo: jjuraszek/pi-cohort
+items:
+  - kind: pr
+    key: "#68@b7cfeaf0190083408906c863c9b3316ebeb3b0dd"
+    outcome: merged
+author:
+  name: Jacek Juraszek
+  email: jacek.juraszek@gmail.com
+gauntlet_version: 8.5.0
+models:
+  - anthropic-fable/claude-fable-5-2
+  - github-copilot/gpt-6.1-sol:medium
+  - github-copilot/gpt-6-astra:medium
+  - github-copilot/gpt-6-astra:high
+tokens:
+  input: 644
+  output: 139039
+  cache_read: 17864481
+  cache_write: 1433335
+cost: 32.52818390000001
