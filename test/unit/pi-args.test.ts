@@ -161,6 +161,23 @@ describe("buildPiArgs model wiring", () => {
 });
 
 describe("buildPiArgs system prompt mode wiring", () => {
+	for (const inheritProjectContext of [false, true]) {
+		for (const inheritSkills of [false, true]) {
+			it(`sets discovery flags for inheritProjectContext=${inheritProjectContext}, inheritSkills=${inheritSkills}`, () => {
+				const { args } = buildPiArgs({
+					baseArgs: ["-p"],
+					task: "hello",
+					sessionEnabled: false,
+					inheritProjectContext,
+					inheritSkills,
+				});
+
+				assert.deepEqual(args.filter((arg) => arg === "--no-context-files"), inheritProjectContext ? [] : ["--no-context-files"]);
+				assert.deepEqual(args.filter((arg) => arg === "--no-skills"), inheritSkills ? [] : ["--no-skills"]);
+			});
+		}
+	}
+
 	it("uses --append-system-prompt by default", () => {
 		const { args } = buildPiArgs({
 			baseArgs: ["-p"],

@@ -165,6 +165,9 @@ export function buildPiArgs(input: BuildPiArgsInput, fileSystem: BuildPiArgsFile
 		}
 	}
 
+	if (!input.inheritProjectContext) {
+		args.push("--no-context-files");
+	}
 	if (!input.inheritSkills) {
 		args.push("--no-skills");
 	}

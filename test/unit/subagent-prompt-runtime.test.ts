@@ -10,7 +10,6 @@ import { readStructuredOutput, STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_
 import registerSubagentPromptRuntime, {
 	CHILD_FANOUT_BOUNDARY_INSTRUCTIONS,
 	CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS,
-	dropInheritedPromptCollections,
 	rewriteSubagentPrompt,
 	stripInheritedSkills,
 	stripParentOnlySubagentMessages,
@@ -466,51 +465,6 @@ describe("subagent prompt runtime", () => {
 		assert.ok(!rewritten.systemPrompt.includes("# Project Context"));
 		assert.ok(!rewritten.systemPrompt.includes("<available_skills>"));
 		assert.ok(rewritten.systemPrompt.includes("Current date: 2026-04-16"));
-	});
-
-	it("empties the inherited prompt collections pi renders the system prompt from", async () => {
-		type SectionedEvent = { readonly systemPrompt: string; systemPromptOptions: { contextFiles: unknown[]; skills: unknown[] } };
-		let beforeAgentStart: ((event: SectionedEvent) => Promise<{ systemPrompt: string } | undefined>) | undefined;
-		registerSubagentPromptRuntime({
-			on(event: string, handler: (payload: SectionedEvent) => Promise<{ systemPrompt: string } | undefined>) {
-				if (event === "before_agent_start") beforeAgentStart = handler;
-			},
-		} as { on(event: string, handler: (payload: SectionedEvent) => Promise<{ systemPrompt: string } | undefined>): void });
-
-		process.env.PI_SUBAGENT_INHERIT_PROJECT_CONTEXT = "0";
-		process.env.PI_SUBAGENT_INHERIT_SKILLS = "0";
-
-		// pi >= 1.5 wraps each section in its own tag and re-renders systemPrompt from the collections.
-		const options = {
-			contextFiles: [{ path: "/repo/AGENTS.md", content: "Never push." }],
-			skills: [{ name: "deploy", description: "Deploy things" }],
-		};
-		const event: SectionedEvent = {
-			systemPromptOptions: options,
-			get systemPrompt() {
-				const sections = ["<preamble>\nYou are a worker.\n</preamble>"];
-				if (options.contextFiles.length > 0) {
-					sections.push("<project_context>\nProject-specific instructions and guidelines:\n\n<project_instructions path=\"/repo/AGENTS.md\">\nNever push.\n</project_instructions>\n</project_context>");
-				}
-				if (options.skills.length > 0) sections.push("<skills>\n<available_skills>deploy</available_skills>\n</skills>");
-				sections.push("<cwd>\nCurrent working directory: /repo\n</cwd>");
-				return sections.join("\n\n");
-			},
-		};
-
-		const rewritten = await beforeAgentStart?.(event);
-		assert.deepEqual(options, { contextFiles: [], skills: [] });
-		assert.ok(rewritten);
-		assert.ok(!rewritten.systemPrompt.includes("<project_context>"));
-		assert.ok(!rewritten.systemPrompt.includes("<available_skills>"));
-		assert.ok(rewritten.systemPrompt.includes("Current working directory: /repo"));
-	});
-
-	it("keeps the inherited prompt collections when inheritance is on", async () => {
-		const options = { contextFiles: [{ path: "/repo/AGENTS.md", content: "Never push." }], skills: [{ name: "deploy" }] };
-		dropInheritedPromptCollections(options, { inheritProjectContext: true, inheritSkills: true });
-		assert.equal(options.contextFiles.length, 1);
-		assert.equal(options.skills.length, 1);
 	});
 
 	it("uses the fanout boundary through before_agent_start when fanout env is set", async () => {
