@@ -36,6 +36,7 @@ export function createFixtureExecutionBackend() {
 			runId: string;
 			childId: string;
 			signal: AbortSignal;
+			awareness?: Record<string, unknown>;
 		}) {
 			const env: Record<string, string> = {};
 			for (const [k, v] of Object.entries(request.environment)) {
@@ -59,7 +60,7 @@ export function createFixtureExecutionBackend() {
 				metadata: { fixture: "detached-package", runId: request.runId, childId: request.childId },
 			};
 
-			writeTrace("launch", { runId: request.runId, childId: request.childId, pid });
+			writeTrace("launch", { runId: request.runId, childId: request.childId, pid, options: request.awareness?.options });
 
 			const events = (async function* () {
 				const exitInfo = await new Promise<{ code: number | null; signal: string | null }>((resolve) => {

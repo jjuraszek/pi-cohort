@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PINNED_AGENT_DIR, SUBAGENT_BASE_AGENT_DIR_ENV } from "../../shared/agent-dir.ts";
-import { writeChildAgentDir, type ChildSettings } from "./child-settings.ts";
+import { withoutBackendOptions, writeChildAgentDir, type ChildSettings } from "./child-settings.ts";
 import { encodeNestedPathEnv, parseNestedPathEnv, type NestedPathEntry } from "./nested-path.ts";
 import { inheritsTrust, type ProjectTrust } from "./project-trust.ts";
 import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV, STRUCTURED_OUTPUT_TOOL_NAME } from "./structured-output.ts";
@@ -179,10 +179,11 @@ export function buildPiArgs(input: BuildPiArgsInput, fileSystem: BuildPiArgsFile
 	let tempDir: string | undefined;
 	let childAgentDir: string | undefined;
 	try {
-		if (input.settings && Object.keys(input.settings).length > 0) {
+		const settings = withoutBackendOptions(input.settings);
+		if (settings && Object.keys(settings).length > 0) {
 			tempDir = fileSystem.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
 			childAgentDir = path.join(tempDir, "agent");
-			writeChildAgentDir(childAgentDir, input.settings);
+			writeChildAgentDir(childAgentDir, settings);
 		}
 		if (input.systemPrompt !== undefined && input.systemPrompt !== null) {
 			tempDir ??= fileSystem.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));

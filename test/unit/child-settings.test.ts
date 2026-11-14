@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { childSettingsError, mergeChildSettings, writeChildAgentDir } from "../../src/runs/shared/child-settings.ts";
+import { backendOptions, childSettingsError, mergeChildSettings, withoutBackendOptions, writeChildAgentDir } from "../../src/runs/shared/child-settings.ts";
 
 describe("childSettingsError", () => {
 	it("accepts pi keys and extension blocks alike", () => {
@@ -25,6 +25,58 @@ describe("childSettingsError", () => {
 			);
 		});
 	}
+});
+
+describe("backend launch options in a child's settings", () => {
+	const settings = { theme: "light", subagents: { disableBuiltins: true, executionBackendOptions: { cmux: { placement: "split" }, herdr: { placement: "tab" } } } };
+
+	it("reads the options written for the named backend", () => {
+		assert.deepEqual(backendOptions(settings, "cmux"), { placement: "split" });
+		assert.deepEqual(backendOptions(settings, "herdr"), { placement: "tab" });
+	});
+
+	it("reads an empty object as options", () => {
+		assert.deepEqual(backendOptions({ subagents: { executionBackendOptions: { cmux: {} } } }, "cmux"), {});
+	});
+
+	it("hands the backend a copy, so a backend that writes to its options changes no other launch", () => {
+		const options = backendOptions(settings, "cmux") as Record<string, unknown>;
+		options.placement = "tab";
+		assert.deepEqual(backendOptions(settings, "cmux"), { placement: "split" });
+	});
+
+	it("lets the call win key by key inside one backend's options", () => {
+		const merged = mergeChildSettings(
+			{ subagents: { executionBackendOptions: { cmux: { placement: "split", size: 3 } } } },
+			{ subagents: { executionBackendOptions: { cmux: { placement: "tab" } } } },
+		);
+		assert.deepEqual(backendOptions(merged, "cmux"), { placement: "tab", size: 3 });
+	});
+
+	it("reads nothing for a backend without an object of its own", () => {
+		assert.equal(backendOptions(settings, "tmux"), undefined);
+		assert.equal(backendOptions(settings, "__proto__"), undefined);
+		assert.equal(backendOptions(undefined, "cmux"), undefined);
+		assert.equal(backendOptions({ cmux: { placement: "split" } }, "cmux"), undefined);
+		assert.equal(backendOptions({ subagents: { executionBackendOptions: { cmux: "split" } } }, "cmux"), undefined);
+		assert.equal(backendOptions({ subagents: { executionBackendOptions: "split" } }, "cmux"), undefined);
+	});
+
+	it("keeps every other key for the child's settings.json", () => {
+		assert.deepEqual(withoutBackendOptions(settings), { theme: "light", subagents: { disableBuiltins: true } });
+		assert.deepEqual(settings.subagents.executionBackendOptions.cmux, { placement: "split" });
+	});
+
+	it("leaves no settings when the options were all a child had", () => {
+		assert.deepEqual(withoutBackendOptions({ subagents: { executionBackendOptions: { cmux: { placement: "split" } } } }), {});
+		assert.deepEqual(withoutBackendOptions({ subagents: { executionBackendOptions: "split" } }), {});
+	});
+
+	it("returns settings without options as they are", () => {
+		const plain = { theme: "light", subagents: { disableBuiltins: true } };
+		assert.equal(withoutBackendOptions(plain), plain);
+		assert.equal(withoutBackendOptions(undefined), undefined);
+	});
 });
 
 describe("mergeChildSettings", () => {

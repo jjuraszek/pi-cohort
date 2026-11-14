@@ -524,7 +524,17 @@ describe("buildPiArgs settings override", () => {
 		assert.equal(fs.existsSync(childAgentDir), false);
 	});
 
-	for (const [label, settings] of [["no", undefined], ["an empty", {}]] as const) {
+	it("keeps backend launch options out of the child's settings.json", () => {
+		const { env, tempDir } = buildPiArgs({ ...base, settings: { contextPrune: { pruneOn: "next-prompt" }, subagents: { executionBackendOptions: { cmux: { placement: "split" } } } } });
+		assert.ok(tempDir);
+		tempRoots.push(tempDir);
+
+		const settings = JSON.parse(fs.readFileSync(path.join(env.PI_CODING_AGENT_DIR!, "settings.json"), "utf-8"));
+		assert.equal(settings.contextPrune.pruneOn, "next-prompt");
+		assert.equal(settings.subagents?.executionBackendOptions, undefined);
+	});
+
+	for (const [label, settings] of [["no", undefined], ["an empty", {}], ["a backend-launch-options-only", { subagents: { executionBackendOptions: { cmux: { placement: "split" } } } }]] as const) {
 		it(`leaves the agent directory alone for ${label} override and clears an inherited overlay marker`, () => {
 			const { env, tempDir } = buildPiArgs({ ...base, settings });
 			assert.equal(tempDir, undefined);

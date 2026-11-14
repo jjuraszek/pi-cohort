@@ -804,6 +804,7 @@ async function runSingleStepAttempts(
 				backend: selection.backend,
 				cwd: childCwd,
 				title: step.agent,
+				settings: step.settings,
 				signal: ownerController.signal,
 			});
 		} catch (startErr) {

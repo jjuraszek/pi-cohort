@@ -81,6 +81,33 @@ Cohort serializes only backend names and validated reload descriptors into its d
 
 A backend whose surface sets its own identity variables declares them with `surfaceEnvironmentPrefixes` (for example `["CMUX_"]`). Each child attempt then drops the parent's keys with those prefixes and takes the launched surface's values instead, so mux-aware tools in the child address the child's surface. Prefixes must be nonblank strings.
 
+Each launch pi-cohort makes carries `request.awareness`; the field is optional in the type and the conformance testkit launches without it, so read `request.awareness?.options`. `title` is the child's display name. `options` is present only when the user set launch options for this backend: it is the object at `subagents.executionBackendOptions.<backend name>` in that child's [`settings` override](skills/pi-cohort/reference/config-fields.md#child-settings-override-settings), the agent's merged with the call's. A backend reads its launch options from it, such as where to open the child, and defines the keys.
+
+- pi-cohort takes `executionBackendOptions` out of the override before it writes the child's `settings.json`. Options alone do not put a child on its own agent directory, and they change no other field of the request.
+- Without options for this backend, `awareness` is `{ title }`.
+- pi-cohort checks only that the options are an object and ignores a value of any other type, so the backend receives no `options` for it. A `launch` that throws on a value fails that child with `External execution startup failed`, which never carries the backend's message.
+- Options apply when the child is launched: `reattach` receives the stored handle, not a request.
+
+A user sets a default for every launch of an agent in its frontmatter (or `subagents.agentOverrides.<name>.settings`), here for a backend named `example`:
+
+```yaml
+---
+name: reviewer
+settings: {"subagents": {"executionBackendOptions": {"example": {"placement": "split"}}}}
+---
+```
+
+and overrides it for one call or one task:
+
+```ts
+subagent({ tasks: [
+  { agent: "reviewer", task: "Review the diff", settings: { subagents: { executionBackendOptions: { example: { placement: "tab" } } } } },
+  { agent: "reviewer", task: "Review the tests" },
+] })
+```
+
+The first child's launch receives `request.awareness.options` as `{ placement: "tab" }`, the second as `{ placement: "split" }`.
+
 ## Mental model
 
 Pi is the parent session. A subagent is a focused child Pi session with its own job. When you ask for a subagent, Pi starts the child, gives it the task, and brings the result back. Foreground runs stream in the conversation; background runs keep working and can be checked later.
