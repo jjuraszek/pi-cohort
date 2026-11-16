@@ -3,9 +3,9 @@
 base: 483ae9f246baddc454d226dea3f07d9c0a5b01c9
 verification: env -u PI_CODING_AGENT_DIR npm run test:all
 checks: commands
-iterations: 5
+iterations: 6
 allowance: 10
-returned: 5 | home | 969b2dca54b5519da1759ddfb63c6b32eb4d8c65
+returned: 7 | home | 66bd5bdb2b635ee4c0339baeb3b55b99275939ff
 
 | row | status | attempts | evidence |
 |---|---|---|---|
@@ -15,9 +15,9 @@ returned: 5 | home | 969b2dca54b5519da1759ddfb63c6b32eb4d8c65
 | 4 | done | 1 | timeout -k 30 60 node --import ./test/support/isolate-test-env.mjs --test test/unit/agents.agent-dirs.test.ts; 23 passed, 0 failed; listing and dispatch preserve the original configured file and prompt; default directories stay empty and the original stays a regular unchanged file |
 | 5 | done | 1 | timeout -k 30 60 node --import ./test/support/isolate-test-env.mjs --test test/unit/agents.agent-dirs.test.ts; 27 passed, 0 failed; root and nested relative entries resolve against their defining settings file from root and deeper working directories; nearer absent, empty and different lists retain ancestor entries and the default create target |
 | 6 | done | 0 | timeout -k 30 60 node --import ./test/support/isolate-test-env.mjs --test test/unit/agents.agent-dirs.test.ts; 24 passed, 0 failed; discovery before and after adding a compatible file lists and dispatches the new persona; settings remain byte-for-byte unchanged with no per-agent entry |
-| 7 | open | 0 | |
+| 7 | done | 1 | timeout -k 30 60 node --import ./test/support/isolate-test-env.mjs --test test/unit/agents.agent-dirs.test.ts; 33 passed, 0 failed; four frontmatter combinations preserve model and thinking or fill unset fields by persona name exactly as default locations; bypassing configured overrides made three new cases fail before restoration |
 | 8 | done | 0 | timeout -k 30 60 node --import ./test/support/isolate-test-env.mjs --test test/unit/agents.discovery-walk.test.ts; 16 passed; 0 failed |
-| 9 | open | 0 | |
+| 9 | done | 0 | timeout -k 30 60 node --import ./test/support/isolate-test-env.mjs --test test/unit/agents.agent-dirs.test.ts; 33 passed, 0 failed; both array orders select the later file above same-level defaults, user and bundled copies while nearer defaults still win; reversing configured read order made both new cases fail before restoration |
 | 10 | cut | 0 | deviates: the docs state additive behavior in place of project-only replacement |
 
 ## Decisions
@@ -27,3 +27,5 @@ row 3 done | Added checks proving bundled and user discovery, overrides, and dis
 row 4 done | Added a check proving listing and dispatch use the original configured file without copying, linking, or changing it. | Reuse the original-file case in test/unit/agents.agent-dirs.test.ts to check file identity and empty default directories.
 row 6 done | Added a check proving a newly added configured persona appears on the next discovery without changing settings. | Reuse the before-and-after discovery case in test/unit/agents.agent-dirs.test.ts to detect stale directory results.
 row 5 done | Added checks proving relative paths use each defining settings file from root and nested working directories. | Reuse the cwd matrix in test/unit/agents.agent-dirs.test.ts to check per-level path resolution, ancestor retention and create targets.
+row 7 done | Added checks proving configured personas preserve frontmatter model and thinking and fill unset fields from name-keyed overrides. | Reuse agentFile fields and the four-case matrix in test/unit/agents.agent-dirs.test.ts to compare configured personas with default-location resolution.
+row 9 done | Added checks proving later entries win listing and dispatch above same-level defaults, user and bundled copies while nearer defaults still win. | Reuse the two-order collision matrix in test/unit/agents.agent-dirs.test.ts to check configured directory ranking across scopes and project levels.

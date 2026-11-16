@@ -14,8 +14,9 @@ function writeFile(filePath: string, content: string): void {
 	fs.writeFileSync(filePath, content, "utf-8");
 }
 
-function agentFile(name: string): string {
-	return `---\nname: ${name}\ndescription: ${name} persona\n---\n\nYou are ${name}.\n`;
+function agentFile(name: string, fields: Record<string, string> = {}): string {
+	const frontmatter = Object.entries(fields).map(([key, value]) => `${key}: ${value}\n`).join("");
+	return `---\nname: ${name}\ndescription: ${name} persona\n${frontmatter}---\n\nYou are ${name}.\n`;
 }
 
 describe("project agentDirs setting", () => {
@@ -141,6 +142,40 @@ describe("project agentDirs setting", () => {
 		assert.equal(fs.readFileSync(settingsPath, "utf-8"), settings, "directory discovery needs no per-agent settings change");
 	});
 
+	for (const fields of [
+		{},
+		{ model: "frontmatter-model" },
+		{ thinking: "low" },
+		{ model: "frontmatter-model", thinking: "low" },
+	] as Record<string, string>[]) {
+		it(`frontmatter wins and overrides fill unset model and thinking for a configured persona: ${JSON.stringify(fields)}`, () => {
+			const name = "configured";
+			const content = agentFile(name, fields);
+			const defaultFile = path.join(repoRoot, ".pi", "agents", "definition.md");
+			const configuredFile = path.join(repoRoot, ".claude", "agents", "definition.md");
+			writeFile(defaultFile, content);
+			writeFile(configuredFile, content);
+			const settingsPath = path.join(repoRoot, ".pi", "settings.json");
+			const agentOverrides = { [name]: { model: "override-model", thinking: "high" } };
+			writeFile(settingsPath, JSON.stringify({ subagents: { agentOverrides } }));
+			const baseline = discoverAgents(repoRoot, "both").agents.find((agent) => agent.name === name);
+			assert.ok(baseline);
+			assert.equal(baseline.filePath, defaultFile);
+
+			writeFile(settingsPath, JSON.stringify({ subagents: { agentDirs: "../.claude/agents", agentOverrides } }));
+			const listed = discoverAgentsAll(repoRoot).project;
+			assert.equal(listed.length, 1);
+			assert.equal(listed[0].filePath, configuredFile);
+			assert.equal(listed[0].source, "project");
+			assert.equal(listed[0].model, fields.model ?? "override-model");
+			assert.equal(listed[0].thinking, fields.thinking ?? "high");
+			assert.deepEqual(listed[0], { ...baseline, filePath: configuredFile },
+				"configured and default locations use the same per-field resolution and override metadata");
+			const dispatched = discoverAgents(repoRoot, "both").agents.filter((agent) => agent.name === name);
+			assert.deepEqual(dispatched, listed, "dispatch preserves frontmatter and fills only unset fields by persona name");
+		});
+	}
+
 	it("accepts multiple paths including home and absolute entries as project personas", () => {
 		const homeDir = path.join(os.homedir(), "extra-personas");
 		const absoluteDir = path.join(tempDir, "absolute-personas");
@@ -155,6 +190,41 @@ describe("project agentDirs setting", () => {
 		assert.ok(listed.every((agent) => agent.source === "project"));
 		assert.deepEqual(discoverAgents(repoRoot, "both").agents.filter((agent) => agent.source === "project"), listed);
 	});
+
+	for (const agentDirs of [
+		["../.claude/agents", "../team-personas"],
+		["../team-personas", "../.claude/agents"],
+	]) {
+		it(`the later array entry wins in listing and dispatch above defaults, user and bundled personas: ${JSON.stringify(agentDirs)}`, () => {
+			const name = "worker";
+			const userFile = path.join(process.env.PI_CODING_AGENT_DIR!, "agents", "worker.md");
+			writeFile(userFile, agentFile(name, { model: "user-model" }));
+			writeFile(path.join(repoRoot, ".agents", "worker.md"), agentFile(name, { model: "legacy-model" }));
+			writeFile(path.join(repoRoot, ".pi", "agents", "worker.md"), agentFile(name, { model: "default-model" }));
+			for (const dir of agentDirs) {
+				writeFile(path.resolve(repoRoot, ".pi", dir, "worker.md"), agentFile(name, { model: dir }));
+			}
+			writeFile(path.join(repoRoot, ".pi", "settings.json"), JSON.stringify({ subagents: { agentDirs } }));
+
+			const listed = discoverAgentsAll(repoRoot);
+			assert.ok(listed.builtin.some((agent) => agent.name === name), "the clash includes a real bundled persona");
+			assert.equal(listed.user.find((agent) => agent.name === name)?.filePath, userFile);
+			assert.equal(listed.project.length, 1, "listing deduplicates all project copies by name");
+			assert.equal(listed.project[0].filePath, path.resolve(repoRoot, ".pi", agentDirs[1], "worker.md"));
+			assert.equal(listed.project[0].model, agentDirs[1]);
+			assert.equal(listed.project[0].source, "project");
+			assert.deepEqual(discoverAgents(repoRoot, "both").agents.filter((agent) => agent.name === name), listed.project,
+				"dispatch uses the later configured file over defaults, user and bundled copies");
+
+			const nestedRoot = path.join(repoRoot, "service");
+			const nestedFile = path.join(nestedRoot, ".pi", "agents", "worker.md");
+			writeFile(nestedFile, agentFile(name, { model: "nearer-default-model" }));
+			const nestedListed = discoverAgentsAll(nestedRoot).project;
+			assert.equal(nestedListed.length, 1);
+			assert.equal(nestedListed[0].filePath, nestedFile, "a nearer default still outranks farther configured entries");
+			assert.deepEqual(discoverAgents(nestedRoot, "both").agents.filter((agent) => agent.name === name), nestedListed);
+		});
+	}
 
 	for (const agentDirs of ["../.claude/agents", []]) {
 		it(`bundled and user personas stay discovered with agentDirs set: ${JSON.stringify(agentDirs)}`, () => {
