@@ -61,6 +61,54 @@ describe("project agentDirs setting", () => {
 		});
 	}
 
+	it("a persona only in a configured directory is listed and dispatched from its original file", () => {
+		const configuredDir = path.join(repoRoot, ".claude", "agents");
+		const originalFile = path.join(configuredDir, "configured.md");
+		const content = agentFile("configured");
+		writeFile(originalFile, content);
+		writeFile(path.join(repoRoot, ".pi", "settings.json"), JSON.stringify({
+			subagents: { agentDirs: "../.claude/agents" },
+		}));
+		const defaultDirs = [path.join(repoRoot, ".agents"), path.join(repoRoot, ".pi", "agents")];
+		for (const dir of defaultDirs) fs.mkdirSync(dir, { recursive: true });
+
+		const listed = discoverAgentsAll(repoRoot).project;
+		assert.equal(listed.length, 1);
+		assert.equal(listed[0].name, "configured");
+		assert.equal(listed[0].source, "project");
+		assert.equal(listed[0].filePath, originalFile);
+		assert.equal(listed[0].systemPrompt, "You are configured.");
+		const dispatched = discoverAgents(repoRoot, "both").agents.filter((agent) => agent.name === "configured");
+		assert.deepEqual(dispatched, listed, "dispatch uses the same original definition as listing");
+
+		for (const dir of defaultDirs) {
+			assert.deepEqual(fs.readdirSync(dir), [], "discovery creates no copy or symlink in default directories");
+		}
+		assert.deepEqual(fs.readdirSync(configuredDir), ["configured.md"]);
+		assert.ok(fs.lstatSync(originalFile).isFile());
+		assert.equal(fs.realpathSync(originalFile), originalFile, "the original definition needs no symlink");
+		assert.equal(fs.readFileSync(originalFile, "utf-8"), content);
+	});
+
+	it("a definition added later is discovered without a per-agent entry", () => {
+		const configuredDir = path.join(repoRoot, ".claude", "agents");
+		const settingsPath = path.join(repoRoot, ".pi", "settings.json");
+		const settings = JSON.stringify({ subagents: { agentDirs: "../.claude/agents" } });
+		fs.mkdirSync(configuredDir, { recursive: true });
+		writeFile(settingsPath, settings);
+		assert.deepEqual(discoverAgentsAll(repoRoot).project, []);
+		assert.deepEqual(discoverAgents(repoRoot, "both").agents.filter((agent) => agent.source === "project"), []);
+
+		const addedFile = path.join(configuredDir, "added-later.md");
+		writeFile(addedFile, agentFile("added-later"));
+		const listed = discoverAgentsAll(repoRoot).project;
+		assert.equal(listed.length, 1);
+		assert.equal(listed[0].name, "added-later");
+		assert.equal(listed[0].filePath, addedFile);
+		assert.deepEqual(discoverAgents(repoRoot, "both").agents.filter((agent) => agent.source === "project"), listed);
+		assert.equal(fs.readFileSync(settingsPath, "utf-8"), settings, "directory discovery needs no per-agent settings change");
+	});
+
 	it("accepts multiple paths including home and absolute entries as project personas", () => {
 		const homeDir = path.join(os.homedir(), "extra-personas");
 		const absoluteDir = path.join(tempDir, "absolute-personas");
