@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it, type TestContext } from "node:test";
 import { discoverAgents, discoverAgentsAll, resolveExtensionConfig } from "../../src/agents/agents.ts";
 
 let tempDir = "";
@@ -17,6 +18,16 @@ function writeFile(filePath: string, content: string): void {
 function agentFile(name: string, fields: Record<string, string> = {}): string {
 	const frontmatter = Object.entries(fields).map(([key, value]) => `${key}: ${value}\n`).join("");
 	return `---\nname: ${name}\ndescription: ${name} persona\n${frontmatter}---\n\nYou are ${name}.\n`;
+}
+
+function observeFileReads(t: TestContext): (filePath: string) => number {
+	const reads = t.mock.method(fs, "readFileSync");
+	syncBuiltinESMExports();
+	t.after(() => {
+		reads.mock.restore();
+		syncBuiltinESMExports();
+	});
+	return (filePath) => reads.mock.calls.filter((call) => call.arguments[0] === filePath).length;
 }
 
 describe("project agentDirs setting", () => {
@@ -227,7 +238,9 @@ describe("project agentDirs setting", () => {
 	}
 
 	for (const agentDirs of ["../.claude/agents", []]) {
-		it(`bundled and user personas stay discovered with agentDirs set: ${JSON.stringify(agentDirs)}`, () => {
+		it(`default project, bundled and user personas stay discovered with agentDirs set: ${JSON.stringify(agentDirs)}`, () => {
+			writeFile(path.join(repoRoot, ".agents", "legacy-persona.md"), agentFile("legacy-persona"));
+			writeFile(path.join(repoRoot, ".pi", "agents", "default-persona.md"), agentFile("default-persona"));
 			writeFile(path.join(os.homedir(), ".agents", "home-persona.md"), agentFile("home-persona"));
 			writeFile(path.join(process.env.PI_CODING_AGENT_DIR!, "agents", "profile-persona.md"), agentFile("profile-persona"));
 			writeFile(path.join(repoRoot, ".claude", "agents", "configured.md"), agentFile("configured"));
@@ -242,12 +255,15 @@ describe("project agentDirs setting", () => {
 			const listed = discoverAgentsAll(repoRoot);
 			assert.deepEqual(listed.builtin, baseline.builtin);
 			assert.deepEqual(listed.user, baseline.user);
-			assert.deepEqual(listed.project.map((agent) => agent.name), typeof agentDirs === "string" ? ["configured"] : []);
-			assert.deepEqual(
-				discoverAgents(repoRoot, "both").agents.filter((agent) => agent.source !== "project"),
-				baselineDispatch.agents,
-			);
-			assert.deepEqual(discoverAgents(repoRoot, "user").agents, baselineDispatch.agents, "user scope excludes configured personas");
+			const expectedNames = ["default-persona", "legacy-persona"];
+			if (typeof agentDirs === "string") expectedNames.unshift("configured");
+			assert.deepEqual(listed.project.map((agent) => agent.name).sort(), expectedNames,
+				"configured paths and empty arrays retain both default project directories");
+			const dispatched = discoverAgents(repoRoot, "both").agents;
+			assert.deepEqual(dispatched.filter((agent) => agent.source === "project"), listed.project);
+			const baselineNonProject = baselineDispatch.agents.filter((agent) => agent.source !== "project");
+			assert.deepEqual(dispatched.filter((agent) => agent.source !== "project"), baselineNonProject);
+			assert.deepEqual(discoverAgents(repoRoot, "user").agents, baselineNonProject, "user scope excludes project personas");
 		});
 
 		for (const disableBuiltins of [false, true]) {
@@ -294,6 +310,119 @@ describe("project agentDirs setting", () => {
 			});
 		}
 	}
+
+	for (const kind of ["missing", "file"]) {
+		it(`silently skips a configured ${kind} path while retaining valid directories`, (t) => {
+			const invalidPath = path.join(repoRoot, "not-a-directory");
+			if (kind === "file") writeFile(invalidPath, agentFile("not-a-directory"));
+			writeFile(path.join(repoRoot, ".pi", "agents", "shared.md"), agentFile("shared"));
+			const configuredFile = path.join(repoRoot, ".claude", "agents", "shared.md");
+			writeFile(configuredFile, agentFile("shared"));
+			writeFile(path.join(repoRoot, ".pi", "settings.json"), JSON.stringify({
+				subagents: { agentDirs: ["../.claude/agents", invalidPath] },
+			}));
+			const warnings = t.mock.method(console, "warn", () => {});
+
+			const listed = discoverAgentsAll(repoRoot).project;
+			assert.deepEqual(listed.map((agent) => agent.filePath), [configuredFile]);
+			assert.deepEqual(discoverAgents(repoRoot, "both").agents.filter((agent) => agent.source === "project"), listed);
+			assert.equal(warnings.mock.callCount(), 0);
+		});
+	}
+
+	it("a directory configured at two levels loads once at the nearer rank", (t) => {
+		const configuredDir = path.join(repoRoot, ".claude", "agents");
+		const configuredFile = path.join(configuredDir, "shared.md");
+		writeFile(configuredFile, agentFile("shared"));
+		const nestedRoot = path.join(repoRoot, "service");
+		writeFile(path.join(nestedRoot, ".pi", "agents", "shared.md"), agentFile("shared"));
+		for (const level of [repoRoot, nestedRoot]) {
+			writeFile(path.join(level, ".pi", "settings.json"), JSON.stringify({
+				subagents: { agentDirs: configuredDir },
+			}));
+		}
+		const reads = observeFileReads(t);
+
+		const listed = discoverAgentsAll(nestedRoot).project;
+		assert.deepEqual(listed.map((agent) => agent.filePath), [configuredFile],
+			"the repeated directory outranks the nearer default instead of retaining its farther rank");
+		assert.equal(reads(configuredFile), 1, "listing loads the directory only once");
+		assert.deepEqual(discoverAgents(nestedRoot, "both").agents.filter((agent) => agent.source === "project"), listed);
+		assert.equal(reads(configuredFile), 2, "dispatch also loads the directory only once");
+	});
+
+	for (const entry of ["agents", "../.agents"]) {
+		it(`a default directory alias loads once at configured rank: ${entry}`, (t) => {
+			const legacyFile = path.join(repoRoot, ".agents", "shared.md");
+			const preferredFile = path.join(repoRoot, ".pi", "agents", "shared.md");
+			writeFile(legacyFile, agentFile("shared"));
+			writeFile(preferredFile, agentFile("shared"));
+			writeFile(path.join(repoRoot, ".pi", "settings.json"), JSON.stringify({
+				subagents: { agentDirs: entry },
+			}));
+			const reads = observeFileReads(t);
+
+			const listed = discoverAgentsAll(repoRoot).project;
+			assert.deepEqual(listed.map((agent) => agent.filePath), [entry === "agents" ? preferredFile : legacyFile]);
+			for (const file of [legacyFile, preferredFile]) assert.equal(reads(file), 1, "listing loads each default directory once");
+			assert.deepEqual(discoverAgents(repoRoot, "both").agents.filter((agent) => agent.source === "project"), listed);
+			for (const file of [legacyFile, preferredFile]) assert.equal(reads(file), 2, "dispatch loads each default directory once");
+		});
+	}
+
+	for (const { label, settings } of [
+		{ label: "malformed JSON", settings: '{"subagents":{"agentDirs":"../.claude/agents"}' },
+		{ label: "invalid disableBuiltins", settings: JSON.stringify({ subagents: { agentDirs: "../.claude/agents", disableBuiltins: "yes" } }) },
+		{ label: "invalid agentOverrides", settings: JSON.stringify({ subagents: { agentDirs: "../.claude/agents", agentOverrides: { shared: { model: 42 } } } }) },
+	]) {
+		it(`a level with ${label} contributes no configured directories but keeps its defaults`, (t) => {
+			const ancestorFile = path.join(repoRoot, ".claude", "agents", "ancestor.md");
+			writeFile(ancestorFile, agentFile("ancestor"));
+			writeFile(path.join(repoRoot, ".pi", "settings.json"), JSON.stringify({
+				subagents: { agentDirs: "../.claude/agents" },
+			}));
+			const nestedRoot = path.join(repoRoot, "service");
+			const legacyFile = path.join(nestedRoot, ".agents", "legacy.md");
+			const preferredFile = path.join(nestedRoot, ".pi", "agents", "shared.md");
+			writeFile(legacyFile, agentFile("legacy"));
+			writeFile(preferredFile, agentFile("shared"));
+			writeFile(path.join(nestedRoot, ".claude", "agents", "shared.md"), agentFile("shared"));
+			writeFile(path.join(nestedRoot, ".claude", "agents", "configured-only.md"), agentFile("configured-only"));
+			const settingsPath = path.join(nestedRoot, ".pi", "settings.json");
+			writeFile(settingsPath, settings);
+			const warnings: string[] = [];
+			t.mock.method(console, "warn", (message: string) => warnings.push(message));
+
+			const listed = discoverAgentsAll(nestedRoot).project;
+			assert.deepEqual(listed.map((agent) => agent.filePath).sort(), [ancestorFile, legacyFile, preferredFile].sort());
+			assert.deepEqual(discoverAgents(nestedRoot, "both").agents.filter((agent) => agent.source === "project"), listed);
+			assert.equal(warnings.length, 2);
+			assert.ok(warnings.every((warning) => warning.startsWith(`Skipping malformed subagent settings at '${settingsPath}':`)));
+		});
+	}
+
+	it("outside git only the nearest marked ancestor contributes configured directories", (t) => {
+		const outer = path.join(tempDir, "outside");
+		const inner = path.join(outer, "service");
+		for (const [level, name] of [[outer, "outer-only"], [inner, "inner-only"]]) {
+			writeFile(path.join(level, ".claude", "agents", `${name}.md`), agentFile(name));
+			writeFile(path.join(level, ".claude", "agents", "shared.md"), agentFile("shared"));
+			writeFile(path.join(level, ".pi", "settings.json"), JSON.stringify({
+				subagents: { agentDirs: "../.claude/agents" },
+			}));
+		}
+		const cwd = path.join(inner, "src");
+		fs.mkdirSync(cwd);
+		const reads = observeFileReads(t);
+
+		const listed = discoverAgentsAll(cwd).project;
+		assert.deepEqual(listed.map((agent) => agent.filePath).sort(), ["inner-only.md", "shared.md"].map((file) => path.join(inner, ".claude", "agents", file)));
+		assert.equal(reads(path.join(outer, ".pi", "settings.json")), 0, "outer settings are not read");
+		assert.equal(reads(path.join(inner, ".pi", "settings.json")), 1);
+		assert.deepEqual(discoverAgents(cwd, "both").agents.filter((agent) => agent.source === "project"), listed);
+		assert.equal(reads(path.join(outer, ".pi", "settings.json")), 0);
+		assert.equal(reads(path.join(inner, ".pi", "settings.json")), 2);
+	});
 
 	for (const agentDirs of ["../extra-personas", [], 42]) {
 		it(`agentDirs in the profile settings adds nothing: ${JSON.stringify(agentDirs)}`, (t) => {
