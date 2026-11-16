@@ -842,6 +842,7 @@ async function runSingleStepAttempts(
 				finalSessionFile = attemptSessionFile;
 				let piArgs: ReturnType<typeof buildPiArgs> | undefined;
 				let run: import("./external-attempt.ts").ExternalBackgroundAttemptResult;
+				let startDeadlinePassed = false;
 				try {
 					try {
 						piArgs = buildPiArgs({
@@ -895,7 +896,8 @@ async function runSingleStepAttempts(
 							onChildEvent: ctx.onChildEvent,
 						});
 					} catch (error) {
-						if (error instanceof PiRuntimeLaunchError || error instanceof ExternalStartDeadlineError) throw error;
+						if (error instanceof PiRuntimeLaunchError) throw error;
+						startDeadlinePassed = error instanceof ExternalStartDeadlineError;
 						const interrupted = isInterruptedExternalAttemptError(error);
 						run = {
 							stderr: "",
@@ -903,7 +905,7 @@ async function runSingleStepAttempts(
 							interrupted,
 							messages: [],
 							usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
-							error: interrupted ? error.message : piArgs
+							error: interrupted || startDeadlinePassed ? (error as Error).message : piArgs
 								? safeExternalFailure("attempt", error)
 								: error instanceof Error ? error.message : String(error),
 							finalOutput: "",
@@ -975,11 +977,11 @@ async function runSingleStepAttempts(
 				finalOutputSnapshot = outputSnapshot;
 				finalResult = { ...run, exitCode: effectiveExitCode, model: candidate ?? run.model, error, structuredOutput } as RunPiStreamingResult & { structuredOutput?: unknown };
 				if (run.interrupted || attempt.success || completionGuardTriggered || blockedError) break;
-				if (!isRetryableModelFailure(error) || index === candidates.length - 1) break;
+				if (startDeadlinePassed || !isRetryableModelFailure(error) || index === candidates.length - 1) break;
 				attemptNotes.push(formatModelAttemptNote(attempt, candidates[index + 1]));
 			}
 		} catch (error) {
-			const message = error instanceof PiRuntimeLaunchError || error instanceof ExternalStartDeadlineError ? error.message : safeExternalFailure("attempt", error);
+			const message = error instanceof PiRuntimeLaunchError ? error.message : safeExternalFailure("attempt", error);
 			finalResult = {
 				stderr: "",
 				exitCode: 1,

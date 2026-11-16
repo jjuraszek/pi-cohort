@@ -1182,6 +1182,30 @@ describe("external execution start deadline", () => {
 		assert.deepEqual(await owner.finish("retained"), { handle, retained: true });
 	});
 
+	it("fails with the start-deadline error and cleans up when the close throws before returning a promise", async t => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		const fake = harness();
+		fake.setContent("");
+		fake.backend.close = () => { fake.closeReasons.push("explicit_cleanup"); throw new Error("fixture close threw"); };
+		const owner = await ownerFrom(fake, { startDeadlineMs: 1000, controlTimeoutMs: 50 }); fake.ready.resolve();
+		const attempt = owner.runAttempt(request());
+		void attempt.catch(() => {});
+		await flush();
+		t.mock.timers.tick(1000);
+		await flush();
+		fake.exit.reject(new Error("child host disconnected during attempt"));
+		await flush();
+		t.mock.timers.tick(50);
+		await assert.rejects(attempt, (error: unknown) => {
+			assert.ok(error instanceof ExternalStartDeadlineError);
+			assert.equal(error.message, `${deadlineError(1000)}\n${unconfirmed}`);
+			return true;
+		});
+		assert.deepEqual(fake.closeReasons, ["explicit_cleanup"]);
+		assert.ok(fake.calls.includes("dispose"), "disposal ends the child through the host socket");
+		assert.deepEqual(await owner.finish("retained"), { handle, retained: true });
+	});
+
 	it("does not end an attempt that reported ready, however long it then runs", async t => {
 		t.mock.timers.enable({ apis: ["setTimeout"] });
 		const fake = harness();

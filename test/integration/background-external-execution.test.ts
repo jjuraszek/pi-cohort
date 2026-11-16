@@ -1033,6 +1033,10 @@ for (const modelCandidates of [["only"], ["first", "second"]]) {
 			assert.deepEqual(closeReasons, ["explicit_cleanup"]);
 			assert.equal(fixtureInvocationCount(argsPath), 1);
 			assert.equal(result.executionSurface.retained, false);
+			assert.deepEqual(result.modelAttempts.map(({ model, success, exitCode, error }) => ({ model, success, exitCode, error })), [
+				{ model: modelCandidates[0], success: false, exitCode: 1, error: result.error },
+			]);
+			assert.deepEqual(result.attemptedModels, [modelCandidates[0]]);
 		} finally {
 			dispose();
 			await cleanupHosts(hosts);
@@ -1040,3 +1044,46 @@ for (const modelCandidates of [["only"], ["first", "second"]]) {
 		}
 	});
 }
+
+test("a fallback attempt that never reports ready is recorded as the last model attempt", unixOnly, async () => {
+	const tempDir = createTempDir("bg-sd-fallback-");
+	const binDir = path.join(tempDir, "bin");
+	const argsPath = path.join(tempDir, "args.json");
+	fs.mkdirSync(binDir);
+	// The first model fails with a retryable error; the second stops short of its ready report and stays alive.
+	const script = makeFixtureScript("success", argsPath)
+		.replace('report("ready");', 'if (args.includes("second")) { setInterval(() => {}, 1000); return; }\n  report("ready");')
+		.replace('outcome: "success"', 'outcome: "failed", error: "rate limit"')
+		.replaceAll('"background answer"', '"rate limit"');
+	fs.writeFileSync(path.join(binDir, "pi"), script, { mode: 0o755 });
+	const hosts: ReturnType<typeof spawn>[] = [];
+	const requests: ExecutionSurfaceRequest[] = [];
+	const closeReasons: string[] = [];
+	const lifecycle: BackendLifecycle = { releases: 0, closes: 0, onClose(reason) { closeReasons.push(reason); } };
+	const name = `bg-sd-fallback-${process.pid}`;
+	const dispose = registerExecutionBackend(makeBackend(name, binDir, requests, hosts, lifecycle));
+	try {
+		const result = await runSingleStep({ agent: "worker", task: "Inspect", modelCandidates: ["first", "second"], completionGuard: false, inheritProjectContext: false, inheritSkills: false }, {
+			previousOutput: "", outputs: {}, placeholder: "", cwd: tempDir, sessionEnabled: true,
+			id: "sd-fallback", childId: "child-sd-fallback", flatIndex: 0, flatStepCount: 1, outputFile: path.join(tempDir, "output.log"),
+			controlConfig: { ...DEFAULT_CONTROL_CONFIG, startDeadlineMs: 400 },
+			executionBackendCoordinator: createDetachedExecutionBackendCoordinator({ protocolVersion: 1, registrations: [] }),
+			executionBackendConfig: { protocolVersion: 1, registrations: [], userPreference: name },
+		});
+		const deadlineError = "Subagent killed: pi did not start its session within the start deadline (startDeadlineMs=400ms).";
+		assert.equal(result.exitCode, 1);
+		assert.equal(result.error, deadlineError);
+		assert.deepEqual(result.modelAttempts.map(({ model, success }) => ({ model, success })), [
+			{ model: "first", success: false },
+			{ model: "second", success: false },
+		]);
+		assert.equal(result.modelAttempts[1].error, deadlineError);
+		assert.deepEqual(result.attemptedModels, ["first", "second"]);
+		assert.deepEqual(closeReasons, ["explicit_cleanup"]);
+		assert.equal(fixtureInvocationCount(argsPath), 2);
+	} finally {
+		dispose();
+		await cleanupHosts(hosts);
+		removeTempDir(tempDir);
+	}
+});

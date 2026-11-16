@@ -421,7 +421,7 @@ export async function createExternalExecution(
 			const failStartDeadline = async (): Promise<never> => {
 				const endpoint = now() + controlTimeoutMs;
 				const wait = <T>(promise: Promise<T>, label: string) => controlDeadline(promise, Math.max(0, endpoint - now()), label);
-				const closed = await wait(options.backend.close(controller.lease.handle, "explicit_cleanup"), "start deadline cleanup").then(() => true, () => false);
+				const closed = await wait((async () => options.backend.close(controller.lease.handle, "explicit_cleanup"))(), "start deadline cleanup").then(() => true, () => false);
 				const childExited = await wait(exitPromise, "child exit observation").then(() => true, () => false);
 				const hostGone = await wait(controller.hostExit, "host exit observation").then(() => true, () => false);
 				try { watcher!.close(); } catch {}
