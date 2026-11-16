@@ -17,6 +17,7 @@
  *   FALLBACK (--model bad/model)   -> failed outcome "model not found"
  *   FALLBACK (--model good/model)  -> success "reply:FALLBACK"
  *   WAIT-FOR-INTERRUPT             -> wait for abort control
+ *   NEVER-READY                    -> stay alive without reporting ready
  *   ACCEPTANCE-REJECT              -> success + acceptance-report JSON
  */
 
@@ -76,6 +77,8 @@ const { runId, childId, attemptId, controlSocketPath } = config;
 
 // Write attempt-start trace immediately.
 writeTrace("attempt-start", { runId, childId, attemptId, cwd: process.cwd(), model, task });
+
+if (task.startsWith("NEVER-READY")) await new Promise(() => setInterval(() => {}, 1_000));
 
 async function waitAtFixtureBarrier() {
 	const barrierDir = process.env["PI_COHORT_FIXTURE_BARRIER_DIR"];

@@ -14,6 +14,7 @@ const DEFAULT_NOTIFY_ON: ControlEventType[] = ["active_long_running", "needs_att
 export const DEFAULT_CONTROL_CONFIG: ResolvedControlConfig = {
 	enabled: true,
 	maxRuntimeMs: 14_400_000,
+	startDeadlineMs: 300_000,
 	needsAttentionAfterMs: 60_000,
 	activeNoticeAfterMs: 240_000,
 	inFlightSilenceCeilingMs: 600_000,
@@ -45,6 +46,9 @@ export function resolveControlConfig(
 	const maxRuntimeMs = parsePositiveInt(override?.maxRuntimeMs)
 		?? parsePositiveInt(globalConfig?.maxRuntimeMs)
 		?? DEFAULT_CONTROL_CONFIG.maxRuntimeMs;
+	const startDeadlineMs = parsePositiveInt(override?.startDeadlineMs)
+		?? parsePositiveInt(globalConfig?.startDeadlineMs)
+		?? DEFAULT_CONTROL_CONFIG.startDeadlineMs;
 	const needsAttentionAfterMs = parsePositiveInt(override?.needsAttentionAfterMs)
 		?? parsePositiveInt(globalConfig?.needsAttentionAfterMs)
 		?? DEFAULT_CONTROL_CONFIG.needsAttentionAfterMs;
@@ -77,6 +81,7 @@ export function resolveControlConfig(
 	return {
 		enabled,
 		maxRuntimeMs,
+		startDeadlineMs,
 		needsAttentionAfterMs,
 		activeNoticeAfterMs,
 		inFlightSilenceCeilingMs,

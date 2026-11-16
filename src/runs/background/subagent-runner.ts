@@ -95,6 +95,7 @@ import type { DetachedExecutionBackendConfig } from "../../execution-backend/typ
 import {
 	createExternalExecution,
 	externalExecutionDiagnosticCode,
+	ExternalStartDeadlineError,
 	isInterruptedExternalAttemptError,
 	type ExternalExecution,
 } from "../shared/external-execution.ts";
@@ -806,6 +807,7 @@ async function runSingleStepAttempts(
 				title: step.agent,
 				settings: step.settings,
 				signal: ownerController.signal,
+				startDeadlineMs: ctx.controlConfig?.startDeadlineMs,
 			});
 		} catch (startErr) {
 			const message = startErr instanceof PiRuntimeLaunchError ? startErr.message : safeExternalFailure("startup", startErr);
@@ -893,7 +895,7 @@ async function runSingleStepAttempts(
 							onChildEvent: ctx.onChildEvent,
 						});
 					} catch (error) {
-						if (error instanceof PiRuntimeLaunchError) throw error;
+						if (error instanceof PiRuntimeLaunchError || error instanceof ExternalStartDeadlineError) throw error;
 						const interrupted = isInterruptedExternalAttemptError(error);
 						run = {
 							stderr: "",
@@ -977,7 +979,7 @@ async function runSingleStepAttempts(
 				attemptNotes.push(formatModelAttemptNote(attempt, candidates[index + 1]));
 			}
 		} catch (error) {
-			const message = error instanceof PiRuntimeLaunchError ? error.message : safeExternalFailure("attempt", error);
+			const message = error instanceof PiRuntimeLaunchError || error instanceof ExternalStartDeadlineError ? error.message : safeExternalFailure("attempt", error);
 			finalResult = {
 				stderr: "",
 				exitCode: 1,

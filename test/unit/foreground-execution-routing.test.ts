@@ -24,7 +24,7 @@ const runtime = mock.runtime;
 function runSync(cwd: string, agents: AgentConfig[], name: string, task: string, options: RunSyncOptions, deps: RunSyncDependencies = {}) {
 	return execute(cwd, agents, name, task, { runtime, ...options }, deps);
 }
-import { ExternalExecutionDiagnosticError, type ExternalAttemptResult, type ExternalExecution, type ExternalExecutionOptions } from "../../src/runs/shared/external-execution.ts";
+import { ExternalExecutionDiagnosticError, ExternalStartDeadlineError, type ExternalAttemptResult, type ExternalExecution, type ExternalExecutionOptions } from "../../src/runs/shared/external-execution.ts";
 import type { RunExternalSingleAttemptInput } from "../../src/runs/foreground/external-single-attempt.ts";
 import { snapshotResult } from "../../src/runs/foreground/attempt-finalization.ts";
 import type { SingleResult } from "../../src/shared/types.ts";
@@ -471,6 +471,62 @@ describe("runSync external maxRuntimeMs", () => {
 			}
 		});
 	}
+});
+
+describe("runSync external start deadline", () => {
+	const deadlineError = "Subagent killed: pi did not start its session within the start deadline (startDeadlineMs=1000ms).";
+
+	for (const [name, settings, call, expected] of [
+		["the call's value over the settings value", { startDeadlineMs: 2000 }, { startDeadlineMs: 1000 }, 1000],
+		["the settings value when the call sets only other limits", { startDeadlineMs: 2000 }, { needsAttentionAfterMs: 5000 }, 2000],
+		["the default when none is set", undefined, undefined, 300_000],
+	] as const) it(`gives the external child ${name}`, async () => {
+		const h = dependencies(externalSelection);
+		const output = await runSync("/runtime", [makeAgent("worker")], "worker", "Task", {
+			runId: "start-deadline-value", acceptance: noAcceptance,
+			controlConfig: resolveControlConfig(settings, call),
+		}, h.deps);
+		assert.equal(output.exitCode, 0);
+		assert.equal(h.ownerOptions[0].startDeadlineMs, expected);
+	});
+
+	for (const fallbackModels of [undefined, ["two/model"]]) {
+		it(`fails the child without another model attempt (${fallbackModels ? "remaining candidates" : "single candidate"})`, async () => {
+			const h = dependencies(externalSelection);
+			h.deps.runExternalAttempt = async input => {
+				h.attempts.push(input);
+				throw new ExternalStartDeadlineError(deadlineError);
+			};
+			const output = await runSync("/runtime", [makeAgent("worker", { model: "one/model", fallbackModels })], "worker", "Task", {
+				runId: "start-deadline-failure", acceptance: noAcceptance,
+				controlConfig: resolveControlConfig(undefined, { startDeadlineMs: 1000 }),
+			}, h.deps);
+			assert.equal(output.exitCode, 1);
+			assert.equal(output.error, deadlineError);
+			assert.equal(output.interrupted, undefined);
+			assert.equal(h.attempts.length, 1, "a start-deadline failure must not start a fallback model");
+			assert.deepEqual(output.attemptedModels, ["one/model"]);
+			assert.equal(h.nativeCalls(), 0);
+			assert.deepEqual(h.finishes, ["retained"]);
+		});
+	}
+
+	it("leaves a silent child on the built-in backend running past the deadline", async t => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		const h = dependencies(nativeSelection);
+		h.deps.runNativeAttempt = async (_runtimeCwd, agent, task, _model, options) => {
+			t.mock.timers.tick(60_000);
+			assert.equal(options.signal?.aborted, false);
+			return result(agent, task);
+		};
+		const output = await runSync("/runtime", [makeAgent("worker")], "worker", "Task", {
+			runId: "start-deadline-native", acceptance: noAcceptance,
+			controlConfig: resolveControlConfig(undefined, { startDeadlineMs: 1000 }),
+		}, h.deps);
+		assert.equal(output.exitCode, 0);
+		assert.equal(output.error, undefined);
+		assert.equal(h.ownerOptions.length, 0);
+	});
 });
 
 describe("runSync execution backend routing", () => {
