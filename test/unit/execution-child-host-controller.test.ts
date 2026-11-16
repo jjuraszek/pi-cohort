@@ -10,7 +10,7 @@ import { createMockPi } from "../support/mock-pi.ts";
 import { PiRuntimeLaunchError } from "../../src/runs/shared/pi-spawn.ts";
 import { PI_COHORT_CHILD_HOST_CONFIG } from "../../src/execution-backend/child-host-runtime.ts";
 import { CHILD_HOST_PROTOCOL_VERSION, decodeChildHostFrames, encodeChildHostMessage } from "../../src/execution-backend/child-host-protocol.ts";
-import type { ExecutionBackend, ExecutionBackendEvent } from "../../src/execution-backend/types.ts";
+import type { ExecutionBackend, ExecutionBackendEvent, ExecutionSurfaceRequest } from "../../src/execution-backend/types.ts";
 
 const backend: ExecutionBackend = {
 	name: "test", protocolVersion: 1,
@@ -428,6 +428,54 @@ describe("execution child host lifetime", () => {
 			controller.dispose(); controller.dispose();
 			await assert.rejects(controller.startAttempt({ attemptId: "b", command: "node", args: [], cwd: os.tmpdir(), environment: {} }), /disconnected/);
 		} finally { controller.dispose(); }
+	});
+});
+
+describe("execution child host launch options", () => {
+	async function launchRequest(settings?: Record<string, unknown>, titled = true): Promise<ExecutionSurfaceRequest> {
+		const { dependencies } = fakeHostDependencies();
+		let launched!: ExecutionSurfaceRequest;
+		const selectedBackend: ExecutionBackend = { ...backend, async launch(request) { launched = request; return emptyLease(); } };
+		const controller = await createChildHostController({
+			runtime, backend: selectedBackend, runId: "run", childId: "child", cwd: os.tmpdir(), signal: new AbortController().signal,
+			...(titled ? { title: "worker" } : {}),
+			...(settings === undefined ? {} : { settings }),
+		}, dependencies);
+		controller.dispose();
+		return launched;
+	}
+	// The host config lives in a fresh private directory on every launch, and each launch has its own signal.
+	function comparable(request: ExecutionSurfaceRequest) {
+		const { signal, environment: { [PI_COHORT_CHILD_HOST_CONFIG]: hostConfig, ...environment }, ...rest } = request;
+		assert.equal(path.basename(hostConfig), "host.json");
+		assert.ok(signal instanceof AbortSignal);
+		return { ...rest, environment };
+	}
+	const options = (byBackend: unknown) => ({ subagents: { executionBackendOptions: byBackend } });
+
+	it("passes the options written for this backend beside the title, and nothing else of the child's settings", async () => {
+		const request = await launchRequest({ theme: "light", subagents: { disableBuiltins: true, executionBackendOptions: { test: { placement: "split", size: { columns: 80 } }, other: { placement: "tab" } } } });
+		assert.deepEqual(request.awareness, { title: "worker", options: { placement: "split", size: { columns: 80 } } });
+	});
+
+	it("passes the options alone for a child without a title", async () => {
+		assert.deepEqual((await launchRequest(options({ test: { placement: "split" } }), false)).awareness, { options: { placement: "split" } });
+		assert.equal("awareness" in await launchRequest(undefined, false), false);
+	});
+
+	it("leaves the launch as it is when the child's settings hold no options for this backend", async () => {
+		const plain = comparable(await launchRequest());
+		assert.deepEqual(Object.keys(plain).sort(), ["args", "awareness", "childId", "command", "cwd", "environment", "runId"]);
+		assert.deepEqual(plain.awareness, { title: "worker" });
+		for (const settings of [{}, { theme: "light", test: { placement: "split" } }, { subagents: {} }, options({ other: { placement: "tab" } }), options({ test: "split" }), options({ test: ["split"] }), options({ test: null }), options("split")]) {
+			assert.deepEqual(comparable(await launchRequest(settings)), plain, JSON.stringify(settings));
+		}
+	});
+
+	it("changes nothing but awareness when the options are set", async () => {
+		const { awareness: _set, ...withOptions } = comparable(await launchRequest(options({ test: { placement: "split" } })));
+		const { awareness: _plain, ...without } = comparable(await launchRequest());
+		assert.deepEqual(withOptions, without);
 	});
 });
 

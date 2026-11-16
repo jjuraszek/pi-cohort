@@ -33,6 +33,10 @@ export interface ExecutionSurfaceRequest {
 	readonly childId: string;
 	readonly signal: AbortSignal;
 	readonly secretPipePath?: string;
+	/**
+	 * `title`: the child's display name. `options`: this backend's launch options
+	 * from the child's `settings` override, present only when the user set them.
+	 */
 	readonly awareness?: Readonly<Record<string, JsonValue>>;
 }
 

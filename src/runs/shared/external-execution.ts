@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import type { ChildSettings } from "./child-settings.ts";
 import type { PiRuntimeIdentity } from "./pi-spawn.ts";
 import type { Message } from "@earendil-works/pi-ai";
 import {
@@ -23,6 +24,8 @@ export interface ExternalExecutionOptions {
 	readonly childId: string;
 	readonly cwd: string;
 	readonly title: string;
+	/** The child's merged `settings` override; the backend receives its own launch options from it. */
+	readonly settings?: ChildSettings;
 	readonly signal: AbortSignal;
 	readonly readyTimeoutMs?: number;
 	readonly controlTimeoutMs?: number;

@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- An execution backend can be configured per agent and per call: the object at `subagents.executionBackendOptions.<backend name>` in a child's `settings` override (the call, `tasks[]`, a chain step, agent frontmatter, or `subagents.agentOverrides.<name>`) reaches that backend as `awareness.options` on the child's launch request, on foreground and background runs. The call wins over the agent key by key. pi-cohort removes the key before writing the child's `settings.json`, so options alone do not launch the child on a temporary agent directory, and a launch without options is unchanged. (#69)
+
 ## [8.1.0] - 2026-11-13
 
 ### Added

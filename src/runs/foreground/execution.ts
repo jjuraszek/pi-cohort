@@ -867,6 +867,7 @@ async function runOwnedSync(
 					childId,
 					cwd: childCwd,
 					title: agentName,
+					settings: effectiveAgent.settings,
 					signal: options.signal!,
 				});
 				await externalOwner.ready;

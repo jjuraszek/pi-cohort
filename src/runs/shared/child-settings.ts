@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { JsonValue } from "../../execution-backend/types.ts";
 import { PINNED_AGENT_DIR } from "../../shared/agent-dir.ts";
 
 /** settings.json keys a child launches with instead of the parent's values. */
@@ -37,6 +38,26 @@ function deepMerge(base: Record<string, unknown>, override: Record<string, unkno
 export function mergeChildSettings(base: ChildSettings | undefined, override: ChildSettings | undefined): ChildSettings | undefined {
 	if (!base || !override) return override ?? base;
 	return deepMerge(base, override);
+}
+
+// Under `subagents` in a child's settings: launch options per execution backend name.
+const BACKEND_OPTIONS_KEY = "executionBackendOptions";
+
+/** A copy of the launch options a child's settings hold for the execution backend named `backend`. */
+export function backendOptions(settings: ChildSettings | undefined, backend: string): Readonly<Record<string, JsonValue>> | undefined {
+	const subagents = settings?.subagents;
+	const byBackend = isPlainObject(subagents) ? subagents[BACKEND_OPTIONS_KEY] : undefined;
+	const options = isPlainObject(byBackend) && Object.hasOwn(byBackend, backend) ? byBackend[backend] : undefined;
+	return isPlainObject(options) ? structuredClone(options) as Record<string, JsonValue> : undefined;
+}
+
+/** A child's settings without the backend launch options: those go to the backend, not into the child's settings.json. */
+export function withoutBackendOptions(settings: ChildSettings | undefined): ChildSettings | undefined {
+	const subagents = settings?.subagents;
+	if (!settings || !isPlainObject(subagents) || !(BACKEND_OPTIONS_KEY in subagents)) return settings;
+	const { [BACKEND_OPTIONS_KEY]: _options, ...keptSubagents } = subagents;
+	const { subagents: _subagents, ...kept } = settings;
+	return Object.keys(keptSubagents).length > 0 ? { ...kept, subagents: keptSubagents } : kept;
 }
 
 function readParentSettings(parentDir: string): Record<string, unknown> {
