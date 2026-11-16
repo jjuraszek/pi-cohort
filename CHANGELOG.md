@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Project `.pi/settings.json` accepts `subagents.agentDirs` as a path or array of paths, such as `"../.claude/agents"`. Configured personas add to the defaults and outrank them within a project level; relative paths resolve against the settings file, later entries win, and nearer levels still beat farther ones. (#72)
+
 ## [8.2.0] - 2026-11-16
 
 ### Added

@@ -111,6 +111,38 @@ describe("skills filesystem fallback", () => {
 		assert.match(resolved[0]?.content ?? "", /Project version/);
 	});
 
+	it("resolves ~/, absolute and relative skills entries without trimming", () => {
+		const previousHome = process.env.HOME;
+		const previousUserProfile = process.env.USERPROFILE;
+		const fakeHome = path.join(tempDir, "home");
+		try {
+			process.env.HOME = fakeHome;
+			process.env.USERPROFILE = fakeHome;
+			const cases = [
+				{ name: "home-entry", entry: "~/home-entry.md", file: path.join(fakeHome, "home-entry.md") },
+				{ name: "absolute-entry", entry: path.join(tempDir, "absolute-entry.md"), file: path.join(tempDir, "absolute-entry.md") },
+				{ name: "relative-entry", entry: "../relative-entry.md", file: path.join(tempDir, "relative-entry.md") },
+				{ name: "padded-entry", entry: " padded/padded-entry.md", file: path.join(tempDir, ".pi", " padded", "padded-entry.md") },
+			];
+			for (const { name, file } of cases) {
+				fs.mkdirSync(path.dirname(file), { recursive: true });
+				fs.writeFileSync(file, `Use ${name}.\n`);
+			}
+			fs.writeFileSync(path.join(tempDir, ".pi", "settings.json"), JSON.stringify({
+				skills: cases.map(({ entry }) => entry),
+			}));
+			const { resolved, missing } = resolveSkills(cases.map(({ name }) => name), tempDir);
+			assert.deepEqual(missing, []);
+			assert.deepEqual(resolved.map(({ name, path: file, source }) => ({ name, file, source })),
+				cases.map(({ name, file }) => ({ name, file, source: "project-settings" })));
+		} finally {
+			if (previousHome === undefined) delete process.env.HOME;
+			else process.env.HOME = previousHome;
+			if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+			else process.env.USERPROFILE = previousUserProfile;
+		}
+	});
+
 	it("discovers skills from project settings packages", () => {
 		const packageRoot = path.join(tempDir, ".pi", "packages", "local-skill-pkg");
 		makePackageSkill(packageRoot, "settings-package-skill", "Settings package skill.");

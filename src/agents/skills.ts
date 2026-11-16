@@ -6,7 +6,7 @@ import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getAgentDir } from "../shared/utils.ts";
+import { getAgentDir, resolveSettingsPath } from "../shared/utils.ts";
 
 export type SkillSource =
 	| "project"
@@ -198,13 +198,7 @@ function collectSettingsSkillPaths(cwd: string, agentDir: string): SkillSearchPa
 		if (!Array.isArray(skills)) continue;
 		for (const entry of skills) {
 			if (typeof entry !== "string") continue;
-			let resolved = entry;
-			if (resolved.startsWith("~/")) {
-				resolved = path.join(os.homedir(), resolved.slice(2));
-			} else if (!path.isAbsolute(resolved)) {
-				resolved = path.resolve(base, resolved);
-			}
-			results.push({ path: resolved, source });
+			results.push({ path: resolveSettingsPath(entry, base), source });
 		}
 	}
 
