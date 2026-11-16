@@ -1,5 +1,7 @@
 # Persona discovery walks to git root and aggregates
 
+> **Superseded by:** [doc/specs/2026-11-16-gh-72-project-persona-dirs.md](./2026-11-16-gh-72-project-persona-dirs.md) - the `resolveNearestProjectAgentDirs` clause under "Modified" only
+
 ## Problem
 
 Persona/chain discovery and skill discovery use different root-resolution
