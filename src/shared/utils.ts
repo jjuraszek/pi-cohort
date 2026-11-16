@@ -24,6 +24,11 @@ function getErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+export function resolveSettingsPath(entry: string, baseDir: string): string {
+	if (entry.startsWith("~/")) return path.join(os.homedir(), entry.slice(2));
+	return path.isAbsolute(entry) ? entry : path.resolve(baseDir, entry);
+}
+
 export function resolveChildCwd(baseCwd: string, childCwd: string | undefined): string {
 	if (!childCwd) return baseCwd;
 	return path.isAbsolute(childCwd) ? childCwd : path.resolve(baseCwd, childCwd);

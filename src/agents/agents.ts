@@ -7,7 +7,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AcceptanceInput, ExtensionConfig, OutputMode, StopCondition } from "../shared/types.ts";
-import { getAgentDir } from "../shared/utils.ts";
+import { getAgentDir, resolveSettingsPath } from "../shared/utils.ts";
 import { KNOWN_FIELDS } from "./agent-serializer.ts";
 import { childSettingsError, userOnlySettingsKey, type ChildSettings } from "../runs/shared/child-settings.ts";
 import { parseChain, parseJsonChain } from "./chain-serializer.ts";
@@ -130,6 +130,8 @@ interface SubagentSettings extends ExtensionConfig {
 	overrides: Record<string, BuiltinAgentOverrideConfig>;
 	disableBuiltins?: boolean;
 	executionBackend?: string;
+	agentDirs?: string[];
+	agentDirsByLevel?: Map<string, string[]>;
 }
 
 const EXTENSION_SETTING_TYPES = {
@@ -527,29 +529,42 @@ function readSubagentSettings(filePath: string | null): SubagentSettings {
 		else console.warn(`Subagent settings in '${filePath}' have invalid '${key}'; expected ${type}.`);
 	}
 
+	let agentDirs: string[] | undefined;
+	if ("agentDirs" in subagentsObject) {
+		const value = subagentsObject.agentDirs;
+		const entries = typeof value === "string" ? [value] : value;
+		if (Array.isArray(entries) && entries.every((entry) => typeof entry === "string" && entry.trim() !== "")) {
+			agentDirs = entries.map((entry) => resolveSettingsPath(entry.trim(), path.dirname(filePath)));
+		} else {
+			console.warn(`Subagent settings in '${filePath}' have invalid 'agentDirs'; expected a string or an array of non-empty strings.`);
+		}
+	}
+
 	const parsed: Record<string, BuiltinAgentOverrideConfig> = {};
 	const agentOverrides = subagentsObject.agentOverrides;
 	if (!agentOverrides || typeof agentOverrides !== "object" || Array.isArray(agentOverrides)) {
-		return { ...extension, overrides: parsed, disableBuiltins, executionBackend };
+		return { ...extension, overrides: parsed, disableBuiltins, executionBackend, agentDirs };
 	}
 	for (const [name, value] of Object.entries(agentOverrides)) {
 		const override = parseBuiltinOverrideEntry(name, value, filePath);
 		if (override) parsed[name] = override;
 	}
-	return { ...extension, overrides: parsed, disableBuiltins, executionBackend };
+	return { ...extension, overrides: parsed, disableBuiltins, executionBackend, agentDirs };
 }
 
 // Merge project .pi/settings.json across every enumerated level, farthest-first
 // so the nearest level's values land last and win. agentOverrides merge per
 // name with whole-object replacement (disjoint fields do NOT compose);
-// disableBuiltins takes the nearest-defined value as-is. A malformed level
-// (readSubagentSettings throws) is warned and skipped, never aborting the merge.
+// disableBuiltins takes the nearest-defined value as-is. agentDirs stays per
+// level so each list resolves and ranks with its defining settings file.
+// Malformed levels are warned and skipped except for the policy errors below.
 function readMergedProjectSubagentSettings(cwd: string): SubagentSettings {
 	const levels = enumerateProjectLevels(cwd);
 	if (levels.length === 0) return EMPTY_SUBAGENT_SETTINGS;
 
 	const overrides: Record<string, BuiltinAgentOverrideConfig> = {};
 	let disableBuiltins: boolean | undefined;
+	const agentDirsByLevel = new Map<string, string[]>();
 	const extension: ExtensionConfig = {};
 	for (const level of levels) {
 		const settingsPath = path.join(level, ".pi", "settings.json");
@@ -572,9 +587,12 @@ function readMergedProjectSubagentSettings(cwd: string): SubagentSettings {
 		if (levelSettings.disableBuiltins !== undefined) {
 			disableBuiltins = levelSettings.disableBuiltins;
 		}
+		if (levelSettings.agentDirs !== undefined) {
+			agentDirsByLevel.set(level, levelSettings.agentDirs);
+		}
 		Object.assign(extension, projectExtensionSettings(levelSettings));
 	}
-	return { ...extension, overrides, disableBuiltins };
+	return { ...extension, overrides, disableBuiltins, agentDirsByLevel };
 }
 
 function projectExtensionSettings(settings: SubagentSettings): ExtensionConfig {
@@ -1069,19 +1087,21 @@ function isDirectory(p: string): boolean {
 // BUILTIN_AGENTS_DIR and sit BELOW every root here. Project discovery is NOT a
 // single root: enumerateProjectLevels walks cwd -> git root and aggregates every
 // level that has .pi or .agents (farthest-first), so each level contributes its
-// own .agents / .pi/agents pair and nearest wins:
+// own .agents / .pi/agents / configured agentDirs and nearest wins:
 //
 //   builtin
 //     < ~/.agents                              global, cross-harness convention
 //     < <PI_CODING_AGENT_DIR>/agents            pi profile (PI_CODING_AGENT_DIR defaults to ~/.pi/agent)
 //     < <farthest project level>/.agents        project, legacy layout
 //     < <farthest project level>/.pi/agents     project, preferred layout
+//     < <farthest project level> agentDirs      in array order
 //     < ...                                     intermediate levels
 //     < <nearest project level>/.agents
-//     < <nearest project level>/.pi/agents      (highest)
+//     < <nearest project level>/.pi/agents
+//     < <nearest project level> agentDirs       (highest, later entry wins)
 //
 // Any project level outranks all user roots; nearest project level wins; within a
-// level .pi/agents beats .agents. With no git root, the walk falls back to the
+// level agentDirs beats .pi/agents, which beats .agents. With no git root, the walk falls back to the
 // single nearest project root (findNearestProjectRoot). PI_CODING_AGENT_DIR
 // relocates the pi profile root; it does NOT sandbox discovery. ~/.agents is
 // always scanned regardless of PI_CODING_AGENT_DIR.
@@ -1118,7 +1138,10 @@ function dedupeByRealPath(dirs: string[]): string[] {
 	return result.reverse();
 }
 
-function resolveNearestProjectAgentDirs(cwd: string): { readDirs: string[]; preferredDir: string | null } {
+function resolveNearestProjectAgentDirs(
+	cwd: string,
+	agentDirsByLevel?: Map<string, string[]>,
+): { readDirs: string[]; preferredDir: string | null } {
 	const levels = enumerateProjectLevels(cwd);
 	if (levels.length === 0) return { readDirs: [], preferredDir: null };
 
@@ -1128,6 +1151,9 @@ function resolveNearestProjectAgentDirs(cwd: string): { readDirs: string[]; pref
 		const preferredDir = path.join(level, ".pi", "agents");
 		if (isDirectory(legacyDir)) candidates.push(legacyDir);
 		if (isDirectory(preferredDir)) candidates.push(preferredDir);
+		for (const dir of agentDirsByLevel?.get(level) ?? []) {
+			if (isDirectory(dir)) candidates.push(dir);
+		}
 	}
 	const nearestLevel = levels[levels.length - 1];
 	return { readDirs: dedupeByRealPath(candidates), preferredDir: path.join(nearestLevel, ".pi", "agents") };
@@ -1149,11 +1175,11 @@ const BUILTIN_AGENTS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.u
 
 export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryResult {
 	const userDirs = resolveUserAgentDirs();
-	const { readDirs: projectAgentDirs, preferredDir: projectAgentsDir } = resolveNearestProjectAgentDirs(cwd);
 	const userSettingsPath = getUserAgentSettingsPath();
 	const projectSettingsPath = getProjectAgentSettingsPath(cwd);
 	const userSettings = scope === "project" ? EMPTY_SUBAGENT_SETTINGS : readSubagentSettings(userSettingsPath);
 	const projectSettings = scope === "user" ? EMPTY_SUBAGENT_SETTINGS : readMergedProjectSubagentSettings(cwd);
+	const { readDirs: projectAgentDirs, preferredDir: projectAgentsDir } = resolveNearestProjectAgentDirs(cwd, projectSettings.agentDirsByLevel);
 
 	const builtinAgents = applyBuiltinOverrides(
 		loadAgentsFromDir(BUILTIN_AGENTS_DIR, "builtin"),
@@ -1199,12 +1225,12 @@ export function discoverAgentsAll(cwd: string): {
 } {
 	const userDirs = resolveUserAgentDirs();
 	const userChainDir = getUserChainDir();
-	const { readDirs: projectDirs, preferredDir: projectDir } = resolveNearestProjectAgentDirs(cwd);
 	const { readDirs: projectChainDirs, preferredDir: projectChainDir } = resolveNearestProjectChainDirs(cwd);
 	const userSettingsPath = getUserAgentSettingsPath();
 	const projectSettingsPath = getProjectAgentSettingsPath(cwd);
 	const userSettings = readSubagentSettings(userSettingsPath);
 	const projectSettings = readMergedProjectSubagentSettings(cwd);
+	const { readDirs: projectDirs, preferredDir: projectDir } = resolveNearestProjectAgentDirs(cwd, projectSettings.agentDirsByLevel);
 
 	const builtin = applyBuiltinOverrides(
 		loadAgentsFromDir(BUILTIN_AGENTS_DIR, "builtin"),

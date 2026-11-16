@@ -97,7 +97,7 @@ A change that alters a cross-repo contract (dispatch shape, cost channel, settin
 
 ## Discovery and precedence
 
-Flat discovery in `src/agents/agents.ts` is the single source of truth for persona and chain precedence: builtin < `~/.agents` < `<PI_CODING_AGENT_DIR>/agents` < project levels walked from the git root down to cwd, nearest level wins, `.pi/agents` beats `.agents` within a level. `SKILL.md` and `*.chain.md` are never agents. Full rules, override fields, settings merge: [`doc/agents-and-chains.md`](doc/agents-and-chains.md#agents-and-chains-discovery-and-precedence).
+Flat discovery in `src/agents/agents.ts` is the single source of truth for persona and chain precedence: builtin < `~/.agents` < `<PI_CODING_AGENT_DIR>/agents` < project levels walked from the git root down to cwd, nearest level wins, and within a level configured `subagents.agentDirs` (later entry wins) beat `.pi/agents`, which beats `.agents`. `SKILL.md` and `*.chain.md` are never agents. Full rules, override fields, settings merge: [`doc/agents-and-chains.md`](doc/agents-and-chains.md#agents-and-chains-discovery-and-precedence).
 
 ## Testing
 

@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { discoverAgents, discoverAgentsAll } from "../../src/agents/agents.ts";
+import { discoverAgents, discoverAgentsAll, resolveExtensionConfig } from "../../src/agents/agents.ts";
 
 let tempDir = "";
 let repoRoot = "";
@@ -45,7 +45,7 @@ describe("project agentDirs setting", () => {
 		fs.rmSync(tempDir, { recursive: true, force: true });
 	});
 
-	for (const agentDirs of ["../.claude/agents", ["../.claude/agents"]]) {
+	for (const agentDirs of ["../.claude/agents", ["../.claude/agents"], " ../.claude/agents ", [" ../.claude/agents "]]) {
 		it(`a string and a one-element array discover the same personas: ${JSON.stringify(agentDirs)}`, () => {
 			const names = ["configured-alpha", "configured-beta"];
 			for (const name of names) {
@@ -57,6 +57,43 @@ describe("project agentDirs setting", () => {
 			const dispatched = discoverAgents(repoRoot, "both").agents.filter((agent) => agent.source === "project");
 			assert.deepEqual(listed.map((agent) => agent.name).sort(), names, "listing discovers both configured personas");
 			assert.deepEqual(dispatched, listed, "dispatch discovers the same personas as listing");
+			assert.deepEqual(resolveExtensionConfig(repoRoot), {}, "agentDirs is not an extension setting");
+		});
+	}
+
+	it("accepts multiple paths including home and absolute entries as project personas", () => {
+		const homeDir = path.join(os.homedir(), "extra-personas");
+		const absoluteDir = path.join(tempDir, "absolute-personas");
+		writeFile(path.join(homeDir, "home-persona.md"), agentFile("home-persona"));
+		writeFile(path.join(absoluteDir, "absolute-persona.md"), agentFile("absolute-persona"));
+		writeFile(path.join(repoRoot, ".pi", "settings.json"), JSON.stringify({
+			subagents: { agentDirs: ["~/extra-personas", absoluteDir] },
+		}));
+
+		const listed = discoverAgentsAll(repoRoot).project;
+		assert.deepEqual(listed.map((agent) => agent.name).sort(), ["absolute-persona", "home-persona"]);
+		assert.ok(listed.every((agent) => agent.source === "project"));
+		assert.deepEqual(discoverAgents(repoRoot, "both").agents.filter((agent) => agent.source === "project"), listed);
+	});
+
+	for (const agentDirs of [null, 42, true, {}, "", " \t ", ["../.claude/agents", 42], ["../.claude/agents", " "]]) {
+		it(`drops invalid agentDirs with a warning and keeps other settings: ${JSON.stringify(agentDirs)}`, (t) => {
+			const warnings: string[] = [];
+			t.mock.method(console, "warn", (message: string) => warnings.push(message));
+			const settingsPath = path.join(repoRoot, ".pi", "settings.json");
+			writeFile(path.join(repoRoot, ".claude", "agents", "configured.md"), agentFile("configured"));
+			writeFile(path.join(repoRoot, ".pi", "agents", "default.md"), agentFile("default"));
+			writeFile(settingsPath, JSON.stringify({ subagents: {
+				agentDirs,
+				agentOverrides: { default: { model: "test-model" } },
+			} }));
+
+			const listed = discoverAgentsAll(repoRoot).project;
+			assert.deepEqual(listed.map((agent) => agent.name), ["default"]);
+			assert.equal(listed[0].model, "test-model");
+			assert.deepEqual(warnings, [
+				`Subagent settings in '${settingsPath}' have invalid 'agentDirs'; expected a string or an array of non-empty strings.`,
+			]);
 		});
 	}
 });

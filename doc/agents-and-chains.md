@@ -68,6 +68,7 @@ Agent locations, lowest to highest priority:
 | User (pi profile) | `<PI_CODING_AGENT_DIR>/agents/*.md` |
 | Project (legacy) * | `<level>/.agents/*.md` |
 | Project (preferred) * | `<level>/.pi/agents/*.md` |
+| Project (configured) * | Top-level `*.md` in that level's `subagents.agentDirs`, in array order |
 
 \* Project roots are discovered at every level from cwd up to the git root, not just the repo root - see the walk description below.
 
@@ -82,12 +83,24 @@ Discovery rules:
 - **Flat only.** Only top-level `*.md` files in each root are loaded. Subdirectories (`skills/`, `chains/`, or any nesting) are never scanned for personas.
 - **`SKILL.md` is excluded** by name - a skill manifest carries `name` + `description` frontmatter but is not an agent.
 - **`.chain.md` / `.chain.json` files do not define agents.**
-- **Collisions resolve by priority:** project levels are walked cwd -> git root; nearest level wins. Within a level, `.pi/agents` beats `.agents`. Any project level beats the user roots (`~/.agents`, `<PI_CODING_AGENT_DIR>/agents`).
-- **Settings merge:** `settings.json#subagents` contains all 16 keys: `disableBuiltins`, `agentOverrides`, `executionBackend`, `asyncByDefault`, `forceTopLevelAsync`, `defaultSessionDir`, `maxSubagentDepth`, `control`, `parallel`, `chain`, `worktreeSetupHook`, `worktreeSetupHookTimeoutMs`, `worktreeTeardownHook`, `worktreeTeardownHookTimeoutMs`, `showRosterOnStart`, and `forwardParentFlags`. Extension configuration layers the profile below project `.pi/settings.json` files across walked levels, nearest defined value wins; `control`, `parallel`, and `chain` replace whole objects. Discovery's project merge stays project-only, preserving `agentScope: "project"`; `agentOverrides` replace the whole override per persona name, while `disableBuiltins` takes the nearest defined value. Override and create writes target the nearest project root. See the [settings source and precedence](configuration.md#settings-source-and-precedence) for execution-unit resolution, non-git behavior, and errors.
+- **Collisions resolve by priority:** project levels are walked cwd -> git root; nearest level wins. Within a level, configured `agentDirs` beat `.pi/agents`, which beats `.agents`; later array entries win. Every nearer level's directories beat every farther level's directories, configured or default. Any project level beats the user roots (`~/.agents`, `<PI_CODING_AGENT_DIR>/agents`) and builtins.
+- **Settings merge:** `settings.json#subagents` layers these 16 keys: `disableBuiltins`, `agentOverrides`, `executionBackend`, `asyncByDefault`, `forceTopLevelAsync`, `defaultSessionDir`, `maxSubagentDepth`, `control`, `parallel`, `chain`, `worktreeSetupHook`, `worktreeSetupHookTimeoutMs`, `worktreeTeardownHook`, `worktreeTeardownHookTimeoutMs`, `showRosterOnStart`, and `forwardParentFlags`. Extension configuration layers the profile below project `.pi/settings.json` files across walked levels, nearest defined value wins; `control`, `parallel`, and `chain` replace whole objects. Discovery's project merge stays project-only, preserving `agentScope: "project"`; `agentOverrides` replace the whole override per persona name, while `disableBuiltins` takes the nearest defined value. The separate `agentDirs` key contributes a per-level, project-only list instead of a nearest-wins value; a nearer `[]` or different list does not clear an ancestor's entries. Each list resolves against its defining settings directory, and the profile's list adds nothing. Override and create writes target the nearest project root. See the [settings source and precedence](configuration.md#settings-source-and-precedence) for execution-unit resolution, non-git behavior, and errors.
 
-Use `agentScope: "user" | "project" | "both"` to control discovery; `both` is the default and project definitions win runtime-name collisions.
+Use `agentScope: "user" | "project" | "both"` to control discovery; `both` is the default and project definitions win runtime-name collisions. Configured directories are project scope, so `user` excludes them.
 
-Implementation (`src/agents/agents.ts`): `resolveUserAgentDirs()` / `preferredUserAgentDir()` order the user roots; `listFilesFlat` / `isAgentFileName` / `isChainFileName` do the flat read; `findGitRoot` (a `.git` file or directory, no subprocess) / `enumerateProjectLevels` / `dedupeByRealPath` / `readMergedProjectSubagentSettings` do the walk. `dedupeByRealPath` collapses symlinked `.pi` levels on the expanded read-dir list - a nearest `.pi` symlinked to a farther real `.pi` yields distinct level dirs but identical `<level>/.pi/agents` paths. `agentOverrides` merge is whole-object replacement per agent name across levels (disjoint fields do not compose). A builtin override's displayed `override.path` always points at the nearest project settings file even when the winning value came from a farther level - attribution is nearest-by-design.
+In project `.pi/settings.json`, `agentDirs` accepts either form:
+
+```json
+{ "subagents": { "agentDirs": "../.claude/agents" } }
+```
+
+```json
+{ "subagents": { "agentDirs": ["../.claude/agents", "../team-personas"] } }
+```
+
+Configured directories add to the defaults, leaving bundled and user-level discovery unchanged. An absent key or `[]` adds nothing. Relative entries resolve against that settings file's directory, independent of cwd; configured files use pi-cohort's existing frontmatter semantics. See [`agentDirs`](configuration.md#agentdirs) for validation, path handling, and loader errors.
+
+Implementation (`src/agents/agents.ts`): `resolveUserAgentDirs()` / `preferredUserAgentDir()` order the user roots; `listFilesFlat` / `isAgentFileName` / `isChainFileName` do the flat read; `findGitRoot` (a `.git` file or directory, no subprocess) / `enumerateProjectLevels` / `dedupeByRealPath` / `readMergedProjectSubagentSettings` do the walk. `resolveNearestProjectAgentDirs` expands each level to `.agents`, `.pi/agents`, then that level's configured directories, before every nearer level's directories. `dedupeByRealPath` keeps only the last occurrence of each real directory on this expanded list, including symlinked defaults and repeated configured entries. `agentOverrides` merge is whole-object replacement per agent name across levels (disjoint fields do not compose). A builtin override's displayed `override.path` always points at the nearest project settings file even when the winning value came from a farther level - attribution is nearest-by-design.
 
 Builtin agents load at the lowest priority, so a user or project agent with the same name overrides them. They do not pin a provider model; they inherit the parent session's current model and thinking level unless you set `subagents.agentOverrides.<name>.model` / `.thinking`. `oracle` is an advisory reviewer that critiques direction and proposes an execution prompt without editing files. `worker` is the implementation agent for normal tasks and approved oracle handoffs.
 

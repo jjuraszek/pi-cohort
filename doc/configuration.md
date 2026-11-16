@@ -12,7 +12,29 @@ Call policy resolves at the requested cwd. Hooks and backend selection resolve a
 
 Malformed profile settings fail the call; malformed project files are warned about and skipped so other levels still apply. Wrong-typed extension keys are dropped with a warning naming the file and key on each read, leaving other keys intact. Invalid `disableBuiltins` or persona override entries can reject the project level; invalid `executionBackend`, or a persona override whose `settings` names a key pi takes only from the user's own `settings.json`, aborts resolution rather than falling back. Hook timeout values are retained for dispatch validation, not dropped or replaced by ancestor values.
 
-Discovery settings `disableBuiltins` and `agentOverrides` share this namespace; see [agent discovery and overrides](agents-and-chains.md#agents-and-chains-discovery-and-precedence) for their project-only discovery merge and per-persona replacement rules.
+Discovery settings `disableBuiltins`, `agentOverrides`, and `agentDirs` share this namespace. Unlike nearest-wins settings, `agentDirs` contributes a separate list from each project level and is never consumed from the profile. See [agent discovery and overrides](agents-and-chains.md#agents-and-chains-discovery-and-precedence) for the project discovery merge and per-persona replacement rules.
+
+## `agentDirs`
+
+Add project persona directories in `<level>/.pi/settings.json` with one path or an array:
+
+```json
+{ "subagents": { "agentDirs": "../.claude/agents" } }
+```
+
+```json
+{ "subagents": { "agentDirs": ["../.claude/agents", "../team-personas"] } }
+```
+
+Entries are trimmed, `~/` expands to the home directory, absolute paths stay absolute, and relative paths resolve against the directory containing the settings file, not cwd. Here, `../.claude/agents` reads `<level>/.claude/agents` from the repository root or a nested working directory.
+
+Each walked project level contributes its own list, resolved against its own `.pi` directory. A nearer level's `[]` or different list does not clear an ancestor's entries. The key is consumed only from project `.pi/settings.json` files; a value in the profile's `settings.json` adds nothing. Outside git, only the nearest marked ancestor contributes.
+
+Configured directories add to `.agents` and `.pi/agents`, with priority `.agents < .pi/agents < agentDirs` within each level. Later array entries win name clashes, and every directory of a nearer level beats every directory of a farther level. Bundled and user-level discovery, overrides, and disable settings are unchanged; project personas still outrank user and bundled personas. An absent key or `[]` adds nothing and keeps the defaults. Missing paths and paths that are files are skipped silently.
+
+A value other than a string or an array of strings, or any entry blank after trimming, drops the whole key with a warning naming the file and `agentDirs`; other valid keys still apply. An invalid profile value gets the same warning but adds nothing. A level rejected for malformed JSON, invalid `disableBuiltins`, or an invalid `agentOverrides` entry contributes no configured directories; its default directories still load. Invalid backend policy and user-only child settings still abort resolution.
+
+Files use [pi-cohort frontmatter semantics](agents-and-chains.md#agent-frontmatter), not automatic Claude Code conversion. Only top-level persona Markdown files load; `SKILL.md` and chain files are excluded. Missing `name` or `description`, or an invalid `package`, skips a file. Other frontmatter loads as-is; invalid `settings` or an `mcp:` tool entry throws and aborts discovery. Compatible definitions added later are discovered without per-agent entries. Project `create` still writes to the nearest `.pi/agents`; update and delete use the loaded file.
 
 ## Migration
 
