@@ -90,6 +90,38 @@ describe("project agentDirs setting", () => {
 		assert.equal(fs.readFileSync(originalFile, "utf-8"), content);
 	});
 
+	for (const nestedAgentDirs of [undefined, [], "../.claude/agents"]) {
+		it(`relative entries resolve against each settings file from any cwd: ${JSON.stringify(nestedAgentDirs) ?? "absent"}`, () => {
+			const nestedRoot = path.join(repoRoot, "services", "api");
+			const deepCwd = path.join(nestedRoot, "src");
+			fs.mkdirSync(deepCwd, { recursive: true });
+			const rootFile = path.join(repoRoot, ".claude", "agents", "root-persona.md");
+			const nestedFile = path.join(nestedRoot, ".claude", "agents", "nested-persona.md");
+			writeFile(rootFile, agentFile("root-persona"));
+			writeFile(nestedFile, agentFile("nested-persona"));
+			writeFile(path.join(repoRoot, ".pi", "settings.json"), JSON.stringify({
+				subagents: { agentDirs: "../.claude/agents" },
+			}));
+			writeFile(path.join(nestedRoot, ".pi", "settings.json"), JSON.stringify({
+				subagents: { agentDirs: nestedAgentDirs },
+			}));
+
+			for (const cwd of [repoRoot, nestedRoot, deepCwd]) {
+				const expectedFiles = cwd !== repoRoot && typeof nestedAgentDirs === "string"
+					? [rootFile, nestedFile].sort()
+					: [rootFile];
+				const listed = discoverAgentsAll(cwd);
+				const dispatched = discoverAgents(cwd, "both");
+				assert.deepEqual(listed.project.map((agent) => agent.filePath).sort(), expectedFiles,
+					"each settings file resolves its own entries without clearing ancestor entries");
+				assert.deepEqual(dispatched.agents.filter((agent) => agent.source === "project"), listed.project);
+				const createDir = path.join(cwd === repoRoot ? repoRoot : nestedRoot, ".pi", "agents");
+				assert.equal(listed.projectDir, createDir, "configured directories do not change the create target");
+				assert.equal(dispatched.projectAgentsDir, createDir);
+			}
+		});
+	}
+
 	it("a definition added later is discovered without a per-agent entry", () => {
 		const configuredDir = path.join(repoRoot, ".claude", "agents");
 		const settingsPath = path.join(repoRoot, ".pi", "settings.json");
