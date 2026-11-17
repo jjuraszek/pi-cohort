@@ -382,6 +382,40 @@ describe("resolveControlConfig maxRuntimeMs", () => {
 	}
 });
 
+describe("resolveControlConfig startDeadlineMs", () => {
+	it("resolves startDeadlineMs with call-time, settings, default precedence", () => {
+		for (const [settings, override, expected] of [
+			[undefined, undefined, 300_000],
+			[2_000, undefined, 2_000],
+			[2_000, 1_000, 1_000],
+			[2_000, 3_000_000_000, 3_000_000_000],
+		] as const) {
+			const config = resolveControlConfig({ startDeadlineMs: settings }, { enabled: false, startDeadlineMs: override });
+			assert.equal(config.startDeadlineMs, expected, "start deadline ignores enabled");
+		}
+	});
+
+	it("keeps the settings value when the call sets only other limits", () => {
+		assert.equal(resolveControlConfig(
+			{ startDeadlineMs: 2_000 },
+			{ needsAttentionAfterMs: 5_000, maxRuntimeMs: 9_000 },
+		).startDeadlineMs, 2_000);
+	});
+
+	for (const invalid of [0, -1, 1.5, "123", null, NaN, Infinity]) {
+		it(`ignores non-positive-integer startDeadlineMs (${String(invalid)})`, () => {
+			assert.equal(resolveControlConfig(
+				{ startDeadlineMs: 2_000 },
+				{ startDeadlineMs: invalid as never },
+			).startDeadlineMs, 2_000, "invalid call-time value falls through to settings");
+			assert.equal(resolveControlConfig(
+				{ startDeadlineMs: invalid as never },
+				{ startDeadlineMs: invalid as never },
+			).startDeadlineMs, 300_000, "invalid values at both levels fall through to default");
+		});
+	}
+});
+
 describe("shouldSilenceKill", () => {
 	const base = { startedAt: 0, now: 10_000, killMs: 5_000 };
 

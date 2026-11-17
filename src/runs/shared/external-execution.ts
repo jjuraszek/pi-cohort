@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import type { ChildSettings } from "./child-settings.ts";
 import type { PiRuntimeIdentity } from "./pi-spawn.ts";
+import { DEFAULT_CONTROL_CONFIG } from "./subagent-control.ts";
 import type { Message } from "@earendil-works/pi-ai";
 import {
 	createChildHostController,
@@ -29,6 +30,8 @@ export interface ExternalExecutionOptions {
 	readonly signal: AbortSignal;
 	readonly readyTimeoutMs?: number;
 	readonly controlTimeoutMs?: number;
+	/** How long each attempt's pi may take to report its session started, counted from the request to start it. */
+	readonly startDeadlineMs?: number;
 }
 
 export interface ExternalAttemptRequest {
@@ -81,6 +84,9 @@ export class ExternalExecutionDiagnosticError extends Error {
 export function externalExecutionDiagnosticCode(error: unknown): ExternalExecutionDiagnosticCode | undefined {
 	return error instanceof ExternalExecutionDiagnosticError ? error.code : undefined;
 }
+
+/** An attempt's pi did not report its session started in time; the surface has been asked to close. */
+export class ExternalStartDeadlineError extends Error {}
 
 export function isInterruptedExternalAttemptError(error: unknown): error is Error & { interrupted: true } {
 	return error instanceof Error && (error as Error & { interrupted?: boolean }).interrupted === true;
@@ -146,6 +152,23 @@ function withReadyDeadline(ready: Promise<void>, timeoutMs: number, safeLabel: s
 			(error) => { clearTimeout(timer); reject(error); },
 		);
 	});
+}
+
+const MAX_TIMER_MS = 2_147_483_647;
+
+function startDeadline(timeoutMs: number): { readonly expired: Promise<void>; cancel(): void } {
+	let timer: NodeJS.Timeout | undefined;
+	let remaining = timeoutMs;
+	const expired = new Promise<void>(resolve => {
+		const arm = () => {
+			const delay = Math.min(remaining, MAX_TIMER_MS);
+			remaining -= delay;
+			timer = setTimeout(() => { if (remaining > 0) arm(); else resolve(); }, delay);
+			timer.unref?.();
+		};
+		arm();
+	});
+	return { expired, cancel: () => clearTimeout(timer) };
 }
 
 function usageFrom(messages: readonly Message[]): { usage: ExternalAttemptUsage; model?: string } {
@@ -247,6 +270,7 @@ export async function createExternalExecution(
 	const controller = await (dependencies.createController ?? createChildHostController)(options);
 	const deadline = dependencies.readyDeadline ?? withReadyDeadline;
 	const controlTimeoutMs = options.controlTimeoutMs ?? 30_000;
+	const startDeadlineMs = options.startDeadlineMs ?? DEFAULT_CONTROL_CONFIG.startDeadlineMs;
 	const controlDeadline = dependencies.controlDeadline ?? withControlDeadline;
 	const now = dependencies.monotonicNow ?? (() => performance.now());
 	let interruptedFinish: ExternalExecutionFinishResult | undefined;
@@ -292,6 +316,12 @@ export async function createExternalExecution(
 			watcher = createWatcher(request.sessionFile, identity, request.onNewSessionMessage);
 			const environment = { ...request.environment, [PI_COHORT_REPORT_CONFIG]: control.configPath };
 			const exitPromise = controller.startAttempt({ attemptId: request.attemptId, command: request.command, args: [...request.args], cwd: request.cwd, environment });
+			const deadline = startDeadline(startDeadlineMs);
+			// The watcher can miss a file event, so the deadline trusts only a fresh read.
+			const notStarted = deadline.expired
+				.then(async () => replayExecutionSession(await readSession(request.sessionFile), identity).reports.some(report => report.kind === "ready"))
+				.catch(() => false)
+				.then(started => started ? new Promise<never>(() => {}) : { kind: "start_deadline" as const });
 			let observedExit: ChildHostExit | undefined;
 			let hostExited = false;
 			void exitPromise.then(exit => { observedExit = exit; }, () => {});
@@ -387,15 +417,35 @@ export async function createExternalExecution(
 				const result = mapResult(request, replayed!, observedExit ?? { status: null, signal: null }, false);
 				return { ...result, interrupted: true, ...(diagnostics.length ? { error: [result.error, ...diagnostics].filter(Boolean).join("; ") } : {}) };
 			};
+			// Pi has no control channel before its session starts, so closing the surface is the only way to end it.
+			const failStartDeadline = async (): Promise<never> => {
+				const endpoint = now() + controlTimeoutMs;
+				const wait = <T>(promise: Promise<T>, label: string) => controlDeadline(promise, Math.max(0, endpoint - now()), label);
+				const closed = await wait((async () => options.backend.close(controller.lease.handle, "explicit_cleanup"))(), "start deadline cleanup").then(() => true, () => false);
+				const childExited = await wait(exitPromise, "child exit observation").then(() => true, () => false);
+				const hostGone = await wait(controller.hostExit, "host exit observation").then(() => true, () => false);
+				try { watcher!.close(); } catch {}
+				try { controller.dispose(); } catch {}
+				disposed = true;
+				await wait(control!.close(), "control disposal").catch(() => {});
+				await wait(releaseObserver(), "observer release").catch(() => {});
+				interruptedFinish = { handle: controller.lease.handle, retained: !closed };
+				throw new ExternalStartDeadlineError([
+					`Subagent killed: pi did not start its session within the start deadline (startDeadlineMs=${startDeadlineMs}ms).`,
+					...(childExited && hostGone ? [] : ["Process termination could not be confirmed; manual cleanup may be required."]),
+				].join("\n"));
+			};
 			let first;
 			try { first = await Promise.race([
+				notStarted,
 				watcher.terminal.then(replayed => ({ kind: "result" as const, replayed })),
 				exitPromise.then(exit => ({ kind: "exit" as const, exit })),
 				abort.promise.then(() => ({ kind: "abort" as const })),
 			]); } catch (error) {
 				if (interruptedAt !== undefined) return await finalizeInterrupted(undefined, error);
 				throw error;
-			}
+			} finally { deadline.cancel(); }
+			if (first.kind === "start_deadline") return await failStartDeadline();
 			if (first.kind === "abort") return await finalizeInterrupted();
 			if (first.kind === "result" && (interruptedAt !== undefined || first.replayed.result?.outcome === "interrupted")) return await finalizeInterrupted(first.replayed);
 			const finalReplay = () => Promise.race([

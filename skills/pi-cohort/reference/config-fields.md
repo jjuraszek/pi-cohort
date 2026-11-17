@@ -68,6 +68,7 @@ Pass per-call attention and runtime overrides as `subagent({ ..., control: {...}
 | `inFlightSilenceCeilingMs` | integer >= 1 | Silent ms in-flight before escalation. | `600000` |
 | `inFlightSilenceKillMs` | integer >= 1 | SIGTERM the child after this silent span (clamped above the needs-attention window). | `1800000` |
 | `maxRuntimeMs` | integer >= 1 | Cap each child from its start regardless of activity (foreground only); treat expiry as a failure naming the cap, even with `enabled: false`. | `14400000` |
+| `startDeadlineMs` | integer >= 1 | Give each model attempt's pi this long to report its session started (external execution backends, foreground and background); treat expiry as a failure naming the deadline with no further model attempt, even with `enabled: false`. | `300000` |
 | `activeNoticeAfterTurns` | integer >= 1 | Notice by assistant turns. | off |
 | `activeNoticeAfterTokens` | integer >= 1 | Notice by total tokens. | off |
 | `failedToolAttemptsBeforeAttention` | integer >= 1 | Mutating-tool failures before `needs_attention`. | `3` |

@@ -81,6 +81,7 @@ import {
 import {
 	createExternalExecution,
 	externalExecutionDiagnosticCode,
+	ExternalStartDeadlineError,
 	isInterruptedExternalAttemptError,
 	type ExternalExecution,
 	type ExternalExecutionOptions,
@@ -869,6 +870,7 @@ async function runOwnedSync(
 					title: agentName,
 					settings: effectiveAgent.settings,
 					signal: options.signal!,
+					startDeadlineMs: options.controlConfig?.startDeadlineMs,
 				});
 				await externalOwner.ready;
 			} catch (error) {
@@ -899,7 +901,7 @@ async function runOwnedSync(
 				originalTask: task,
 			};
 			let result: SingleResult;
-			let runtimeFailure = false;
+			let unretryable = false;
 			if (externalOwner) {
 				try {
 					result = await (dependencies.runExternalAttempt ?? runExternalSingleAttempt)({
@@ -913,7 +915,7 @@ async function runOwnedSync(
 						shared,
 					});
 				} catch (error) {
-					runtimeFailure = error instanceof PiRuntimeLaunchError;
+					unretryable = error instanceof PiRuntimeLaunchError || error instanceof ExternalStartDeadlineError;
 					if (isInterruptedExternalAttemptError(error)) {
 						const code = externalExecutionDiagnosticCode(error);
 						result = {
@@ -922,7 +924,7 @@ async function runOwnedSync(
 							interrupted: true,
 						};
 					} else {
-						result = failedResult(agentName, task, runtimeFailure ? (error as Error).message : safeExternalFailure("attempt", error));
+						result = failedResult(agentName, task, unretryable ? (error as Error).message : safeExternalFailure("attempt", error));
 					}
 				}
 			} else {
@@ -932,7 +934,7 @@ async function runOwnedSync(
 					);
 				} catch (error) {
 					if (!(error instanceof PiRuntimeLaunchError)) throw error;
-					runtimeFailure = true;
+					unretryable = true;
 					result = failedResult(agentName, task, error.message);
 				}
 			}
@@ -953,7 +955,7 @@ async function runOwnedSync(
 			if (capped || result.interrupted || attemptSucceeded) {
 				break;
 			}
-			if (runtimeFailure || blockedLine(result.error ?? "") || !isRetryableModelFailure(result.error) || i === modelsToTry.length - 1) {
+			if (unretryable || blockedLine(result.error ?? "") || !isRetryableModelFailure(result.error) || i === modelsToTry.length - 1) {
 				break;
 			}
 			attemptNotes.push(formatModelAttemptNote(attempt, modelsToTry[i + 1]));

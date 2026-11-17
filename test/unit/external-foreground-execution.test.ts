@@ -10,12 +10,14 @@ import type { SessionWatcher } from "../../src/execution-backend/session-watcher
 import type { ExecutionBackend, ExecutionSurfaceHandle } from "../../src/execution-backend/types.ts";
 import {
 	createExternalExecution,
+	ExternalStartDeadlineError,
 	isInterruptedExternalAttemptError,
 	externalExecutionDiagnosticCode,
 	type ExternalAttemptRequest,
 	type ExternalExecutionOptions,
 	type ExternalExecutionDependencies,
 } from "../../src/runs/shared/external-execution.ts";
+import { DEFAULT_CONTROL_CONFIG } from "../../src/runs/shared/subagent-control.ts";
 
 const identity = { runId: "run", childId: "child", attemptId: "attempt" };
 const handle: ExecutionSurfaceHandle = { protocolVersion: 1, backend: "fake", surface: { kind: "pane", id: "p1" }, display: { label: "fake pane", hint: "safe" }, data: "SUCCESS fake terminal text" };
@@ -85,6 +87,7 @@ function harness() {
 	const calls: string[] = [];
 	const starts: ChildHostAttempt[] = [];
 	const controls: string[] = [];
+	const closeReasons: string[] = [];
 	let content = sessionContent();
 	let releases = 0;
 	let closes = 0;
@@ -101,7 +104,7 @@ function harness() {
 	const backend = {
 		name: "fake", protocolVersion: 1 as const, async detect() { return { available: true, version: "1", capabilities: [] }; },
 		async launch() { throw new Error("owner must use the controller boundary"); }, async reattach() { return { status: "gone" as const }; },
-		async close(actual: ExecutionSurfaceHandle) { assert.strictEqual(actual, handle); calls.push("backend-close"); closes++; },
+		async close(actual: ExecutionSurfaceHandle, reason: string) { assert.strictEqual(actual, handle); calls.push("backend-close"); closeReasons.push(reason); closes++; },
 	} satisfies ExecutionBackend;
 	const control: ExecutionControlChannel = {
 		configPath: "/private/report-config.json",
@@ -119,14 +122,14 @@ function harness() {
 		ensureSessionFile() { calls.push("session"); },
 	};
 	return {
-		backend, controller, ready, terminal, exit, hostExit, calls, starts, controls, dependencies,
+		backend, controller, ready, terminal, exit, hostExit, calls, starts, controls, closeReasons, dependencies,
 		interruptController, interruptSignal: interruptController.signal,
 		setContent(value: string) { content = value; },
 		counts: () => ({ releases, closes, shutdowns }),
 	};
 }
 
-async function ownerFrom(fake: ReturnType<typeof harness>, optionOverrides?: Partial<Pick<ExternalExecutionOptions, "controlTimeoutMs">>) {
+async function ownerFrom(fake: ReturnType<typeof harness>, optionOverrides?: Partial<Pick<ExternalExecutionOptions, "controlTimeoutMs" | "startDeadlineMs">>) {
 	return createExternalExecution({ backend: fake.backend, runId: "run", childId: "child", cwd: "/work", signal: new AbortController().signal, ...optionOverrides }, fake.dependencies);
 }
 
@@ -1121,5 +1124,216 @@ describe("external foreground execution owner", () => {
 		assert.equal(error.errors.length, 2);
 		assert.equal(error.errors[0], shutdownError);
 		assert.equal(error.errors[1], releaseError);
+	});
+});
+
+describe("external execution start deadline", () => {
+	const flush = () => new Promise<void>(resolve => setImmediate(resolve));
+	const readyOnly = (attemptId = "attempt") => line("ready", 1, {}, {}, { ...identity, attemptId });
+	const deadlineError = (ms: number) => `Subagent killed: pi did not start its session within the start deadline (startDeadlineMs=${ms}ms).`;
+	const unconfirmed = "Process termination could not be confirmed; manual cleanup may be required.";
+
+	it("closes the surface and fails the attempt when pi has not reported ready at the deadline", async t => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		const fake = harness();
+		fake.setContent("");
+		const owner = await ownerFrom(fake, { startDeadlineMs: 1000 }); fake.ready.resolve();
+		const attempt = owner.runAttempt(request());
+		void attempt.catch(() => {});
+		await flush();
+		assert.equal(fake.starts.length, 1);
+		t.mock.timers.tick(999);
+		await flush();
+		assert.deepEqual(fake.closeReasons, [], "the deadline has not passed");
+		t.mock.timers.tick(1);
+		await flush();
+		assert.deepEqual(fake.closeReasons, ["explicit_cleanup"]);
+		fake.exit.resolve({ status: null, signal: "SIGHUP" });
+		fake.hostExit.resolve({ status: null, signal: "SIGHUP" });
+		await assert.rejects(attempt, (error: unknown) => {
+			assert.ok(error instanceof ExternalStartDeadlineError);
+			assert.equal(error.message, deadlineError(1000));
+			return true;
+		});
+		assert.deepEqual(fake.controls, [], "a pi that never started has no control channel to ask");
+		await assert.rejects(owner.runAttempt(request({ attemptId: "second" })), /interruption-cleaned/);
+		assert.equal(fake.starts.length, 1, "no further attempt starts on the closed surface");
+		assert.deepEqual(await owner.finish("retained"), { handle, retained: false });
+		assert.deepEqual(fake.counts(), { releases: 1, closes: 1, shutdowns: 0 });
+	});
+
+	it("reports unconfirmed termination and a retained surface when the close fails", async t => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		const fake = harness();
+		fake.setContent("");
+		fake.backend.close = async () => { fake.closeReasons.push("explicit_cleanup"); throw new Error("fixture close failed"); };
+		const owner = await ownerFrom(fake, { startDeadlineMs: 1000, controlTimeoutMs: 50 }); fake.ready.resolve();
+		const attempt = owner.runAttempt(request());
+		void attempt.catch(() => {});
+		await flush();
+		t.mock.timers.tick(1000);
+		await flush();
+		fake.exit.reject(new Error("child host disconnected during attempt"));
+		await flush();
+		t.mock.timers.tick(50);
+		await assert.rejects(attempt, { message: `${deadlineError(1000)}\n${unconfirmed}` });
+		assert.deepEqual(fake.closeReasons, ["explicit_cleanup"]);
+		assert.ok(fake.calls.includes("dispose"), "disposal ends the child through the host socket");
+		assert.deepEqual(await owner.finish("retained"), { handle, retained: true });
+	});
+
+	it("fails with the start-deadline error and cleans up when the close throws before returning a promise", async t => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		const fake = harness();
+		fake.setContent("");
+		fake.backend.close = () => { fake.closeReasons.push("explicit_cleanup"); throw new Error("fixture close threw"); };
+		const owner = await ownerFrom(fake, { startDeadlineMs: 1000, controlTimeoutMs: 50 }); fake.ready.resolve();
+		const attempt = owner.runAttempt(request());
+		void attempt.catch(() => {});
+		await flush();
+		t.mock.timers.tick(1000);
+		await flush();
+		fake.exit.reject(new Error("child host disconnected during attempt"));
+		await flush();
+		t.mock.timers.tick(50);
+		await assert.rejects(attempt, (error: unknown) => {
+			assert.ok(error instanceof ExternalStartDeadlineError);
+			assert.equal(error.message, `${deadlineError(1000)}\n${unconfirmed}`);
+			return true;
+		});
+		assert.deepEqual(fake.closeReasons, ["explicit_cleanup"]);
+		assert.ok(fake.calls.includes("dispose"), "disposal ends the child through the host socket");
+		assert.deepEqual(await owner.finish("retained"), { handle, retained: true });
+	});
+
+	it("does not end an attempt that reported ready, however long it then runs", async t => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		const fake = harness();
+		fake.setContent(readyOnly());
+		const owner = await ownerFrom(fake, { startDeadlineMs: 1000 }); fake.ready.resolve();
+		const attempt = owner.runAttempt(request());
+		await flush();
+		t.mock.timers.tick(1000);
+		await flush();
+		t.mock.timers.tick(60_000);
+		await flush();
+		assert.deepEqual(fake.closeReasons, []);
+		fake.setContent(sessionContent("success", ["shutdown"]));
+		fake.terminal.resolve(replay()); fake.exit.resolve({ status: 0, signal: null });
+		assert.equal((await attempt).outcome, "success");
+	});
+
+	it("stops counting once the attempt settles", async t => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		const fake = harness();
+		const owner = await ownerFrom(fake, { startDeadlineMs: 1000 }); fake.ready.resolve();
+		const attempt = owner.runAttempt(request());
+		await flush();
+		fake.setContent(sessionContent("success", ["shutdown"]));
+		fake.terminal.resolve(replay()); fake.exit.resolve({ status: 0, signal: null });
+		await attempt;
+		const reads = fake.calls.filter(call => call === "read").length;
+		fake.setContent("");
+		t.mock.timers.tick(1000);
+		await flush();
+		assert.equal(fake.calls.filter(call => call === "read").length, reads, "a settled attempt is not checked again");
+		assert.deepEqual(fake.closeReasons, []);
+	});
+
+	it("counts each attempt's deadline from that attempt's own start", async t => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		const fake = harness();
+		const attempts = new Map<string, { terminal: ReturnType<typeof deferred<ReturnType<typeof replay>>>; exit: ReturnType<typeof deferred<ChildHostExit>> }>();
+		const attemptState = (attemptId: string) => {
+			if (!attempts.has(attemptId)) attempts.set(attemptId, { terminal: deferred(), exit: deferred() });
+			return attempts.get(attemptId)!;
+		};
+		fake.controller.startAttempt = attempt => { fake.starts.push(attempt); return attemptState(attempt.attemptId).exit.promise; };
+		fake.dependencies.createWatcher = (_file, reportIdentity) => ({ terminal: attemptState(reportIdentity.attemptId).terminal.promise, close() {} });
+		const owner = await ownerFrom(fake, { startDeadlineMs: 1000 }); fake.ready.resolve();
+
+		fake.setContent(readyOnly("first"));
+		const first = owner.runAttempt(request({ attemptId: "first" }));
+		await flush();
+		t.mock.timers.tick(5000);
+		await flush();
+		fake.setContent(sessionContent("failed", ["shutdown"], "first"));
+		attemptState("first").terminal.resolve(replay(sessionContent("failed", [], "first"), "first"));
+		attemptState("first").exit.resolve({ status: 1, signal: null });
+		assert.equal((await first).outcome, "failed", "the first attempt outlives the deadline and fails on its own");
+
+		fake.setContent("");
+		const second = owner.runAttempt(request({ attemptId: "second" }));
+		await flush();
+		t.mock.timers.tick(999);
+		await flush();
+		fake.setContent(readyOnly("second"));
+		t.mock.timers.tick(1);
+		await flush();
+		assert.deepEqual(fake.closeReasons, [], "the second attempt reported ready within its own deadline");
+		fake.setContent(sessionContent("success", ["shutdown"], "second"));
+		attemptState("second").terminal.resolve(replay(sessionContent("success", [], "second"), "second"));
+		attemptState("second").exit.resolve({ status: 0, signal: null });
+		assert.equal((await second).outcome, "success");
+	});
+
+	it("starts counting at the request to start pi, not at the surface launch", async t => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		const fake = harness();
+		fake.setContent("");
+		const owner = await ownerFrom(fake, { startDeadlineMs: 1000 });
+		const attempt = owner.runAttempt(request());
+		await flush();
+		t.mock.timers.tick(5000);
+		await flush();
+		assert.equal(fake.starts.length, 0, "the helper has not connected yet");
+		fake.ready.resolve();
+		await flush();
+		assert.equal(fake.starts.length, 1);
+		t.mock.timers.tick(999);
+		await flush();
+		fake.setContent(readyOnly());
+		t.mock.timers.tick(1);
+		await flush();
+		assert.deepEqual(fake.closeReasons, []);
+		fake.setContent(sessionContent("success", ["shutdown"]));
+		fake.terminal.resolve(replay()); fake.exit.resolve({ status: 0, signal: null });
+		assert.equal((await attempt).outcome, "success");
+	});
+
+	it("applies the default deadline when none is given", async t => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		const fake = harness();
+		fake.setContent("");
+		const owner = await ownerFrom(fake); fake.ready.resolve();
+		const attempt = owner.runAttempt(request());
+		void attempt.catch(() => {});
+		await flush();
+		t.mock.timers.tick(DEFAULT_CONTROL_CONFIG.startDeadlineMs - 1);
+		await flush();
+		assert.deepEqual(fake.closeReasons, []);
+		t.mock.timers.tick(1);
+		await flush();
+		fake.exit.resolve({ status: null, signal: "SIGHUP" });
+		fake.hostExit.resolve({ status: null, signal: "SIGHUP" });
+		await assert.rejects(attempt, { message: deadlineError(300_000) });
+	});
+
+	it("honors a deadline longer than one timer can hold", async t => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		const fake = harness();
+		fake.setContent("");
+		const owner = await ownerFrom(fake, { startDeadlineMs: 3_000_000_000 }); fake.ready.resolve();
+		const attempt = owner.runAttempt(request());
+		void attempt.catch(() => {});
+		await flush();
+		t.mock.timers.tick(2_147_483_647);
+		await flush();
+		assert.deepEqual(fake.closeReasons, []);
+		t.mock.timers.tick(3_000_000_000 - 2_147_483_647);
+		await flush();
+		fake.exit.resolve({ status: null, signal: "SIGHUP" });
+		fake.hostExit.resolve({ status: null, signal: "SIGHUP" });
+		await assert.rejects(attempt, { message: deadlineError(3_000_000_000) });
 	});
 });

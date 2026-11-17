@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Children on an external execution backend have a start deadline, `control.startDeadlineMs`, configurable per call or with `subagents.control.startDeadlineMs` in settings, on foreground and background runs. Each model attempt's pi has 300000 ms (5 min) by default to report that its session started; past that the backend is asked to close the child's surface and the child returns a failure naming the deadline, with no further model attempt. Before, such a child held a foreground call until `maxRuntimeMs` (4 h) and a background run until someone interrupted it. (#70)
+
 ## [8.3.0] - 2026-11-16
 
 ### Added

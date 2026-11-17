@@ -4,6 +4,7 @@
  * Implements the ExecutionBackend contract by actually spawning the child host
  * runtime passed in the launch request. Writes trace events to
  * PI_COHORT_FIXTURE_TRACE so tests can assert launch/close/release lifecycle.
+ * A close for `explicit_cleanup` kills the host's process group.
  *
  * The handle carries an extra `metadata` field with { fixture: "detached-package" }
  * so tests can verify the handle was produced by this backend.
@@ -20,6 +21,7 @@ function writeTrace(type: string, fields: Record<string, unknown>): void {
 }
 
 export function createFixtureExecutionBackend() {
+	const hostPids = new Map<string, number>();
 	return {
 		name: "fixture-detached" as const,
 		protocolVersion: 1 as const,
@@ -47,6 +49,8 @@ export function createFixtureExecutionBackend() {
 				cwd: request.cwd,
 				env,
 				stdio: ["ignore", "ignore", "ignore"],
+				// Its own process group, so a forced close ends the host and its pi together as closing a terminal tab does.
+				detached: true,
 			});
 			const pid = child.pid ?? 0;
 
@@ -60,6 +64,7 @@ export function createFixtureExecutionBackend() {
 				metadata: { fixture: "detached-package", runId: request.runId, childId: request.childId },
 			};
 
+			hostPids.set(handle.surface.id, pid);
 			writeTrace("launch", { runId: request.runId, childId: request.childId, pid, options: request.awareness?.options });
 
 			const events = (async function* () {
@@ -93,11 +98,16 @@ export function createFixtureExecutionBackend() {
 			return { status: "gone" as const };
 		},
 
-		async close(handle: { metadata?: { runId?: string; childId?: string } }) {
+		async close(handle: { surface: { id: string }; metadata?: { runId?: string; childId?: string } }, reason: string) {
 			writeTrace("close", {
 				runId: handle.metadata?.runId ?? "",
 				childId: handle.metadata?.childId ?? "",
+				reason,
 			});
+			const pid = hostPids.get(handle.surface.id);
+			if (reason === "explicit_cleanup" && pid) {
+				try { process.kill(-pid, "SIGKILL"); } catch {}
+			}
 		},
 	};
 }
