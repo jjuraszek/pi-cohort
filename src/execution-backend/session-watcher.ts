@@ -24,6 +24,8 @@ export interface SessionWatcher {
  */
 export type OnNewSessionMessage = (message: ReplayedSession["messages"][number]) => void;
 
+const SAFETY_REREAD_INTERVAL_MS = 1000;
+
 function asError(error: unknown): Error {
 	return error instanceof Error ? error : new Error(String(error));
 }
@@ -51,15 +53,18 @@ export function createSessionWatcher(
 	let pending = false;
 	let dirty = false;
 	let seenMessageCount = 0;
+	let rereadTimer: NodeJS.Timeout | undefined;
 
 	const settleError = (error: Error): void => {
 		if (settled) return;
 		settled = true;
+		clearInterval(rereadTimer);
 		rejectTerminal(error);
 	};
 	const settleResult = (replayed: ReplayedSession & { result: NonNullable<ReplayedSession["result"]> }): void => {
 		if (settled) return;
 		settled = true;
+		clearInterval(rereadTimer);
 		resolveTerminal(replayed);
 	};
 
@@ -110,6 +115,9 @@ export function createSessionWatcher(
 		if (closed || settled) return;
 		void processOnce();
 	}, error => settleError(error));
+	// The native watcher can drop the event for the last write under load.
+	rereadTimer = setInterval(() => { void processOnce(); }, SAFETY_REREAD_INTERVAL_MS);
+	rereadTimer.unref?.();
 	void processOnce();
 
 	return {

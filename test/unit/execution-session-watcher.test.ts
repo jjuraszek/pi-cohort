@@ -140,6 +140,26 @@ describe("execution session watcher", () => {
 		watcher.close();
 	});
 
+	it("resolves from a timed re-read when no change event follows the result, then stops re-reading", async (t) => {
+		t.mock.timers.enable({ apis: ["setInterval"] });
+		const fake = createFakeFileSystem(readyLine(1) + settledLine(2));
+		const watcher = createSessionWatcher("/session.jsonl", identity, fake.dependencies);
+		let settled = false;
+		void watcher.terminal.then(() => { settled = true; }, () => {});
+		await new Promise<void>(resolve => setImmediate(resolve));
+		assert.equal(fake.reads.length, 1);
+		fake.setContent(readyLine(1) + settledLine(2) + resultLine(3));
+		t.mock.timers.tick(1000);
+		await new Promise<void>(resolve => setImmediate(resolve));
+		assert.equal(settled, true, "the result is observed within a second without a change event");
+		assert.equal((await watcher.terminal).result?.finalOutput, "done");
+		assert.equal(fake.reads.length, 2);
+		t.mock.timers.tick(5000);
+		await new Promise<void>(resolve => setImmediate(resolve));
+		assert.equal(fake.reads.length, 2);
+		watcher.close();
+	});
+
 	it("rejects loudly on a malformed complete line without fabricating a result", async () => {
 		const fake = createFakeFileSystem(readyLine(1) + settledLine(2));
 		const watcher = createSessionWatcher("/session.jsonl", identity, fake.dependencies);
@@ -284,20 +304,14 @@ describe("execution session watcher", () => {
 		assert.equal(observed.length, countAfterTerminal);
 	});
 
-	it("never registers a timer", () => {
-		const originalSetTimeout = globalThis.setTimeout;
-		const originalSetInterval = globalThis.setInterval;
-		let timerUsed = false;
-		globalThis.setTimeout = ((..._args: unknown[]) => { timerUsed = true; return 0 as unknown as NodeJS.Timeout; }) as typeof setTimeout;
-		globalThis.setInterval = ((..._args: unknown[]) => { timerUsed = true; return 0 as unknown as NodeJS.Timeout; }) as typeof setInterval;
-		try {
-			const fake = createFakeFileSystem(readyLine(1) + settledLine(2) + resultLine(3));
-			const watcher = createSessionWatcher("/session.jsonl", identity, fake.dependencies);
-			watcher.close();
-		} finally {
-			globalThis.setTimeout = originalSetTimeout;
-			globalThis.setInterval = originalSetInterval;
-		}
-		assert.equal(timerUsed, false);
+	it("stops its timed re-read on close", async (t) => {
+		t.mock.timers.enable({ apis: ["setInterval"] });
+		const fake = createFakeFileSystem(readyLine(1) + settledLine(2));
+		const watcher = createSessionWatcher("/session.jsonl", identity, fake.dependencies);
+		await new Promise<void>(resolve => setImmediate(resolve));
+		watcher.close();
+		t.mock.timers.tick(5000);
+		await new Promise<void>(resolve => setImmediate(resolve));
+		assert.equal(fake.reads.length, 1);
 	});
 });
