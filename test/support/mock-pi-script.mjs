@@ -237,6 +237,9 @@ async function writeResponseEntries(entries, jsonMode, args, persistEntry) {
 			}
 		} else if (entry?.type === "entry_appended" && entry.entry) {
 			persistEntry(entry.entry);
+		} else if (entry?.type === "compaction_end" && entry.result && !entry.aborted && !entry.errorMessage) {
+			const { summary, firstKeptEntryId, tokensBefore, usage, details } = entry.result;
+			persistEntry({ type: "compaction", summary, firstKeptEntryId, tokensBefore, usage, details });
 		}
 		if (jsonMode) {
 			await writeJsonlLine(entry);

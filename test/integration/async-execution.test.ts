@@ -2334,13 +2334,15 @@ ${script}`);
 	for (const state of [
 		"missing-before-start", "fresh-empty-suffix", "reused-empty-suffix", "missing-after-turn", "malformed", "truncated",
 		"fresh-header-only", "reused-prefix-only", "lost-assistant", "lost-second-user", "lost-second-assistant",
-		"intact-tool-result", "lost-tool-result", "intact-entry-append", "lost-entry-append", "lost-system", "lost-custom", "replaced", "fresh-replaced",
+		"intact-tool-result", "lost-tool-result", "intact-entry-append", "lost-entry-append", "intact-compaction", "lost-compaction",
+		"lost-system", "lost-custom", "replaced", "fresh-replaced",
 	] as const) {
 		const neverStarted = state === "missing-before-start";
 		const emptySuffix = state === "fresh-empty-suffix" || state === "reused-empty-suffix";
 		const noCompletedMessages = neverStarted || emptySuffix;
 		const disappeared = state === "missing-after-turn";
-		const intact = state === "intact-tool-result" || state === "intact-entry-append";
+		const intact = state === "intact-tool-result" || state === "intact-entry-append" || state === "intact-compaction";
+		const compactionScenario = state === "intact-compaction" || state === "lost-compaction";
 		const toolScenario = state === "intact-tool-result" || state === "lost-tool-result";
 		const shortfalls: Partial<Record<typeof state, RegExp>> = {
 			"lost-assistant": /assistant \(observed 1, saved 0\)/,
@@ -2348,6 +2350,7 @@ ${script}`);
 			"lost-second-assistant": /assistant \(observed 2, saved 1\)/,
 			"lost-tool-result": /toolResult \(observed 1, saved 0\)/,
 			"lost-entry-append": /setup-entry/,
+			"lost-compaction": /compaction \(observed 1, saved 0\)/,
 			"lost-system": /system \(observed 1, saved 0\)/,
 			"lost-custom": /custom \(observed 1, saved 0\)/,
 		};
@@ -2377,7 +2380,17 @@ ${script}`);
 			const toolCall = { ...reply, message: { ...reply.message, stopReason: "toolUse", content: [
 				{ type: "toolCall", id: "tool-1", name: "report", arguments: {} },
 			] } };
+			const compactionResult = {
+				summary: "Compacted prompt", firstKeptEntryId: "earlier-prompt", tokensBefore: 15,
+				usage: { input: 7, output: 3, cacheRead: 2, cacheWrite: 1, totalTokens: 13, cost: { input: 0.125, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.125 } },
+			};
+			const compactionEnd = { type: "compaction_end", reason: "manual", willRetry: false };
 			const jsonl = neverStarted ? [setupEntry, custom, system]
+				: compactionScenario ? [reply,
+					{ ...compactionEnd, aborted: true },
+					{ ...compactionEnd, aborted: false, errorMessage: "Compaction failed" },
+					{ ...compactionEnd, aborted: false, result: compactionResult },
+				]
 				: toolScenario ? [system, custom, user, toolCall, toolResult]
 				: state === "intact-entry-append" || state === "lost-entry-append" ? [reply, boundaryEntry, setupEntry]
 				: state === "lost-custom" ? [reply, boundaryEntry, custom]
@@ -2390,6 +2403,7 @@ ${script}`);
 			if (!fresh) fs.writeFileSync(file, header + [
 				{ type: "message", id: "earlier-prompt", parentId: null, message: { role: "user", content: "Earlier prompt", timestamp: 1 } },
 				{ type: "branch_summary", ...savedSummary("inherited") },
+				...(compactionScenario ? [{ type: "compaction", id: "inherited-compaction", ...compactionResult }] : []),
 			].map(entry => JSON.stringify(entry) + "\n").join(""));
 			const script = fs.readFileSync(mockPi.runtime.piEntryPath, "utf8");
 			t.after(() => fs.writeFileSync(mockPi.runtime.piEntryPath, script));
@@ -2409,6 +2423,8 @@ ${script}`);
 				"lost-tool-result": `dropLastEntry();`,
 				"intact-entry-append": "",
 				"lost-entry-append": `dropLastEntry();`,
+				"intact-compaction": "",
+				"lost-compaction": `dropLastEntry();`,
 				"lost-system": `dropLastEntry();`,
 				"lost-custom": `dropLastEntry();`,
 				replaced: `process.on("exit", () => { copyFileSync(session, session + ".replacement"); renameSync(session + ".replacement", session); });`,
@@ -2436,6 +2452,11 @@ ${script}`);
 				id: state, flatIndex: 0, flatStepCount: 1, outputFile: path.join(tempDir, "output.log"), runtime: mockPi.runtime,
 			});
 			assert.equal(result.exitCode, 0, result.error);
+			if (compactionScenario) {
+				const entries = fs.readFileSync(file, "utf8").trimEnd().split("\n").map(line => JSON.parse(line));
+				assert.equal(entries.at(-1).type, intact ? "compaction" : "message");
+				assert.equal(entries.filter(entry => entry.type === "compaction").length, intact ? 2 : 1);
+			}
 			const diagnostics = fs.readFileSync(path.join(tempDir, "events.jsonl"), "utf8").trim().split("\n")
 				.map(line => JSON.parse(line)).filter(entry => entry.type === "subagent.child.accounting");
 			assert.equal(diagnostics.length, noCompletedMessages || intact ? 0 : 1, JSON.stringify(diagnostics));
@@ -2446,6 +2467,14 @@ ${script}`);
 				expected.input += toolResult.message.usage.input;
 				expected.output += toolResult.message.usage.output;
 				expected.cost += toolResult.message.usage.cost.total;
+			}
+			if (compactionScenario) {
+				const { usage } = compactionResult;
+				expected.input += usage.input;
+				expected.output += usage.output;
+				expected.cacheRead += usage.cacheRead;
+				expected.cacheWrite += usage.cacheWrite;
+				expected.cost += usage.cost.total;
 			}
 			if (intact) {
 				const { usage } = savedSummary("ambiguous");
@@ -2481,8 +2510,11 @@ ${script}`);
 				{ type: "message_start", message: toolResult },
 				{ type: "message_end", message: toolResult },
 				{
-					type: "compaction_end",
-					result: { usage: { input: 7, output: 3, cacheRead: 2, cacheWrite: 1, cost: { total: 0.5 } } },
+					type: "compaction_end", reason: "threshold", aborted: false, willRetry: false,
+					result: {
+						summary: "Compacted prompt", firstKeptEntryId: "tool-result", tokensBefore: 15,
+						usage: { input: 7, output: 3, cacheRead: 2, cacheWrite: 1, totalTokens: 13, cost: { input: 0.5, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.5 } },
+					},
 				},
 				{
 					type: "message_end",

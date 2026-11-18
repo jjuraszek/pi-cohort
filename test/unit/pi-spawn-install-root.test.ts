@@ -75,7 +75,7 @@ it("falls back when argv[1] is missing and still throws without installRoot", (t
 
 it("limits detached runner Pi runtime imports to the selected host's migration API", () => {
 	const seen = new Set<string>();
-	const runner = "src/runs/background/subagent-runner.ts";
+	const runner = path.join("src", "runs", "background", "subagent-runner.ts");
 	const queue = [path.join(repoRoot, runner)];
 	const runtimeImports: string[] = [];
 	while (queue.length) {

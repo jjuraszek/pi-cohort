@@ -302,6 +302,7 @@ interface ChildEvent {
 	type?: string;
 	id?: string;
 	aborted?: boolean;
+	errorMessage?: string;
 	message?: ChildMessage;
 	result?: { usage?: ChildUsage };
 	entry?: { type: string; id?: string; usage?: ChildUsage };
@@ -359,6 +360,7 @@ function runPiStreaming(
 		let stderrBuf = "";
 		let streamedSessionId: string | undefined;
 		const observedMessages = new Map<string, number>();
+		let observedCompactions = 0;
 		const observedEntryIds = new Set<string>();
 		const messages: Message[] = [];
 		const usage = emptyUsage();
@@ -420,7 +422,10 @@ function runPiStreaming(
 			appendChildEvent(event);
 			onChildEvent?.(event);
 
-			if (event.type === "compaction_end" && event.result?.usage) addCharge(event.result.usage);
+			if (event.type === "compaction_end" && event.result && !event.aborted && !event.errorMessage) {
+				observedCompactions++;
+				if (event.result.usage) addCharge(event.result.usage);
+			}
 			if (event.type === "entry_appended" && event.entry) {
 				const { id, type, usage } = event.entry;
 				if (typeof id === "string") observedEntryIds.add(id);
@@ -606,13 +611,15 @@ function runPiStreaming(
 						throw new Error("Session file was replaced: its header does not match the streamed session ID");
 					}
 					// A fresh session keeps setup entries in memory until its first user or assistant message.
-					if (saved || observedMessages.has("user") || observedMessages.has("assistant")) {
+					if (saved || observedCompactions || observedMessages.has("user") || observedMessages.has("assistant")) {
 						const ownEntries = saved?.entries.slice(before.length || 1) ?? [];
 						const savedMessages = new Map<string, number>();
+						let savedCompactions = 0;
 						const missingEntryIds = new Set(observedEntryIds);
 						for (const entry of ownEntries) {
-							// An entry_appended custom_message is a separate write, not proof of a message_end write.
+							// Writes reported by entry_appended cannot witness a separate message_end or compaction_end write.
 							if (entry.type !== "session" && missingEntryIds.delete(entry.id)) continue;
+							if (entry.type === "compaction") savedCompactions++;
 							const role = entry.type === "custom_message" ? "custom" : entry.type === "message" ? entry.message?.role : undefined;
 							if (role) savedMessages.set(role, (savedMessages.get(role) ?? 0) + 1);
 						}
@@ -620,6 +627,9 @@ function runPiStreaming(
 						for (const [role, observed] of observedMessages) {
 							const count = savedMessages.get(role) ?? 0;
 							if (count < observed) shortfalls.push(`${role} (observed ${observed}, saved ${count})`);
+						}
+						if (savedCompactions < observedCompactions) {
+							shortfalls.push(`compaction (observed ${observedCompactions}, saved ${savedCompactions})`);
 						}
 						if (missingEntryIds.size) shortfalls.push(`entry_appended (missing IDs: ${[...missingEntryIds].join(", ")})`);
 						if (shortfalls.length) {
