@@ -897,7 +897,7 @@ function applyModelInheritance(params: SubagentParamsLike): SubagentParamsLike {
 		hasModel(model) && isObject(child) && !hasModel(child.model)
 			? { ...child, model }
 			: child;
-	if (params.tasks && hasModel(params.model)) {
+	if (params.tasks?.length && hasModel(params.model)) {
 		return { ...params, tasks: params.tasks.map((task) => inherit(task, params.model)) };
 	}
 	if (!params.chain) return params;

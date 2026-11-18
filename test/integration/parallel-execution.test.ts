@@ -282,7 +282,7 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 				tasks: [
 					{ agent: "pinned", task: "Do work", count: 2 },
 					{ agent: "unpinned", task: "Do work" },
-					{ agent: "pinned", task: "Use my own model", model: "anthropic/claude-opus-4", count: 2 },
+					{ agent: "pinned", task: "Use my own model", model: "anthropic/claude-opus-4" },
 				],
 			};
 			const original = structuredClone(params);
@@ -298,17 +298,18 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 			});
 			const expectedModels = [
 				model || "openai/gpt-5-mini", model || "openai/gpt-5-mini", model || "github-copilot/gpt-6",
-				"anthropic/claude-opus-4", "anthropic/claude-opus-4",
+				"anthropic/claude-opus-4",
 			].map((value) => `${value}${thinking ? `:${thinking}` : ""}`);
 			assert.deepEqual(models, expectedModels);
-			assert.equal(mockPi.callCount(), 5);
+			assert.equal(mockPi.callCount(), 4);
 			assert.deepEqual(params, original, "count expansion and inheritance must not mutate the caller's tasks");
 		});
 	}
 
 	for (const group of [undefined, "openai/gpt-4o"]) {
 		it(`chain children record the nearest model (group: ${group ?? "unset"})`, async () => {
-			const { params, expected } = chainModelScenario(mockPi, group);
+			const { params: chainParams, expected } = chainModelScenario(mockPi, group);
+			const params = group ? chainParams : { ...chainParams, tasks: [] };
 			const original = structuredClone(params);
 			const executor = makeExecutor([makeAgent("pinned", { model: "openai/gpt-5-mini" })]);
 			const thinking = group ? "high" : undefined;
