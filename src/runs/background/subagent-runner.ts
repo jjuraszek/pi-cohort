@@ -255,6 +255,8 @@ interface ChildEvent {
 	type?: string;
 	aborted?: boolean;
 	message?: ChildMessage;
+	result?: { usage?: ChildUsage };
+	entry?: { type: string; usage?: ChildUsage };
 	toolName?: string;
 	args?: Record<string, unknown>;
 }
@@ -301,6 +303,13 @@ function runPiStreaming(
 		let stderrBuf = "";
 		const messages: Message[] = [];
 		const usage = emptyUsage();
+		const addCharge = (charge: ChildUsage) => {
+			usage.input += charge.input ?? charge.inputTokens ?? 0;
+			usage.output += charge.output ?? charge.outputTokens ?? 0;
+			usage.cacheRead += charge.cacheRead ?? 0;
+			usage.cacheWrite += charge.cacheWrite ?? 0;
+			usage.cost += charge.cost?.total ?? 0;
+		};
 		let model: string | undefined;
 		let error: string | undefined;
 		let assistantError: string | undefined;
@@ -350,6 +359,9 @@ function runPiStreaming(
 			appendChildEvent(event);
 			onChildEvent?.(event);
 
+			if (event.type === "compaction_end" && event.result?.usage) addCharge(event.result.usage);
+			if (event.type === "entry_appended" && event.entry?.usage && event.entry.type !== "message") addCharge(event.entry.usage);
+
 			if (structuredRun && event.type === "agent_settled") {
 				clearSettlementWait();
 				cleanTerminalAssistantStopReceived = !event.aborted && !assistantError && !error && !interrupted;
@@ -372,14 +384,9 @@ function runPiStreaming(
 				if (event.type !== "message_end" || event.message.role !== "assistant") return;
 				if (event.message.model) model = event.message.model;
 				if (event.message.errorMessage) assistantError = event.message.errorMessage;
-				const eventUsage = event.message.usage;
-				if (eventUsage) {
+				if (event.message.usage) {
 					usage.turns++;
-					usage.input += eventUsage.input ?? eventUsage.inputTokens ?? 0;
-					usage.output += eventUsage.output ?? eventUsage.outputTokens ?? 0;
-					usage.cacheRead += eventUsage.cacheRead ?? 0;
-					usage.cacheWrite += eventUsage.cacheWrite ?? 0;
-					usage.cost += eventUsage.cost?.total ?? 0;
+					addCharge(event.message.usage);
 				}
 				const stopReason = (event.message as { stopReason?: string }).stopReason;
 				const hasToolCall = Array.isArray(event.message.content)

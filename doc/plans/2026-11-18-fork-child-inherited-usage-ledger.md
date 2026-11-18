@@ -3,9 +3,9 @@
 base: d026b6fbebadf8f2f4ecf316e3eea8f961c90b7d
 verification: npm run test:all
 checks: commands
-iterations: 7
+iterations: 8
 allowance: 10
-returned: 6 | home | 8af52ed11d7325e712c965fa2960b9be84408e74
+returned: 7 | home | b7940fe304cc70eb488ce1578e42d7ce0ebabe0a
 
 | row | status | attempts | evidence |
 |---|---|---|---|
@@ -15,7 +15,7 @@ returned: 6 | home | 8af52ed11d7325e712c965fa2960b9be84408e74
 | 4 | done | 2 | timeout -k 30 600 node --import ./test/support/isolate-test-env.mjs --import ./test/support/register-loader.mjs --test test/unit/external-foreground-execution.test.ts test/integration/background-external-execution.test.ts; 109 passed, 0 failed, 0 skipped; the foreground guard reported no edits and the background mutation flag was false despite the copied parent edit |
 | 5 | done | 1 | timeout -k 30 180 node --import ./test/support/isolate-test-env.mjs --import ./test/support/register-loader.mjs --test test/unit/external-foreground-execution.test.ts; 72 passed, 0 failed; the first attempt recorded 2 turns and $3 including cache warming, the retry recorded 1 turn and $1, and the child reported 3 turns and $4 |
 | 6 | done | 1 | timeout -k 30 600 node --import ./test/support/isolate-test-env.mjs --import ./test/support/register-loader.mjs --test test/integration/detached-external-orchestration.test.ts; 17 passed, 0 failed; fresh, forked and interrupted forked steps each saved 9 input tokens, 4 output tokens and $0.75 from one turn and one compaction |
-| 7 | open | 0 | |
+| 7 | done | 1 | timeout -k 30 600 node --import ./test/support/isolate-test-env.mjs --import ./test/support/register-loader.mjs --test test/integration/async-execution.test.ts; 123 passed, 0 failed, 0 skipped; the two attempts saved $0.75 and $0.126, totaling 120 input tokens, 58 output tokens and $0.876; dynamic children remained in the final totals and unlaunched children added zero |
 
 ## Decisions
 row 0 done | seeded 1 rows, closed 0 on baseline | row 1
@@ -26,3 +26,4 @@ row 4 failed | Foreground and background checks both rejected the copied edit, b
 row 4 done | The foreground completion guard and the background mutation flag both exclude the parent's edit when a forked child makes no edits. | Reuse forkWithParentEdit() to create a real child session with a priced parent edit and its copied leaf ID.
 row 5 done | A retry on the same saved conversation counts only its own turn, and the child total includes both attempts' charges exactly once. | Reuse chargesFrom in session-replay.ts for owned non-message charges and usageFrom in external-execution.ts to sum them with assistant usage.
 row 6 done | Background status saves only the forked child's tokens and cost, including its paid turn and compaction when interrupted without a result. | Reuse updateCompletedUsage in subagent-runner.ts to total every step's attempt records at single, parallel and dynamic completion.
+row 7 done | A background retry now saves both attempts' usage, including compaction and cache warming, without counting those charges as turns. | Reuse the fallback case in async-execution.test.ts to compare saved per-attempt usage with the step and run totals.

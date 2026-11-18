@@ -18,6 +18,7 @@ import * as path from "node:path";
 import { chainModelScenario, createEventBus, createMockPi, createTempDir, events, makeAgent, makeMinimalCtx, makeParentSessionCtx, removeTempDir, tryImport } from "../support/helpers.ts";
 import type { MockPi } from "../support/helpers.ts";
 import { getArtifactPaths } from "../../src/shared/artifacts.ts";
+import type { ModelAttempt } from "../../src/shared/types.ts";
 import { formatModelAttemptNote } from "../../src/runs/shared/model-fallback.ts";
 import { DEFAULT_CONTROL_CONFIG } from "../../src/runs/shared/subagent-control.ts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
@@ -52,6 +53,7 @@ interface AsyncStatusPayload {
 	state?: string;
 	error?: string;
 	totalTokens?: { total: number };
+	totalCost?: number;
 	parallelGroups?: Array<{ start: number; count: number; stepIndex: number }>;
 	steps?: Array<{
 		id?: string;
@@ -68,6 +70,7 @@ interface AsyncStatusPayload {
 		error?: string;
 		model?: string;
 		thinking?: string;
+		modelAttempts?: ModelAttempt[];
 		tokens?: { total: number };
 		acceptance?: { status?: string };
 	}>;
@@ -1008,6 +1011,9 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.deepEqual(collected.map((item) => item.key), ["src/a.ts", "src/b.ts"]);
 		assert.deepEqual(collected.map((item) => item.structured), [{ ok: "a" }, { ok: "b" }]);
 		assert.equal(status.steps?.length, 4);
+		for (const step of status.steps) assert.deepEqual(step.tokens, { input: 100, output: 50, total: 150 });
+		assert.deepEqual(status.totalTokens, { input: 400, output: 200, total: 600 });
+		assert.equal(status.totalCost, 0.004);
 		assert.deepEqual(status.parallelGroups, [{ start: 1, count: 2, stepIndex: 1 }]);
 		assert.equal(payload.workflowGraph?.nodes?.[1]?.kind, "dynamic-parallel-group");
 		assert.deepEqual(payload.workflowGraph?.nodes?.[1]?.children?.map((child) => child.itemKey), ["src/a.ts", "src/b.ts"]);
@@ -1598,6 +1604,13 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			assert.equal(mockPi.callCount(), 1);
 			assert.equal(payload.results.length, 3);
 			assert.ok(payload.results.slice(1).every((r: any) => !r.success && r.error === "Execution backend selection failed."));
+			const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf8")) as AsyncStatusPayload;
+			for (const step of status.steps!.slice(1)) {
+				assert.equal(step.modelAttempts?.length ?? 0, 0);
+				assert.deepEqual(step.tokens, { input: 0, output: 0, total: 0 });
+			}
+			assert.deepEqual(status.totalTokens, { input: 100, output: 50, total: 150 });
+			assert.equal(status.totalCost, 0.001);
 			assert.deepEqual(payload.outputs.reviews.structured.map((row: any) => ({ item: row.item, exitCode: row.exitCode, error: row.error })), [{ item: "one", exitCode: 1, error: "Execution backend selection failed." }, { item: "two", exitCode: 1, error: "Execution backend selection failed." }]);
 			assert.doesNotMatch(git(a, ["worktree", "list", "--porcelain"]), /pi-worktree-/);
 			assert.doesNotMatch(git(b, ["worktree", "list", "--porcelain"]), /pi-worktree-/);
@@ -2217,18 +2230,24 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 	it("background runs record fallback attempts and final model", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
 		mockPi.onCall({
 			jsonl: [{
+				type: "compaction_end",
+				result: { usage: { input: 7, output: 3, cacheRead: 2, cacheWrite: 1, cost: { total: 0.5 } } },
+			}, {
 				type: "message_end",
 				message: {
 					role: "assistant",
 					content: [{ type: "text", text: "primary failed" }],
 					model: "openai/gpt-5-mini",
 					errorMessage: "rate limit exceeded",
-					usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } },
+					usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: { total: 0.25 } },
 				},
 			}],
 			exitCode: 1,
 		});
-		mockPi.onCall({ output: "Recovered asynchronously" });
+		mockPi.onCall({ jsonl: [
+			{ type: "entry_appended", entry: { type: "usage", kind: "cache_warm", usage: { input: 3, output: 0, cacheRead: 0, cacheWrite: 8, cost: { total: 0.125 } } } },
+			events.assistantMessage("Recovered asynchronously"),
+		] });
 		const id = `async-fallback-${Date.now().toString(36)}`;
 		const sessionRoot = path.join(tempDir, "sessions");
 		const asyncDir = path.join(ASYNC_DIR, id);
@@ -2276,8 +2295,13 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		const statusPayload = JSON.parse(fs.readFileSync(path.join(asyncDir, "status.json"), "utf-8")) as AsyncStatusPayload;
 		assert.equal(statusPayload.steps[0]?.model, "anthropic/claude-sonnet-4:low");
 		assert.equal(statusPayload.steps[0]?.thinking, "low");
-		assert.ok(statusPayload.totalTokens!.total > 0);
-		assert.ok(statusPayload.steps[0]?.tokens!.total > 0);
+		assert.deepEqual(statusPayload.steps[0]?.modelAttempts?.map(attempt => attempt.usage), [
+			{ input: 17, output: 8, cacheRead: 2, cacheWrite: 1, cost: 0.75, turns: 1 },
+			{ input: 103, output: 50, cacheRead: 0, cacheWrite: 8, cost: 0.126, turns: 1 },
+		]);
+		assert.deepEqual(statusPayload.steps[0]?.tokens, { input: 120, output: 58, total: 178 });
+		assert.deepEqual(statusPayload.totalTokens, statusPayload.steps[0].tokens);
+		assert.equal(statusPayload.totalCost, 0.876);
 		assert.match(fs.readFileSync(path.join(asyncDir, "output-0.log"), "utf-8"), /Recovered asynchronously/);
 		assert.equal(mockPi.callCount(), 2);
 	});
