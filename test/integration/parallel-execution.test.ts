@@ -331,15 +331,18 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 
 	it("chain clarify seeds the inherited call model with the parent's thinking", async () => {
 		const executor = makeExecutor([makeAgent("echo", { model: "openai/gpt-5-mini" })]);
-		let seeded: string | undefined;
+		const step = { agent: "echo", task: "Review" };
+		const chain = [step, { ...step, model: "" }, { ...step, model: " " }, { ...step, model: 42 }];
+		let seeded: string[] = [];
 		const custom = async (factory) => {
 			const component = factory({ requestRender() {} }, { fg(_key, text) { return text; } }, {}, () => {});
-			seeded = component.getEffectiveModel(0);
+			seeded = chain.map((_, index) => component.getEffectiveModel(index));
 			return { confirmed: false, templates: [], behaviorOverrides: [] };
 		};
-		await executor.execute("chain-clarify", { model: "anthropic/claude-sonnet-4", chain: [{ agent: "echo", task: "Review" }], clarify: true },
+		await executor.execute("chain-clarify", { model: "anthropic/claude-sonnet-4", chain, clarify: true },
 			new AbortController().signal, undefined, { ...makeParentSessionCtx(tempDir, "github-copilot", "gpt-6", "high"), hasUI: true, ui: { custom } });
-		assert.equal(seeded, "anthropic/claude-sonnet-4:high");
+		const inherited = "anthropic/claude-sonnet-4:high";
+		assert.deepEqual(seeded, [inherited, inherited, " :high", inherited]);
 	});
 
 	it("chain model inheritance preserves fanout validation errors", async () => {
