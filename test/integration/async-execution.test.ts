@@ -15,10 +15,13 @@ import { syncBuiltinESMExports } from "node:module";
 import defaultFs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 import { chainModelScenario, createEventBus, createMockPi, createTempDir, events, makeAgent, makeMinimalCtx, makeParentSessionCtx, removeTempDir, tryImport } from "../support/helpers.ts";
 import type { MockPi } from "../support/helpers.ts";
 import { getArtifactPaths } from "../../src/shared/artifacts.ts";
+import { spawnRunner } from "../../src/runs/background/async-execution.ts";
 import { resolveAsyncResumeTarget } from "../../src/runs/background/async-resume.ts";
+import { checkPidLiveness } from "../../src/runs/background/stale-run-reconciler.ts";
 import type { ModelAttempt } from "../../src/shared/types.ts";
 import { formatModelAttemptNote } from "../../src/runs/shared/model-fallback.ts";
 import { DEFAULT_CONTROL_CONFIG } from "../../src/runs/shared/subagent-control.ts";
@@ -2294,9 +2297,12 @@ ${script}`);
 		assert.doesNotMatch(fs.readFileSync(path.join(ASYNC_DIR, id, "events.jsonl"), "utf8"), /subagent\.child\.accounting/);
 	});
 
-	it("streaming saved summaries exclude legacy history and earlier attempts on the same file", async t => {
-		const runner = await tryImport<typeof import("../../src/runs/background/subagent-runner.ts")>("./src/runs/background/subagent-runner.ts");
-		assert.ok(runner);
+	it("the detached runner uses the selected host SDK to exclude legacy history and earlier attempts on the same file", async t => {
+		const sdk = path.join(mockPi.runtime.piPackageRoot, "dist", "index.js");
+		const marker = path.join(tempDir, "selected-pi-loaded");
+		const originalSdk = fs.readFileSync(sdk, "utf8");
+		t.after(() => fs.writeFileSync(sdk, originalSdk));
+		fs.appendFileSync(sdk, `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(marker)}, import.meta.url);\n`);
 		const file = path.join(tempDir, "legacy.jsonl");
 		const { id: _id, ...legacySummary } = savedSummary("not-used-by-v1");
 		fs.writeFileSync(file, [
@@ -2314,21 +2320,26 @@ ${script}`);
 			{ type: "entry_appended", entry: { type: "branch_summary", ...streamed } },
 			events.assistantMessage("Recovered"),
 		] });
-		const result = await runner.runSingleStep({
-			agent: "worker", task: "Do work", sessionFile: file, modelCandidates: ["openai/gpt-5-mini", "anthropic/claude-sonnet-4"],
-		}, {
-			cwd: tempDir, previousOutput: "", placeholder: "{previous}", sessionEnabled: true,
-			id: "legacy", flatIndex: 0, flatStepCount: 1, outputFile: path.join(tempDir, "output.log"), runtime: mockPi.runtime,
-		});
-		assert.equal(result.exitCode, 0, result.error);
+		const resultPath = path.join(tempDir, "result.json");
+		const cfg = {
+			runtime: mockPi.runtime, id: "legacy", cwd: tempDir, asyncDir: tempDir, sessionDir: tempDir, resultPath,
+			placeholder: "{previous}", share: false,
+			steps: [{ agent: "worker", task: "Do work", sessionFile: file, modelCandidates: ["openai/gpt-5-mini", "anthropic/claude-sonnet-4"] }],
+		};
+		const { pid, error } = spawnRunner(cfg, cfg.id, tempDir, tempDir);
+		assert.ok(pid, error);
+		await t.waitFor(() => assert.equal(checkPidLiveness(pid), "dead"), { timeout: 60_000 });
+		const { success, results: [result] } = JSON.parse(fs.readFileSync(resultPath, "utf8"));
+		assert.equal(success, true, result.error);
 		assert.equal(result.sessionFile, file);
-		assert.deepEqual(result.modelAttempts?.map(attempt => attempt.usage), [
+		assert.deepEqual(result.modelAttempts.map((attempt: ModelAttempt) => attempt.usage), [
 			{ input: 2, output: 3, cacheRead: 4, cacheWrite: 5, cost: 0.10, turns: 0 },
 			{ input: 104, output: 56, cacheRead: 8, cacheWrite: 10, cost: 0.201, turns: 1 },
 		]);
 		const [header, inherited] = fs.readFileSync(file, "utf8").split("\n").map(line => line && JSON.parse(line));
 		assert.equal(header.version, 3);
 		assert.ok(inherited.id);
+		assert.equal(fs.readFileSync(marker, "utf8"), pathToFileURL(sdk).href);
 		assert.doesNotMatch(fs.readFileSync(path.join(tempDir, "events.jsonl"), "utf8"), /subagent\.child\.accounting/);
 	});
 
