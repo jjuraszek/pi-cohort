@@ -309,7 +309,14 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 	for (const group of [undefined, "openai/gpt-4o"]) {
 		it(`chain children record the nearest model (group: ${group ?? "unset"})`, async () => {
 			const { params: chainParams, expected } = chainModelScenario(mockPi, group);
-			const params = group ? chainParams : { ...chainParams, tasks: [] };
+			const params = group ? chainParams : {
+				...chainParams,
+				tasks: [],
+				chain: chainParams.chain.map((step) => Array.isArray(step.parallel)
+					? { ...step, parallel: [{ ...step.parallel[0], count: 2 }, ...step.parallel.slice(1)] }
+					: step),
+			};
+			if (!group) expected.splice(2, 0, chainParams.model);
 			const original = structuredClone(params);
 			const executor = makeExecutor([makeAgent("pinned", { model: "openai/gpt-5-mini" })]);
 			const thinking = group ? "high" : undefined;

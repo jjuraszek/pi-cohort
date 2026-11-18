@@ -873,7 +873,7 @@ function expandChainParallelCounts(chain: ChainStep[]): { chain?: ChainStep[]; e
 }
 
 function normalizeRepeatedParallelCounts(params: SubagentParamsLike): { params?: SubagentParamsLike; error?: AgentToolResult<Details> } {
-	if (params.tasks) {
+	if (params.tasks?.length) {
 		const expandedTasks = expandTopLevelTaskCounts(params.tasks);
 		if (expandedTasks.error) {
 			return { error: buildRequestedModeError(params, expandedTasks.error) };
