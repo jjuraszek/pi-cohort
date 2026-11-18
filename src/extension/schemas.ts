@@ -222,7 +222,9 @@ const ChainItem = Type.Object({
 	outputMode: Type.Optional(brief(OutputModeOverride, "Default: inline.")),
 	reads: Type.Optional(brief(ReadsOverride, "Reads first, or false.")),
 	progress: Type.Optional(Type.Boolean({ description: "Enable progress.md tracking in {chain_dir}" })),
-	model: Type.Optional(Type.String()),
+	model: Type.Optional(Type.String({
+		description: "Step model. On a parallel group: default for its tasks, ahead of the call's model; a task's own model wins. Outranks the agent's model.",
+	})),
 	settings: Type.Optional(SettingsOverride),
 	skill: Type.Optional(brief(SkillOverride, "Skill override.")),
 	acceptance: Type.Optional(AcceptanceOverrideStub),
@@ -318,7 +320,9 @@ export const SubagentParams = Type.Object({
 	})),
 	outputMode: Type.Optional(OutputModeOverride),
 	skill: Type.Optional(SkillOverride),
-	model: Type.Optional(Type.String({ description: "Model override, e.g. 'anthropic/claude-sonnet-4'." })),
+	model: Type.Optional(Type.String({
+		description: "Model for a single call, e.g. 'anthropic/claude-sonnet-4'. With tasks or chain: default for every task or step that sets no model, unless its parallel group sets one; a task's or step's own model wins. Outranks the agent's model.",
+	})),
 	settings: Type.Optional(SettingsOverride),
 	acceptance: Type.Optional(AcceptanceOverride),
 });
