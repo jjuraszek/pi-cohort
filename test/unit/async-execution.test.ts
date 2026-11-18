@@ -528,7 +528,7 @@ describe("spawnRunner", () => {
 			await waitFor(() => fs.existsSync(resultPath), 10000);
 			const result = JSON.parse(fs.readFileSync(resultPath, "utf8"));
 			const status = JSON.parse(fs.readFileSync(path.join(dir, "status.json"), "utf8"));
-			assert.equal(fs.readFileSync(selectedPiMarker, "utf8"), pathToFileURL(path.join(pi.runtime.piPackageRoot, "dist", "index.js")).href);
+			assert.equal(fs.existsSync(selectedPiMarker), false, "a fresh session must not load the Pi SDK for migration");
 			assert.equal(result.results[0].success, true);
 			assert.ok(fs.existsSync(result.results[0].sessionFile));
 			assert.equal(status.steps[0].sessionFile, result.results[0].sessionFile);

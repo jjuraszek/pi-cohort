@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 import { it } from "node:test";
 import { createJitiCliResolver, ensureJitiCliPath, resolveHostModuleAliases } from "../../src/runs/shared/jiti-cli.ts";
 
@@ -12,7 +13,7 @@ function installation(root: string, bin: string | Record<string, string> = { jit
 	fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", type: "module" }));
 	fs.writeFileSync(path.join(root, "pi.mjs"), "");
 	fs.mkdirSync(path.join(root, "dist"));
-	fs.writeFileSync(path.join(root, "dist", "index.js"), "export function migrateSessionEntries() {}\n");
+	fs.writeFileSync(path.join(root, "dist", "index.js"), "export function migrateSessionEntries() { return import.meta.url; }\n");
 	const jiti = path.join(root, "node_modules", "jiti");
 	fs.mkdirSync(jiti, { recursive: true });
 	fs.writeFileSync(path.join(jiti, "package.json"), JSON.stringify({ name: "jiti", bin }));
@@ -60,8 +61,8 @@ it("loads Pi's migration API in a bare jiti runner outside the selected installa
 	const extension = path.join(temp, "extension");
 	fs.mkdirSync(extension);
 	const runner = path.join(extension, "runner.ts");
-	fs.writeFileSync(runner, `import { migrateSessionEntries } from "@earendil-works/pi-coding-agent";
-console.log(typeof migrateSessionEntries);
+	fs.writeFileSync(runner, `const { migrateSessionEntries } = await import("@earendil-works/pi-coding-agent");
+console.log(migrateSessionEntries());
 `);
 	const jitiCli = path.join(path.dirname(createRequire(import.meta.url).resolve("jiti")), "jiti-cli.mjs");
 	const result = spawnSync(process.execPath, [jitiCli, runner], {
@@ -71,7 +72,7 @@ console.log(typeof migrateSessionEntries);
 		timeout: 10_000,
 	});
 	assert.equal(result.status, 0, String(result.error ?? result.stderr));
-	assert.equal(result.stdout.trim(), "function");
+	assert.equal(result.stdout.trim(), pathToFileURL(path.join(host, "dist", "index.js")).href);
 });
 
 it("rechecks disappeared and replaced CLI entries without caching the selected root", () => {

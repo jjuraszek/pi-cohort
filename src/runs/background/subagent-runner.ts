@@ -8,7 +8,7 @@ import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import type { Message } from "@earendil-works/pi-ai";
-import { CURRENT_SESSION_VERSION, migrateSessionEntries, type FileEntry } from "@earendil-works/pi-coding-agent";
+import type { FileEntry } from "@earendil-works/pi-coding-agent";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { formatInterruptedCleanup } from "../../shared/formatters.ts";
 import { appendJsonl, getArtifactPaths } from "../../shared/artifacts.ts";
@@ -205,13 +205,17 @@ function readStreamingSession(file: string) {
 	}
 }
 
-function matchesStreamingPrefix(before: FileEntry[], after: FileEntry[]): boolean {
+async function matchesStreamingPrefix(before: FileEntry[], after: FileEntry[]): Promise<boolean> {
 	const prefix = after.slice(0, before.length);
 	if (isDeepStrictEqual(before, prefix)) return true;
 	const oldHeader = before[0];
 	const newHeader = prefix[0];
 	if (prefix.length !== before.length || oldHeader?.type !== "session" || newHeader?.type !== "session"
-		|| (oldHeader.version ?? 1) >= CURRENT_SESSION_VERSION || newHeader.version !== CURRENT_SESSION_VERSION) return false;
+		|| (oldHeader.version ?? 1) >= (newHeader.version ?? 1)) return false;
+
+	// Loading Pi's SDK populates jiti's compile cache, which Node flushes at runner exit.
+	const { CURRENT_SESSION_VERSION, migrateSessionEntries } = await import("@earendil-works/pi-coding-agent");
+	if (newHeader.version !== CURRENT_SESSION_VERSION) return false;
 
 	// Pi migrates in place. Compare the migrated entries in order, mapping v1's generated IDs to the IDs Pi wrote.
 	const migrated = structuredClone(before);
@@ -589,7 +593,7 @@ function runPiStreaming(
 			childExited = true;
 			clearDrainTimers();
 		});
-		child.on("close", (exitCode, signal) => {
+		child.on("close", async (exitCode, signal) => {
 			if (settled) return;
 			settled = true;
 			registerInterrupt?.(undefined);
@@ -603,7 +607,7 @@ function runPiStreaming(
 					const saved = readStreamingSession(sessionFile);
 					const before = sessionPrefix?.entries ?? [];
 					if (sessionPrefix && (!saved || saved.stat.dev !== sessionPrefix.stat.dev || saved.stat.ino !== sessionPrefix.stat.ino
-						|| !matchesStreamingPrefix(before, saved.entries))) {
+						|| !(await matchesStreamingPrefix(before, saved.entries)))) {
 						throw new Error("Session file was replaced or its existing prefix changed");
 					}
 					if (saved && !saved.entries.length) throw new Error("Missing session header");

@@ -73,7 +73,7 @@ it("falls back when argv[1] is missing and still throws without installRoot", (t
 	assert.throws(() => spawn.capturePiRuntime({ execPath: process.execPath, argv1: missing }), spawn.PiRuntimeLaunchError);
 });
 
-it("limits detached runner Pi runtime imports to the selected host's migration API", () => {
+it("keeps static Pi runtime imports out of the detached runner", () => {
 	const seen = new Set<string>();
 	const runner = path.join("src", "runs", "background", "subagent-runner.ts");
 	const queue = [path.join(repoRoot, runner)];
@@ -90,7 +90,5 @@ it("limits detached runner Pi runtime imports to the selected host's migration A
 		}
 	}
 	assert.ok(seen.has(path.join(repoRoot, "src/runs/shared/pi-spawn.ts")), "pi-spawn.ts is reachable from the runner");
-	assert.deepEqual(runtimeImports, [
-		`${runner}: import { CURRENT_SESSION_VERSION, migrateSessionEntries, type FileEntry } from "${spawn.PI_CODING_AGENT_PACKAGE}";`,
-	]);
+	assert.deepEqual(runtimeImports, []);
 });
