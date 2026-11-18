@@ -12,6 +12,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
+import net from "node:net";
 import * as os from "node:os";
 import { pathToFileURL } from "node:url";
 import * as path from "node:path";
@@ -508,6 +509,7 @@ test(`runSingleStep retains the surface after an external ${failure} failure`, u
 		const result = await runSingleStep({
 			agent: "worker",
 			task: "Exercise the throwing external attempt",
+			modelCandidates: ["first"],
 			systemPrompt: "runner fixture prompt",
 			settings: { quietStartup: true },
 			inheritProjectContext: false,
@@ -557,6 +559,7 @@ test(`runSingleStep retains the surface after an external ${failure} failure`, u
 			assert.equal(lifecycle.closes, 0);
 			assert.equal(fixtureInvocationCount(argsPath), 1, "must not fall back to native execution");
 			assert.deepEqual(result.modelAttempts.map(({ success, usage }) => ({ success, cost: usage.cost })), [{ success: false, cost: 0.25 }]);
+			assert.deepEqual(result.attemptedModels, ["first"]);
 			assert.equal(fs.existsSync(promptTempDir(argsPath)), false);
 			const childArgs = JSON.parse(fs.readFileSync(argsPath, "utf-8")) as string[];
 			assert.equal(childArgs[childArgs.indexOf("--name") + 1], "worker child- from P");
@@ -577,7 +580,7 @@ test(`runSingleStep retains the surface after an external ${failure} failure`, u
 });
 }
 
-for (const failure of ["backend launch", "disconnect before host_ready"] as const) test(`runSingleStep records no attempt after external startup failure: ${failure}`, unixOnly, async () => {
+for (const failure of ["backend launch", "disconnect before host_ready", "disconnect after host_ready"] as const) test(`runSingleStep records no attempt after external startup failure: ${failure}`, unixOnly, async t => {
 	const tempDir = createTempDir("bg-runner-startup-");
 	const binDir = path.join(tempDir, "bin");
 	const argsPath = path.join(tempDir, "pi-args.json");
@@ -588,14 +591,32 @@ for (const failure of ["backend launch", "disconnect before host_ready"] as cons
 	const requests: ExecutionSurfaceRequest[] = [];
 	const hosts: ReturnType<typeof spawn>[] = [];
 	const launchFailed = failure === "backend launch";
+	const afterReady = failure === "disconnect after host_ready";
+	let hostSocket: net.Socket | undefined;
+	let closedBeforeControl = false;
+	if (afterReady) {
+		const listen = net.Server.prototype.listen;
+		t.mock.method(net.Server.prototype, "listen", function (this: net.Server, socketPath: string, callback: () => void) {
+			if (path.basename(socketPath) === "host.sock") this.once("connection", socket => { hostSocket = socket; });
+			if (path.basename(socketPath) !== "control.sock") return listen.call(this, socketPath, callback);
+			// Control setup only starts after host_ready; release it after the controller sees the close.
+			assert.ok(hostSocket);
+			hostSocket.once("close", () => { closedBeforeControl = true; listen.call(this, socketPath, callback); });
+			hostSocket.destroy();
+			return this;
+		});
+	}
 	const lifecycle: BackendLifecycle = { releases: 0, closes: 0, launchError: launchFailed ? startupSecret : undefined };
 	const backendName = `fake-bg-runner-startup-${process.pid}`;
 	const backend = makeBackend(backendName, binDir, requests, hosts, lifecycle);
 	const dispose = registerExecutionBackend(launchFailed ? backend : {
 		...backend,
 		launch: request => backend.launch({ ...request, command: process.execPath, args: ["-e", `
-			const { socketPath } = JSON.parse(require("node:fs").readFileSync(process.env.PI_COHORT_CHILD_HOST_CONFIG, "utf8"));
-			const socket = require("node:net").connect(socketPath, () => socket.end());
+			const { socketPath, runId, childId } = JSON.parse(require("node:fs").readFileSync(process.env.PI_COHORT_CHILD_HOST_CONFIG, "utf8"));
+			const socket = require("node:net").connect(socketPath, () => {
+				if (${afterReady}) socket.write(JSON.stringify({ protocolVersion: 1, kind: "host_ready", runId, childId }) + "\\n");
+				else socket.end();
+			});
 		`] }),
 	});
 	const savedPath = process.env.PATH;
@@ -624,6 +645,7 @@ for (const failure of ["backend launch", "disconnect before host_ready"] as cons
 
 		assert.equal(result.exitCode, 1);
 		assert.equal(requests.length, 1);
+		if (afterReady) assert.equal(closedBeforeControl, true);
 		assert.equal(fs.existsSync(`${argsPath}.count`), false, "must not launch a child or fall back to native execution");
 		assert.deepEqual(result.modelAttempts ?? [], []);
 		assert.equal(result.attemptedModels, undefined);

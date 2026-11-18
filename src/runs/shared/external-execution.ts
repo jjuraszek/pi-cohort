@@ -4,6 +4,7 @@ import type { PiRuntimeIdentity } from "./pi-spawn.ts";
 import { DEFAULT_CONTROL_CONFIG } from "./subagent-control.ts";
 import type { Message, Usage } from "@earendil-works/pi-ai";
 import {
+	ChildHostAttemptDispatchError,
 	createChildHostController,
 	type ChildHostController,
 	type ChildHostControllerOptions,
@@ -469,6 +470,10 @@ export async function createExternalExecution(
 				exitPromise.then(exit => ({ kind: "exit" as const, exit })),
 				abort.promise.then(() => ({ kind: "abort" as const })),
 			]); } catch (error) {
+				if (error instanceof ChildHostAttemptDispatchError) {
+					launchRequested = false;
+					throw error.cause;
+				}
 				if (interruptedAt !== undefined) return await finalizeInterrupted(undefined, error);
 				throw error;
 			} finally { deadline.cancel(); }
