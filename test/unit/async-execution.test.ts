@@ -12,6 +12,7 @@ import { createJitiCliResolver, resolveHostModuleAliases } from "../../src/runs/
 import { createMockPi } from "../support/mock-pi.ts";
 import { ASYNC_DIR } from "../../src/shared/types.ts";
 import { runSingleStep } from "../../src/runs/background/subagent-runner.ts";
+import { checkPidLiveness } from "../../src/runs/background/stale-run-reconciler.ts";
 import { PiRuntimeLaunchError } from "../../src/runs/shared/pi-spawn.ts";
 import * as piArgs from "../../src/runs/shared/pi-args.ts";
 import { buildPiArgs, cleanupTempDir } from "../../src/runs/shared/pi-args.ts";
@@ -489,7 +490,10 @@ describe("spawnRunner", () => {
 		it(`does not borrow an earlier leaf session: ${scenario}`, async t => {
 			const dir = tempDir("leaf-isolation-");
 			const pi = createMockPi();
-			t.after(() => {
+			let runnerPid: number | undefined;
+			t.after(async () => {
+				// The result can be ready while the runner still holds its cwd and log open.
+				await waitFor(() => runnerPid === undefined || checkPidLiveness(runnerPid) === "dead", 10000);
 				pi.install(); pi.uninstall();
 				fs.rmSync(dir, { recursive: true, force: true });
 			});
@@ -519,6 +523,7 @@ describe("spawnRunner", () => {
 			const steps = scenario === "sequential" ? [first, second] : [{ parallel: [first] }, { parallel: [second] }];
 			const resultPath = path.join(dir, "result.json");
 			const launch = spawnRunner({ runtime: pi.runtime, id: scenario, steps, share: false, sessionDir: path.join(dir, "sessions"), placeholder: "{previous}", cwd: dir, asyncDir: dir, resultPath }, scenario, dir, dir);
+			runnerPid = launch.pid;
 			assert.equal(launch.error, undefined);
 			await waitFor(() => fs.existsSync(resultPath), 10000);
 			const result = JSON.parse(fs.readFileSync(resultPath, "utf8"));
