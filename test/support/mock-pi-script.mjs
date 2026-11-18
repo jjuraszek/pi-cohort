@@ -213,7 +213,7 @@ async function writeResponseEntries(entries, jsonMode, args, persistMessage) {
 				textPart.text = withAcceptanceReport(textPart.text, args);
 			}
 		}
-		if (entry?.type === "message_end" && entry.message?.role === "assistant") persistMessage(entry.message);
+		if (entry?.type === "message_end" && (entry.message?.role === "user" || entry.message?.role === "assistant")) persistMessage(entry.message);
 		if (jsonMode) {
 			await writeJsonlLine(entry);
 			continue;

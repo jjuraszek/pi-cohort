@@ -355,7 +355,7 @@ function runPiStreaming(
 		let stdoutBuf = "";
 		let stderrBuf = "";
 		let streamedSessionId: string | undefined;
-		let streamedConversationMessage = false;
+		const observedMessages = { user: 0, assistant: 0 };
 		const messages: Message[] = [];
 		const usage = emptyUsage();
 		const streamedSummaries = new Set<string>();
@@ -442,7 +442,7 @@ function runPiStreaming(
 				if (text) writeOutputText(text);
 
 				if (event.type !== "message_end") return;
-				streamedConversationMessage ||= event.message.role === "user" || event.message.role === "assistant";
+				if (event.message.role === "user" || event.message.role === "assistant") observedMessages[event.message.role]++;
 				if (event.message.role === "toolResult" && isUsage(event.message.usage)) addCharge(event.message.usage);
 				if (event.message.role !== "assistant") return;
 				if (event.message.model) model = event.message.model;
@@ -592,15 +592,23 @@ function runPiStreaming(
 						|| !matchesStreamingPrefix(before, saved.entries))) {
 						throw new Error("Session file was replaced or its existing prefix changed");
 					}
-					if (!saved && streamedConversationMessage) throw new Error("Missing session file after conversation started");
 					if (saved && !saved.entries.length) throw new Error("Missing session header");
 					if (saved && streamedSessionId !== undefined && saved.entries[0].id !== streamedSessionId) {
 						throw new Error("Session file was replaced: its header does not match the streamed session ID");
 					}
+					// Compaction hides messages from model context but keeps their entries on disk.
 					const ownEntries = saved?.entries.slice(before.length || 1) ?? [];
-					if (streamedConversationMessage && !ownEntries.some(entry => entry.type === "message"
-						&& (entry.message?.role === "user" || entry.message?.role === "assistant"))) {
-						throw new Error("Session file was truncated: no conversation messages from this attempt");
+					const savedMessages = { user: 0, assistant: 0 };
+					for (const entry of ownEntries) {
+						if (entry.type !== "message") continue;
+						const role = entry.message?.role;
+						if (role === "user" || role === "assistant") savedMessages[role]++;
+					}
+					const shortfalls = (["user", "assistant"] as const)
+						.filter(role => savedMessages[role] < observedMessages[role])
+						.map(role => `${role} (observed ${observedMessages[role]}, saved ${savedMessages[role]})`);
+					if (shortfalls.length) {
+						throw new Error(`${saved ? "Session file was truncated" : "Missing session file"}: ${shortfalls.join(", ")}`);
 					}
 					for (const entry of ownEntries) {
 						if (entry.type === "branch_summary" && entry.usage && !streamedSummaries.has(entry.id)) addCharge(entry.usage);
