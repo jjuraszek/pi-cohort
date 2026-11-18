@@ -1352,8 +1352,12 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		fs.symlinkSync(target, childCwd, process.platform === "win32" ? "junction" : "dir");
 		const parent = SessionManager.create(tempDir, path.join(tempDir, "parent-sessions"));
 		parent.appendMessage({ role: "user", content: "parent prompt", timestamp: 1 });
-		const fromId = parent.getLeafId()!;
-		parent.branchWithSummary(fromId, "Inherited summary", undefined, false, savedSummary("parent-summary").usage);
+		const parentTurnId = parent.appendMessage({
+			role: "assistant", model: "parent-model", api: "openai-responses", provider: "openai", timestamp: 2,
+			content: [{ type: "text", text: "Parent reply" }], stopReason: "stop",
+			usage: { input: 5, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 10, cost: { input: 0.5, output: 0.5, cacheRead: 0, cacheWrite: 0, total: 1 } },
+		});
+		parent.branchWithSummary(parentTurnId, "Inherited summary", undefined, false, savedSummary("parent-summary").usage);
 		const parentBytes = fs.readFileSync(parent.getSessionFile()!);
 		const executor = createSubagentExecutor({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
@@ -1369,11 +1373,13 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf8")) as AsyncResultPayload;
 		assert.equal(payload.success, true, JSON.stringify(payload));
 		const args = readMockPiArgs(mockPi, 0);
-		const header = JSON.parse(fs.readFileSync(args[args.indexOf("--session") + 1], "utf8").split("\n")[0]);
+		const [header, ...entries] = fs.readFileSync(args[args.indexOf("--session") + 1], "utf8").trim().split("\n")
+			.map(line => JSON.parse(line));
 		assert.equal(header.cwd, childCwd);
 		assert.equal(header.parentSession, parent.getSessionFile());
-		const summaries = fs.readFileSync(args[args.indexOf("--session") + 1], "utf8").trim().split("\n")
-			.map(line => JSON.parse(line)).filter(entry => entry.type === "branch_summary");
+		const inheritedAssistant = entries.find(entry => entry.type === "message" && entry.message.role === "assistant" && entry.message.model === "parent-model");
+		assert.equal(inheritedAssistant?.message.usage.cost.total, 1, "fork must include the $1 parent turn");
+		const summaries = entries.filter(entry => entry.type === "branch_summary");
 		assert.deepEqual(summaries.map(entry => entry.summary), ["Inherited summary", "Summary"]);
 		const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf8")) as AsyncStatusPayload;
 		assert.equal(status.totalCost, 0.101);
