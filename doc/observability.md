@@ -20,6 +20,8 @@ foreground, background/async, and nested fanout. It is distinct from the
 built-in `$` figure, which counts the main loop only; the gap between them is
 your subagent spend.
 
+A forked pane child's reported turns and assistant spend exclude copied parent turns. The child's own pane footer still shows the whole conversation's spend; that footer does not feed the parent's total.
+
 The total is per-session: it is zeroed on a new session, seeded from prior spend
 on resume, and only ever rises within a session for the main/sync/async slices
 (finished subagents stay counted even after their state is cleaned up). The
@@ -133,7 +135,7 @@ While the session is streaming, foreground control notices are steered to a turn
 
 The experimental backend reporting slice persists versioned custom session entries with custom type `pi-cohort:execution-report:v1`. A reporter emits `ready`, then `settled`, then exactly one terminal `result`; each entry carries `protocolVersion: 1`, `runId`, `childId`, `attemptId`, a per-attempt sequence, and timestamp. Result entries contain an `outcome` (`success`, `failed`, or `interrupted`), `finalOutput`, and optional `error` and `stopReason` fields.
 
-The host replays complete JSONL records only, tolerates one incomplete trailing write, filters other attempts, rejects correlation/sequence/lifecycle violations, and reconstructs active messages from the exact result entry's `parentId` branch. Messages are not duplicated in result data. Reporter configuration is supplied only through `PI_COHORT_REPORT_CONFIG`, an owner-only regular JSON file; the configuration contains correlation identifiers, never task content or credentials.
+The host replays complete JSONL records only, tolerates one incomplete trailing write, filters other attempts, and rejects correlation/sequence/lifecycle violations. It validates the exact result entry's full `parentId` branch, then returns only messages appended after the attempt's `ready` report, matched by `runId`, `childId` and `attemptId`. Messages appended after `ready` off that branch reach only the live feed; before `ready`, the live feed is empty. A report positioned before that `ready` is inherited and does not claim the attempt's stream. The saved conversation and transcript keep the inherited history. Messages are not duplicated in result data. Reporter configuration is supplied only through `PI_COHORT_REPORT_CONFIG`, an owner-only regular JSON file; the configuration contains correlation identifiers, never task content or credentials.
 
 A correlated durable `control` entry with `action: "abort", state: "applied"` classifies a newly written terminal as `interrupted`, including an error-shaped final assistant message. Error text alone is not abort evidence. A previously written terminal remains immutable; accepted cancellation still stops fallback and preserves caller-facing interruption without rewriting that terminal.
 

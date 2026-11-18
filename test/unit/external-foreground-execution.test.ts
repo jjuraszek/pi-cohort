@@ -214,13 +214,16 @@ describe("external foreground execution owner", () => {
 		assert.deepEqual(fake.controls, ["shutdown"]);
 	});
 
-	for (const context of ["fresh", "fork"] as const) it(`counts only the ${context} child's own priced turn and model from its saved session`, async () => {
+	for (const context of ["fresh", "fork", "pane-fork"] as const) it(`counts only the ${context} child's own priced turn and model from its saved session`, async () => {
 		const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "external-owner-usage-")));
 		try {
 			const childDirectory = path.join(directory, "child");
 			let child: SessionManager;
-			if (context === "fork") {
+			if (context !== "fresh") {
 				const parent = SessionManager.create(directory, path.join(directory, "parent"));
+				if (context === "pane-fork") parent.appendCustomEntry(EXECUTION_REPORT_TYPE, {
+					protocolVersion: EXECUTION_REPORT_PROTOCOL_VERSION, ...identity, runId: "parent-run", kind: "ready", sequence: 1, timestamp: "2026-11-18T00:00:00.000Z",
+				});
 				parent.appendMessage({ role: "user", content: "parent task", timestamp: 1 });
 				for (let index = 0; index < 3; index++) parent.appendMessage(assistant);
 				const resolver = createForkContextResolver(parent, "fork", { sessionDirForIndex: () => childDirectory });
@@ -276,7 +279,7 @@ describe("external foreground execution owner", () => {
 				assert.deepEqual(result.usage, { input: 20, output: 30, cacheRead: 40, cacheWrite: 50, cost: 0.25, turns: 1 });
 				assert.equal(result.finalOutput, "child answer");
 				const saved = SessionManager.open(sessionFile).getEntries();
-				assert.equal(saved.filter(entry => entry.type === "message" && entry.message.role === "assistant").length, context === "fork" ? 4 : 1, "attribution must not remove saved history");
+				assert.equal(saved.filter(entry => entry.type === "message" && entry.message.role === "assistant").length, context === "fresh" ? 1 : 4, "attribution must not remove saved history");
 			} finally {
 				await owner.finish("retained");
 			}

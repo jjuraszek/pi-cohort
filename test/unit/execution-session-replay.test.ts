@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { describe, it } from "node:test";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { replayExecutionSession } from "../../src/execution-backend/session-replay.ts";
+import { createForkContextResolver } from "../../src/shared/fork-context.ts";
+import { EXECUTION_REPORT_TYPE } from "../../src/execution-backend/reporting-protocol.ts";
 
 const identity = { runId: "run", childId: "child", attemptId: "attempt" };
 function report(kind: string, sequence: number, extras = {}, entry = {}) { return { type: "custom", id: `r${sequence}`, parentId: sequence === 1 ? null : `r${sequence - 1}`, customType: "pi-cohort:execution-report:v1", data: { protocolVersion: 1, kind, ...identity, sequence, timestamp: "2026-09-06T00:00:00.000Z", ...extras }, ...entry }; }
@@ -8,20 +14,50 @@ function replay(entries: unknown[]) { return replayExecutionSession(entries.map(
 const lifecycle = () => [report("ready", 1), report("settled", 2), report("result", 3, { outcome: "success", finalOutput: "done" })];
 
 describe("execution session replay", () => {
+	it("owns only entries appended after ready even when the final branch rewinds into inherited history", () => {
+		const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "session-replay-fork-")));
+		try {
+			const parent = SessionManager.create(directory, path.join(directory, "parent"));
+			parent.appendMessage({ role: "user", content: "parent task", timestamp: 1 });
+			const parentTurn = { role: "assistant" as const, content: [{ type: "text" as const, text: "parent answer" }], api: "openai-completions", provider: "test", model: "parent-model", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0.5, output: 0.5, cacheRead: 0, cacheWrite: 0, total: 1 } }, stopReason: "stop" as const, timestamp: 2 };
+			const forkPoint = parent.appendMessage(parentTurn);
+			const resolver = createForkContextResolver(parent, "fork", { sessionDirForIndex: () => path.join(directory, "child") });
+			const sessionFile = resolver.sessionFileForIndex(0, directory);
+			assert.ok(sessionFile);
+			const child = SessionManager.open(sessionFile);
+			const read = () => replayExecutionSession(fs.readFileSync(sessionFile, "utf8"), identity);
+			assert.deepEqual(read().messages, []);
+			assert.deepEqual(read().pendingMessages, []);
+			child.appendCustomEntry(EXECUTION_REPORT_TYPE, report("ready", 1).data);
+			const abandoned = { role: "user" as const, content: "abandoned own message", timestamp: 3 };
+			child.appendMessage(abandoned);
+			child.branch(forkPoint);
+			const own = { ...parentTurn, model: "child-model", content: [{ type: "text" as const, text: "child answer" }], timestamp: 4 };
+			child.appendMessage(own);
+			child.appendCustomEntry(EXECUTION_REPORT_TYPE, report("settled", 2).data);
+			child.appendCustomEntry(EXECUTION_REPORT_TYPE, report("result", 3, { outcome: "success", finalOutput: "child answer" }).data);
+			assert.deepEqual(read().messages, [own]);
+			assert.deepEqual(read().pendingMessages, [abandoned, own]);
+			assert.equal(child.getBranch().some(entry => entry.type === "custom" && entry.data?.kind === "ready"), false, "ownership does not require ready on the final branch");
+		} finally {
+			fs.rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
 	it("reconstructs standard user, assistant, and tool result messages from the terminal branch", () => {
-		const result = report("result", 3, { outcome: "success", finalOutput: "done" }, { id: "exact-result", parentId: "tool" });
+		const result = report("result", 3, { outcome: "success", finalOutput: "done" }, { id: "exact-result", parentId: "r2" });
 		const user = { role: "user", content: "right", timestamp: 1 };
 		const assistant = { role: "assistant", content: [{ type: "toolCall", id: "call", name: "tool", arguments: {} }], api: "openai-completions", provider: "test", model: "test", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "toolUse", timestamp: 2 };
 		const toolResult = { role: "toolResult", toolCallId: "call", toolName: "tool", content: [{ type: "text", text: "done" }], isError: false, timestamp: 3 };
-		const value = replay([{ type: "message", id: "wrong", parentId: null, message: { role: "user", content: "wrong", timestamp: 1 } }, { type: "message", id: "correct", parentId: null, message: user }, { type: "message", id: "assistant", parentId: "correct", message: assistant }, { type: "message", id: "tool", parentId: "assistant", message: toolResult }, report("ready", 1), report("settled", 2), result]);
+		const value = replay([report("ready", 1), { type: "message", id: "wrong", parentId: "r1", message: { role: "user", content: "wrong", timestamp: 1 } }, { type: "message", id: "correct", parentId: "r1", message: user }, { type: "message", id: "assistant", parentId: "correct", message: assistant }, { type: "message", id: "tool", parentId: "assistant", message: toolResult }, report("settled", 2, {}, { parentId: "tool" }), result]);
 		assert.deepEqual(value.messages, [user, assistant, toolResult]);
 	});
 
 	it("preserves valid custom and bash execution messages on the terminal branch", () => {
-		const result = report("result", 3, { outcome: "success", finalOutput: "done" }, { parentId: "bash" });
+		const result = report("result", 3, { outcome: "success", finalOutput: "done" });
 		const custom = { role: "custom", customType: "test", content: "custom", display: true, timestamp: 1 };
 		const bash = { role: "bashExecution", command: "echo test", output: "test", exitCode: 0, cancelled: false, truncated: false, timestamp: 2 };
-		const value = replay([{ type: "message", id: "custom", parentId: null, message: custom }, { type: "message", id: "bash", parentId: "custom", message: bash }, report("ready", 1), report("settled", 2), result]);
+		const value = replay([report("ready", 1), { type: "message", id: "custom", parentId: "r1", message: custom }, { type: "message", id: "bash", parentId: "custom", message: bash }, report("settled", 2, {}, { parentId: "bash" }), result]);
 		assert.deepEqual(value.messages, [custom, bash]);
 	});
 
@@ -44,8 +80,11 @@ describe("execution session replay", () => {
 		assert.equal(replay([other, otherAttempt, report("ready", 1)]).reports.length, 1);
 	});
 
-	it("rejects correlation mismatches in a claimed stream", () => {
-		for (const reportWithMismatch of [{ ...report("ready", 1), data: { ...report("ready", 1).data, childId: "wrong" } }, { ...report("ready", 1), data: { ...report("ready", 1).data, runId: "wrong" } }]) assert.throws(() => replay([reportWithMismatch]), /correlation/);
+	for (const mismatch of [{ childId: "wrong" }, { runId: "wrong" }]) it(`rejects a mismatched ${Object.keys(mismatch)[0]} only after the attempt claims its stream`, () => {
+		const inherited = report("ready", 1, mismatch, { id: "inherited-ready" });
+		assert.deepEqual(replay([inherited]).reports, []);
+		assert.deepEqual(replay([inherited, report("ready", 1)]).reports, [report("ready", 1).data]);
+		assert.throws(() => replay([report("ready", 1), inherited]), /correlation/);
 	});
 
 	it("rejects sequence gaps and duplicates", () => {

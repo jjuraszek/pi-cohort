@@ -11,6 +11,8 @@
 - The parent and child-safe `subagent` and the `structured_output` tool descriptions end with a `Codemode:` line saying the tool is not callable from scripts and is called directly, so the model is told before it writes a script pi refuses.
 
 ### Fixed
+
+- Forked pane children report only their own attempt's turns, assistant cost and model, excluding copied parent history and earlier attempts on the same saved conversation.
 - A child on an external execution backend whose result is already in its session file is no longer waited on until `maxRuntimeMs` or an interrupt when the operating system drops the file-change event for the last write. The session watcher also re-reads the file every second, so the result is picked up within about 1 s.
 
 ## [8.4.0] - 2026-11-17
