@@ -97,15 +97,17 @@ it("preserves queue order, fallback, sessions, echoEnv, custom JSONL, and accept
 		mock.onCall({ echoEnv: ["MOCK_PI_QUEUE_DIR", "MOCK_MISSING_ENV"], delay: 1 });
 		mock.onCall({ jsonl: [{ type: "custom", value: 7 }], stderr: "diagnostic" });
 		const first = await launch(["--session", session]);
-		assert.deepEqual(JSON.parse(first[0].message.content[0].text), { MOCK_PI_QUEUE_DIR: mock.dir, MOCK_MISSING_ENV: null });
 		const persisted = fs.readFileSync(session, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+		assert.deepEqual(first.map(entry => entry.type), ["session", "message_end"]);
+		assert.deepEqual(first[0], persisted[0]);
+		assert.deepEqual(JSON.parse(first[1].message.content[0].text), { MOCK_PI_QUEUE_DIR: mock.dir, MOCK_MISSING_ENV: null });
 		assert.equal(persisted[0].type, "session");
 		assert.equal(persisted[0].version, 3);
 		assert.equal(persisted[1].type, "message");
 		assert.equal(persisted[1].parentId, null);
 		assert.ok(persisted[1].id);
 		assert.ok(Number.isFinite(Date.parse(persisted[1].timestamp)));
-		assert.deepEqual(persisted[1].message, first[0].message);
+		assert.deepEqual(persisted[1].message, first[1].message);
 		assert.deepEqual(await launch(), [{ type: "custom", value: 7 }]);
 		assert.deepEqual(await launch(), [{ type: "custom", value: 7 }]);
 		assert.equal(mock.callCount(), 3);
@@ -193,14 +195,21 @@ for (const stepped of [false, true]) {
 			}));
 			const entries = [{ type: "custom", value: 7 }, ...messages];
 			mock.onCall(stepped ? { steps: entries.map((entry) => ({ jsonl: [entry] })) } : { jsonl: entries });
-			const launch = () => exec(runtime.nodeExecPath, [runtime.piEntryPath, "--mode", "json", "--session", session, "## Acceptance Contract"], { timeout: 5000 });
-			const emitted = JSON.parse(`[${(await launch()).stdout.trim().split("\n").join(",")}]`);
+			const launch = async () => (await exec(runtime.nodeExecPath, [runtime.piEntryPath, "--mode", "json", "--session", session, "## Acceptance Contract"], { timeout: 5000 })).stdout.trim().split("\n").map(line => JSON.parse(line));
+			const emitted = await launch();
 			const original = fs.readFileSync(session, "utf8");
-			await launch();
+			const appended = await launch();
 			assert.ok(fs.readFileSync(session, "utf8").startsWith(original));
 			const persisted = fs.readFileSync(session, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+			for (const stream of [emitted, appended]) {
+				assert.deepEqual(stream.map(entry => entry.type), ["session", "custom", "message_end", "message_end"]);
+				assert.deepEqual(stream[0], persisted[0]);
+				assert.deepEqual(stream[1], entries[0]);
+				assert.deepEqual(stream.slice(2).map(entry => entry.message.usage), messages.map(entry => entry.message.usage));
+			}
+			assert.deepEqual(appended.slice(2), emitted.slice(2));
 			assert.equal(persisted.length, 5);
-			assert.deepEqual(persisted.slice(1).map((entry) => entry.message), [...emitted.slice(1), ...emitted.slice(1)].map((entry) => entry.message));
+			assert.deepEqual(persisted.slice(1).map(entry => entry.message), [...emitted.slice(2), ...appended.slice(2)].map(entry => entry.message));
 			for (let i = 1; i < persisted.length; i++) {
 				assert.equal(persisted[i].type, "message");
 				assert.equal(persisted[i].parentId, i === 1 ? null : persisted[i - 1].id);

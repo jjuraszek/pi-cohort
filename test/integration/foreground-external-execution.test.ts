@@ -93,9 +93,10 @@ const socket = net.connect(config.controlSocketPath, () => {
     fs.writeFileSync(process.env.FIXTURE_PID, String(process.pid));
     if (!process.env.FIXTURE_MODE.startsWith("failed") && process.env.FIXTURE_MODE !== "fallback") return;
   }
-  append({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "durable answer" }], api: "fixture", provider: "fixture", model: "fixture", usage: { input: 2, output: 3, cacheRead: 0, cacheWrite: 0, totalTokens: 5, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: Date.now() } });
+  const answer = process.env.FIXTURE_MODE === "fallback" && durableFailure ? "failed attempt answer" : "durable answer";
+  append({ type: "message", message: { role: "assistant", content: [{ type: "text", text: answer }], api: "fixture", provider: "fixture", model: "fixture", usage: { input: 2, output: 3, cacheRead: 0, cacheWrite: 0, totalTokens: 5, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: Date.now() } });
   report("settled");
-  report("result", { outcome: durableFailure ? "failed" : "success", finalOutput: "durable answer", stopReason: "stop", ...(durableFailure ? { error: process.env.FIXTURE_MODE === "failed-rate" ? "rate limit" : "request timeout" } : {}) });
+  report("result", { outcome: durableFailure ? "failed" : "success", finalOutput: answer, stopReason: "stop", ...(durableFailure ? { error: process.env.FIXTURE_MODE === "failed-rate" ? "rate limit" : "request timeout" } : {}) });
 });
 let buffer = "";
 socket.on("data", chunk => {
@@ -389,7 +390,7 @@ test(`runSync drives one real child host surface through a registered backend ($
 			assert.equal(output.error, "External execution cleanup failed");
 			assert.doesNotMatch(output.finalOutput, /durable answer/);
 		}
-		assert.equal(output.messages?.length, fallback ? 2 : 1);
+		assert.deepEqual(output.messages?.map(message => message.content), [[{ type: "text", text: "durable answer" }]]);
 		assert.deepEqual(output.executionSurface, {
 			handle: { protocolVersion: 1, backend: backend.name, surface: { kind: "fixture", id: "one" }, display: { label: "fixture surface", hint: "durable" }, data: null },
 			retained: outcome !== "success" && !fallback,
@@ -405,7 +406,12 @@ test(`runSync drives one real child host surface through a registered backend ($
 		assert.deepEqual(requests[0].awareness, { title: "worker" });
 		assert.equal(releases, 1);
 		assert.equal(closes, outcome === "success" || fallback ? 1 : 0);
-		assert.ok(fs.readFileSync(sessionFile, "utf8").includes("durable answer"));
+		const saved = fs.readFileSync(sessionFile, "utf8");
+		assert.ok(saved.includes("durable answer"));
+		if (fallback) {
+			const savedMessages = saved.trim().split("\n").map(line => JSON.parse(line)).filter(entry => entry.type === "message");
+			assert.deepEqual(savedMessages.map(entry => entry.message.content[0].text), ["failed attempt answer", "durable answer"]);
+		}
 		assert.equal("stdout" in output, false);
 	} finally {
 		process.env.PATH = savedPath;

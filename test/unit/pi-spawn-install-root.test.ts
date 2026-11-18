@@ -73,10 +73,11 @@ it("falls back when argv[1] is missing and still throws without installRoot", (t
 	assert.throws(() => spawn.capturePiRuntime({ execPath: process.execPath, argv1: missing }), spawn.PiRuntimeLaunchError);
 });
 
-it("keeps the detached runner's import graph free of runtime pi package imports", () => {
+it("limits detached runner Pi runtime imports to the selected host's migration API", () => {
 	const seen = new Set<string>();
-	const queue = [path.join(repoRoot, "src/runs/background/subagent-runner.ts")];
-	const offenders: string[] = [];
+	const runner = "src/runs/background/subagent-runner.ts";
+	const queue = [path.join(repoRoot, runner)];
+	const runtimeImports: string[] = [];
 	while (queue.length) {
 		const file = queue.pop()!;
 		if (seen.has(file)) continue;
@@ -84,10 +85,12 @@ it("keeps the detached runner's import graph free of runtime pi package imports"
 		const source = fs.readFileSync(file, "utf-8");
 		for (const match of source.matchAll(/^(import|export)\s[^;]*?from\s+"([^"]+)";?$/gm)) {
 			const [line, , specifier] = match;
-			if (specifier.startsWith("@earendil-works/") && !/^(import|export)\s+type\s/.test(line)) offenders.push(`${path.relative(repoRoot, file)}: ${line}`);
+			if (specifier.startsWith("@earendil-works/") && !/^(import|export)\s+type\s/.test(line)) runtimeImports.push(`${path.relative(repoRoot, file)}: ${line}`);
 			if (specifier.startsWith(".")) queue.push(path.resolve(path.dirname(file), specifier));
 		}
 	}
 	assert.ok(seen.has(path.join(repoRoot, "src/runs/shared/pi-spawn.ts")), "pi-spawn.ts is reachable from the runner");
-	assert.deepEqual(offenders, []);
+	assert.deepEqual(runtimeImports, [
+		`${runner}: import { CURRENT_SESSION_VERSION, migrateSessionEntries, type FileEntry } from "${spawn.PI_CODING_AGENT_PACKAGE}";`,
+	]);
 });
