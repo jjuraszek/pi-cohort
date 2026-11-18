@@ -2315,10 +2315,11 @@ ${script}`);
 		assert.doesNotMatch(fs.readFileSync(path.join(tempDir, "events.jsonl"), "utf8"), /subagent\.child\.accounting/);
 	});
 
-	for (const state of ["missing-before-start", "missing-after-turn", "malformed", "truncated", "replaced", "fresh-replaced"] as const) {
+	for (const state of ["missing-before-start", "missing-after-turn", "malformed", "truncated", "fresh-header-only", "reused-prefix-only", "replaced", "fresh-replaced"] as const) {
 		const neverStarted = state === "missing-before-start";
 		const disappeared = state === "missing-after-turn";
-		const fresh = neverStarted || disappeared || state === "fresh-replaced";
+		const suffixLost = state === "fresh-header-only" || state === "reused-prefix-only";
+		const fresh = neverStarted || disappeared || state === "fresh-header-only" || state === "fresh-replaced";
 		const name = neverStarted ? "fresh streaming attempt stays silent if no conversation started"
 			: disappeared ? "fresh streaming attempt diagnoses a missing session after a paid turn"
 			: state === "fresh-replaced" ? "fresh streaming attempt rejects a replaced session file"
@@ -2328,8 +2329,11 @@ ${script}`);
 			assert.ok(runner);
 			const file = path.join(tempDir, "existing.jsonl");
 			const header = JSON.stringify({ type: "session", version: 3, id: "existing", cwd: tempDir }) + "\n";
-			if (!fresh) fs.writeFileSync(file, header + JSON.stringify({ type: "branch_summary", ...savedSummary("inherited") }) + "\n");
 			const event = events.assistantMessage("Done");
+			if (!fresh) fs.writeFileSync(file, header + [
+				{ type: "message", id: "earlier-prompt", parentId: null, message: { role: "user", content: "Earlier prompt", timestamp: 1 } },
+				{ type: "branch_summary", ...savedSummary("inherited") },
+			].map(entry => JSON.stringify(entry) + "\n").join(""));
 			const script = fs.readFileSync(mockPi.runtime.piEntryPath, "utf8");
 			t.after(() => fs.writeFileSync(mockPi.runtime.piEntryPath, script));
 			const change = {
@@ -2337,6 +2341,8 @@ ${script}`);
 				"missing-after-turn": `process.on("exit", () => unlinkSync(session));`,
 				malformed: `process.on("exit", () => appendFileSync(session, "{bad json\\n"));`,
 				truncated: `process.on("exit", () => writeFileSync(session, ${JSON.stringify(header)}));`,
+				"fresh-header-only": `process.on("exit", () => writeFileSync(session, readFileSync(session, "utf8").split("\\n")[0] + "\\n"));`,
+				"reused-prefix-only": `const prefix = readFileSync(session, "utf8");\nprocess.on("exit", () => writeFileSync(session, prefix));`,
 				replaced: `process.on("exit", () => { copyFileSync(session, session + ".replacement"); renameSync(session + ".replacement", session); });`,
 				"fresh-replaced": `process.on("exit", () => {
 	const [header, ...entries] = readFileSync(session, "utf8").split("\\n");
@@ -2361,8 +2367,9 @@ ${script}`);
 				.map(line => JSON.parse(line)).filter(entry => entry.type === "subagent.child.accounting");
 			assert.equal(diagnostics.length, neverStarted ? 0 : 1);
 			if (disappeared) assert.match(diagnostics[0].message, /missing/i);
-			if (state === "fresh-replaced") {
-				assert.match(diagnostics[0].message, /replaced/i);
+			if (suffixLost) assert.match(diagnostics[0].message, /truncated/i);
+			if (state === "fresh-replaced") assert.match(diagnostics[0].message, /replaced/i);
+			if (state === "fresh-replaced" || state === "fresh-header-only") {
 				const args = readMockPiArgs(mockPi, 0);
 				assert.ok(args.includes("--session"));
 				assert.equal(result.sessionFile, args[args.indexOf("--session") + 1]);

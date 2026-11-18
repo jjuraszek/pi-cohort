@@ -355,6 +355,7 @@ function runPiStreaming(
 		let stdoutBuf = "";
 		let stderrBuf = "";
 		let streamedSessionId: string | undefined;
+		let streamedConversationMessage = false;
 		const messages: Message[] = [];
 		const usage = emptyUsage();
 		const streamedSummaries = new Set<string>();
@@ -441,6 +442,7 @@ function runPiStreaming(
 				if (text) writeOutputText(text);
 
 				if (event.type !== "message_end") return;
+				streamedConversationMessage ||= event.message.role === "user" || event.message.role === "assistant";
 				if (event.message.role === "toolResult" && isUsage(event.message.usage)) addCharge(event.message.usage);
 				if (event.message.role !== "assistant") return;
 				if (event.message.model) model = event.message.model;
@@ -590,14 +592,17 @@ function runPiStreaming(
 						|| !matchesStreamingPrefix(before, saved.entries))) {
 						throw new Error("Session file was replaced or its existing prefix changed");
 					}
-					if (!saved && messages.some(message => message.role === "user" || message.role === "assistant")) {
-						throw new Error("Missing session file after conversation started");
-					}
+					if (!saved && streamedConversationMessage) throw new Error("Missing session file after conversation started");
 					if (saved && !saved.entries.length) throw new Error("Missing session header");
 					if (saved && streamedSessionId !== undefined && saved.entries[0].id !== streamedSessionId) {
 						throw new Error("Session file was replaced: its header does not match the streamed session ID");
 					}
-					for (const entry of saved?.entries.slice(before.length) ?? []) {
+					const ownEntries = saved?.entries.slice(before.length || 1) ?? [];
+					if (streamedConversationMessage && !ownEntries.some(entry => entry.type === "message"
+						&& (entry.message?.role === "user" || entry.message?.role === "assistant"))) {
+						throw new Error("Session file was truncated: no conversation messages from this attempt");
+					}
+					for (const entry of ownEntries) {
 						if (entry.type === "branch_summary" && entry.usage && !streamedSummaries.has(entry.id)) addCharge(entry.usage);
 					}
 				} catch (error) {
