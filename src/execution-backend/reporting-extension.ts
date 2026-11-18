@@ -24,11 +24,11 @@ const defaultDependencies: ExecutionReportingDependencies = {
 	createConnection: (socketPath) => net.createConnection(socketPath),
 };
 
-function reports(context: ReporterContext, config: ReporterConfig): readonly ExecutionReport[] {
+function reportedEntries(context: ReporterContext, config: ReporterConfig): readonly { entryId: string; report: ExecutionReport }[] {
 	return context.sessionManager.getEntries()
 		.filter((entry) => entry.type === "custom" && entry.customType === EXECUTION_REPORT_TYPE)
-		.map((entry) => validateExecutionReport(entry.data))
-		.filter((report) => report.runId === config.runId && report.childId === config.childId && report.attemptId === config.attemptId);
+		.map((entry) => ({ entryId: entry.id, report: validateExecutionReport(entry.data) }))
+		.filter(({ report }) => report.runId === config.runId && report.childId === config.childId && report.attemptId === config.attemptId);
 }
 
 function append(
@@ -46,7 +46,7 @@ function append(
 	pi.appendEntry(EXECUTION_REPORT_TYPE, {
 		...identity,
 		...report,
-		sequence: reports(context, config).length + 1,
+		sequence: reportedEntries(context, config).length + 1,
 		timestamp: new Date().toISOString(),
 	} as ExecutionReport);
 }
@@ -103,7 +103,7 @@ export function createExecutionReportingExtension(
 
 		pi.on("session_start", (_event, context) => {
 			if (!context.sessionManager.getSessionFile()) throw new Error("Execution reporting requires a persisted session.");
-			if (!reports(context, config).some((report) => report.kind === "ready")) {
+			if (!reportedEntries(context, config).some(({ report }) => report.kind === "ready")) {
 				append(pi, context, config, { kind: "ready" });
 			}
 			if (controlSocket) return;
@@ -130,11 +130,16 @@ export function createExecutionReportingExtension(
 		});
 
 		pi.on("agent_settled", (_event, context) => {
-			const existing = reports(context, config);
-			if (existing.some((report) => report.kind === "result")) return;
-			if (!existing.some((report) => report.kind === "settled")) append(pi, context, config, { kind: "settled" });
-			const messages = context.sessionManager.getBranch().flatMap((entry) => entry.type === "message" ? [entry.message] : []);
-			const appliedAbort = existing.some((report) => report.kind === "control" && report.action === "abort" && report.state === "applied");
+			const existing = reportedEntries(context, config);
+			if (existing.some(({ report }) => report.kind === "result")) return;
+			if (!existing.some(({ report }) => report.kind === "settled")) append(pi, context, config, { kind: "settled" });
+			const readyId = existing.find(({ report }) => report.kind === "ready")?.entryId;
+			const entries = context.sessionManager.getEntries();
+			const readyIndex = entries.findIndex((entry) => entry.id === readyId);
+			// A tree rewind may put ready off the active branch; ownership follows append order.
+			const ownedIds = new Set(readyIndex < 0 ? [] : entries.slice(readyIndex + 1).map((entry) => entry.id));
+			const messages = context.sessionManager.getBranch().flatMap((entry) => entry.type === "message" && ownedIds.has(entry.id) ? [entry.message] : []);
+			const appliedAbort = existing.some(({ report }) => report.kind === "control" && report.action === "abort" && report.state === "applied");
 			append(pi, context, config, result(messages, appliedAbort));
 		});
 	};

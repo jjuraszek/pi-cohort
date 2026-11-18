@@ -12,7 +12,7 @@
 
 ### Fixed
 
-- Forked pane children report only their own attempt's turns, assistant cost and model, excluding copied parent history and earlier attempts on the same saved conversation.
+- Forked pane children report only their own attempt's turns, assistant cost, model and final answer, excluding copied parent history and earlier attempts on the same saved conversation. An attempt with no reply of its own fails with `result_missing` instead of returning the parent's answer.
 - A child on an external execution backend whose result is already in its session file is no longer waited on until `maxRuntimeMs` or an interrupt when the operating system drops the file-change event for the last write. The session watcher also re-reads the file every second, so the result is picked up within about 1 s.
 
 ## [8.4.0] - 2026-11-17
