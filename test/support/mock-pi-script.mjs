@@ -168,9 +168,9 @@ function sessionWriter(sessionFile, cwd) {
 	} else if (!content.endsWith("\n")) {
 		fs.appendFileSync(sessionFile, "\n");
 	}
-	return (message) => {
-		const id = randomUUID();
-		fs.appendFileSync(sessionFile, `${JSON.stringify({ type: "message", id, parentId, timestamp: new Date().toISOString(), message })}\n`);
+	return (entry) => {
+		const id = entry.id ?? randomUUID();
+		fs.appendFileSync(sessionFile, `${JSON.stringify({ id, parentId, timestamp: new Date().toISOString(), ...entry })}\n`);
 		parentId = id;
 	};
 }
@@ -292,7 +292,9 @@ async function main() {
 		}
 		response.output = `${response.output ?? ""}\n${JSON.stringify(observation)}`;
 	}
-	const persistMessage = sessionWriter(writeSessionFile(args), selectedCwd);
+	const persistEntry = sessionWriter(writeSessionFile(args), selectedCwd);
+	for (const summary of response.sessionSummaries ?? []) persistEntry({ type: "branch_summary", ...summary });
+	const persistMessage = (message) => persistEntry({ type: "message", message });
 	fs.writeFileSync(
 		path.join(queueDir, `call-${Date.now()}-${process.pid}-${Math.random().toString(16).slice(2)}.json`),
 		JSON.stringify({ args }),

@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { capturePiRuntime, type PiRuntimeIdentity } from "../../src/runs/shared/pi-spawn.ts";
 
+type MockSessionSummary = Pick<import("@earendil-works/pi-coding-agent").BranchSummaryEntry, "id" | "summary" | "fromId" | "usage">;
+
 interface MockPiResponse {
 	taskIncludes?: string;
 	output?: string;
@@ -15,6 +17,7 @@ interface MockPiResponse {
 	ignoreSigterm?: boolean;
 	exitOnSigtermWithOpenStdout?: { pidFile: string };
 	jsonl?: unknown[];
+	sessionSummaries?: MockSessionSummary[];
 	structuredOutput?: unknown;
 	steps?: Array<{
 		delay?: number;

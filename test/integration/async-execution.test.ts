@@ -26,6 +26,13 @@ import { createNestedRoute, findNestedRun, nestedRouteEnv, projectNestedEvents, 
 import { recordStop, sweepBackgroundDescendants } from "../../src/runs/shared/stop-control.ts";
 import { SUBAGENT_PARENT_RUN_ID_ENV, SUBAGENT_PARENT_PATH_ENV, SUBAGENT_PARENT_DEPTH_ENV } from "../../src/runs/shared/pi-args.ts";
 
+function savedSummary(id: string) {
+	return {
+		id, summary: "Summary", fromId: "abandoned-path",
+		usage: { input: 2, output: 3, cacheRead: 4, cacheWrite: 5, totalTokens: 14, cost: { input: 0, output: 0.10, cacheRead: 0, cacheWrite: 0, total: 0.10 } },
+	};
+}
+
 interface AsyncExecutionResult {
 	content: Array<{ text?: string }>;
 	isError?: boolean;
@@ -992,11 +999,10 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.ok(bytes.subarray(bytes.indexOf(10) + 1).toString().startsWith(history));
 		assert.equal(readMockPiArgs(mockPi, 0)[readMockPiArgs(mockPi, 0).indexOf("--session") + 1], original);
 		const consumerArgs = readMockPiArgs(mockPi, 3);
-		assert.equal(consumerArgs.includes("--session"), false);
-		assert.equal(consumerArgs.includes("--session-dir"), true);
-		const consumerSessionDir = consumerArgs[consumerArgs.indexOf("--session-dir") + 1];
-		assert.ok(fs.realpathSync.native(consumerSessionDir).startsWith(`${originSessionRoot}${path.sep}`));
+		assert.ok(consumerArgs.includes("--session"));
 		const consumerSession = payload.results[3].sessionFile;
+		assert.equal(consumerSession, consumerArgs[consumerArgs.indexOf("--session") + 1]);
+		assert.ok(fs.realpathSync.native(consumerSession).startsWith(`${originSessionRoot}${path.sep}`));
 		assert.ok(fs.existsSync(consumerSession));
 		assert.notEqual(consumerSession, original);
 		assert.match(readMockPiArgs(mockPi, 1).at(-1) ?? "", /Review src\/a\.ts/);
@@ -1345,7 +1351,9 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		fs.mkdirSync(target);
 		fs.symlinkSync(target, childCwd, process.platform === "win32" ? "junction" : "dir");
 		const parent = SessionManager.create(tempDir, path.join(tempDir, "parent-sessions"));
-		parent.appendMessage({ role: "user", content: "parent prompt" });
+		parent.appendMessage({ role: "user", content: "parent prompt", timestamp: 1 });
+		const fromId = parent.getLeafId()!;
+		parent.branchWithSummary(fromId, "Inherited summary", undefined, false, savedSummary("parent-summary").usage);
 		const parentBytes = fs.readFileSync(parent.getSessionFile()!);
 		const executor = createSubagentExecutor({
 			pi: { events: createEventBus(), getSessionName: () => undefined },
@@ -1354,7 +1362,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			getSubagentSessionRoot: () => tempDir, expandTilde: (p: string) => p,
 			discoverAgents: () => ({ agents: [makeAgent("reviewer")] }), captureRuntime: mockPi.captureRuntime,
 		});
-		mockPi.onCall({ output: "Inspect", echoCwd: true });
+		mockPi.onCall({ output: "Inspect", echoCwd: true, sessionSummaries: [savedSummary("own-summary")] });
 		const started = await executor.execute("fork-single", { agent: "reviewer", task: "Inspect", context: "fork", cwd: childCwd, async: true, clarify: false, acceptance: { level: "none", reason: "Only observing fork cwd" } }, new AbortController().signal, undefined, { ...makeMinimalCtx(tempDir), sessionManager: parent });
 		const id = started.details?.asyncId;
 		assert.ok(id, JSON.stringify(started));
@@ -1364,6 +1372,11 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		const header = JSON.parse(fs.readFileSync(args[args.indexOf("--session") + 1], "utf8").split("\n")[0]);
 		assert.equal(header.cwd, childCwd);
 		assert.equal(header.parentSession, parent.getSessionFile());
+		const summaries = fs.readFileSync(args[args.indexOf("--session") + 1], "utf8").trim().split("\n")
+			.map(line => JSON.parse(line)).filter(entry => entry.type === "branch_summary");
+		assert.deepEqual(summaries.map(entry => entry.summary), ["Inherited summary", "Summary"]);
+		const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf8")) as AsyncStatusPayload;
+		assert.equal(status.totalCost, 0.101);
 		assert.equal(JSON.parse(payload.results[0]!.output!.split("\n").at(-1)!).cwd, fs.realpathSync.native(target));
 		assert.deepEqual(fs.readFileSync(parent.getSessionFile()!), parentBytes);
 	});
@@ -1562,7 +1575,9 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			const structured = await tryImport<typeof import("../../src/runs/shared/structured-output.ts")>("./src/runs/shared/structured-output.ts");
 			const acceptance = await tryImport<typeof import("../../src/runs/shared/acceptance.ts")>("./src/runs/shared/acceptance.ts");
 			assert.ok(runner && structured && acceptance);
-			mockPi.onCall({ output: "Inspected", structuredOutput: { verdict: "PASS" }, requireAcceptanceStructuredOrder: true });
+			mockPi.onCall({ output: "Inspected", structuredOutput: { verdict: "PASS" }, requireAcceptanceStructuredOrder: true,
+				...(source === "runtime" ? { sessionSummaries: [savedSummary("not-persisted")] } : {}),
+			});
 			const result = await runner.runSingleStep({
 				agent: "reviewer", task: "Inspect the input", inheritProjectContext: true, inheritSkills: true,
 				...(source === "runtime"
@@ -1577,6 +1592,13 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			assert.equal(result.acceptance?.status, "attested");
 			assert.deepEqual(result.structuredOutput, { verdict: "PASS" });
 			assert.doesNotMatch(result.output, /acceptance-report/);
+			if (source === "runtime") {
+				const args = readMockPiArgs(mockPi, 0);
+				assert.ok(args.includes("--no-session"));
+				assert.ok(!args.includes("--session") && !args.includes("--session-dir"));
+				assert.equal(result.sessionFile, undefined);
+				assert.equal(result.modelAttempts?.[0]?.usage?.cost, 0.001);
+			}
 		});
 	}
 
@@ -2227,6 +2249,102 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(fs.readFileSync(output, "utf8"), "previous result");
 	});
 
+	it("streaming saved summaries add disk-only spend without adding turns", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		mockPi.onCall({ sessionSummaries: [savedSummary("own-summary")], jsonl: [{ type: "message_end", message: {
+			role: "assistant", content: [{ type: "text", text: "Done" }], model: "own-model",
+			usage: { input: 10, output: 5, cost: { total: 0.25 } },
+		} }] });
+		const id = "async-saved-summary";
+		const run = executeAsyncSingle(id, {
+			agent: "worker", task: "Do work", agentConfig: makeAgent("worker"),
+			ctx: { cwd: tempDir, pi: { events: { emit() {} } } }, artifactConfig: { enabled: false },
+			shareEnabled: false, maxSubagentDepth: 2,
+		});
+		assert.ok(!run.isError, run.content[0]?.text);
+		const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf8"));
+		const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf8")) as AsyncStatusPayload;
+		assert.equal(status.totalCost, 0.35);
+		assert.deepEqual(status.steps?.[0]?.modelAttempts?.[0]?.usage, { input: 12, output: 8, cacheRead: 4, cacheWrite: 5, cost: 0.35, turns: 1 });
+		assert.equal(status.steps?.[0]?.model, "own-model");
+		const args = readMockPiArgs(mockPi, 0);
+		assert.ok(args.includes("--session"));
+		assert.equal(payload.results[0].sessionFile, args[args.indexOf("--session") + 1]);
+	});
+
+	it("streaming saved summaries exclude legacy history and earlier attempts on the same file", async t => {
+		const runner = await tryImport<typeof import("../../src/runs/background/subagent-runner.ts")>("./src/runs/background/subagent-runner.ts");
+		assert.ok(runner);
+		const file = path.join(tempDir, "legacy.jsonl");
+		const { id: _id, ...legacySummary } = savedSummary("not-used-by-v1");
+		fs.writeFileSync(file, [
+			{ type: "session", version: 1, id: "legacy", cwd: tempDir, timestamp: "2026-01-01T00:00:00Z" },
+			{ type: "branch_summary", ...legacySummary },
+		].map(entry => JSON.stringify(entry)).join("\n") + "\n");
+		const script = fs.readFileSync(mockPi.runtime.piEntryPath, "utf8");
+		t.after(() => fs.writeFileSync(mockPi.runtime.piEntryPath, script));
+		fs.writeFileSync(mockPi.runtime.piEntryPath, `import { SessionManager } from ${JSON.stringify(import.meta.resolve("@earendil-works/pi-coding-agent"))};
+SessionManager.open(process.argv[process.argv.indexOf("--session") + 1]);
+${script}`);
+		mockPi.onCall({ sessionSummaries: [savedSummary("first-attempt")], stderr: "429 rate limit exceeded", exitCode: 1 });
+		const streamed = savedSummary("stream-and-disk");
+		mockPi.onCall({ sessionSummaries: [streamed, savedSummary("second-attempt")], jsonl: [
+			{ type: "entry_appended", entry: { type: "branch_summary", ...streamed } },
+			events.assistantMessage("Recovered"),
+		] });
+		const result = await runner.runSingleStep({
+			agent: "worker", task: "Do work", sessionFile: file, modelCandidates: ["openai/gpt-5-mini", "anthropic/claude-sonnet-4"],
+		}, {
+			cwd: tempDir, previousOutput: "", placeholder: "{previous}", sessionEnabled: true,
+			id: "legacy", flatIndex: 0, flatStepCount: 1, outputFile: path.join(tempDir, "output.log"), runtime: mockPi.runtime,
+		});
+		assert.equal(result.exitCode, 0, result.error);
+		assert.equal(result.sessionFile, file);
+		assert.deepEqual(result.modelAttempts?.map(attempt => attempt.usage), [
+			{ input: 2, output: 3, cacheRead: 4, cacheWrite: 5, cost: 0.10, turns: 0 },
+			{ input: 104, output: 56, cacheRead: 8, cacheWrite: 10, cost: 0.201, turns: 1 },
+		]);
+		const [header, inherited] = fs.readFileSync(file, "utf8").split("\n").map(line => line && JSON.parse(line));
+		assert.equal(header.version, 3);
+		assert.ok(inherited.id);
+		assert.doesNotMatch(fs.readFileSync(path.join(tempDir, "events.jsonl"), "utf8"), /subagent\.child\.accounting/);
+	});
+
+	for (const state of ["missing", "malformed", "truncated", "replaced"] as const) {
+		it(`streaming saved summaries preserve event spend with a ${state} session`, async t => {
+			const runner = await tryImport<typeof import("../../src/runs/background/subagent-runner.ts")>("./src/runs/background/subagent-runner.ts");
+			assert.ok(runner);
+			const file = path.join(tempDir, "existing.jsonl");
+			const header = JSON.stringify({ type: "session", version: 3, id: "existing", cwd: tempDir }) + "\n";
+			if (state !== "missing") fs.writeFileSync(file, header + JSON.stringify({ type: "branch_summary", ...savedSummary("inherited") }) + "\n");
+			const event = events.assistantMessage("Done");
+			const script = fs.readFileSync(mockPi.runtime.piEntryPath, "utf8");
+			t.after(() => fs.writeFileSync(mockPi.runtime.piEntryPath, script));
+			const change = {
+				missing: `process.stdout.write(${JSON.stringify(JSON.stringify(event) + "\n")});\nawait new Promise(resolve => process.stdout.write("", resolve));\nprocess.exit(0);`,
+				malformed: `process.on("exit", () => appendFileSync(session, "{bad json\\n"));`,
+				truncated: `process.on("exit", () => writeFileSync(session, ${JSON.stringify(header)}));`,
+				replaced: `process.on("exit", () => { copyFileSync(session, session + ".replacement"); renameSync(session + ".replacement", session); });`,
+			}[state];
+			fs.writeFileSync(mockPi.runtime.piEntryPath, `import { appendFileSync, copyFileSync, renameSync, writeFileSync } from "node:fs";
+const session = process.argv[process.argv.indexOf("--session") + 1];
+${change}
+${script}`);
+			mockPi.onCall({ sessionSummaries: [savedSummary("ambiguous")], jsonl: [event] });
+			const result = await runner.runSingleStep({
+				agent: "worker", task: "Do work", ...(state !== "missing" ? { sessionFile: file } : {}),
+			}, {
+				cwd: tempDir, previousOutput: "", placeholder: "{previous}", sessionEnabled: true, sessionDir: tempDir,
+				id: state, flatIndex: 0, flatStepCount: 1, outputFile: path.join(tempDir, "output.log"), runtime: mockPi.runtime,
+			});
+			assert.equal(result.exitCode, 0, result.error);
+			assert.equal(result.modelAttempts?.[0]?.usage?.cost, 0.001);
+			const diagnostics = fs.readFileSync(path.join(tempDir, "events.jsonl"), "utf8").trim().split("\n")
+				.map(line => JSON.parse(line)).filter(entry => entry.type === "subagent.child.accounting");
+			assert.equal(diagnostics.length, state === "missing" ? 0 : 1);
+			assert.equal(result.sessionFile, state === "missing" ? undefined : file);
+		});
+	}
+
 	it("background runs record fallback attempts and final model", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
 		const toolResult = {
 			role: "toolResult", toolCallId: "tool-1", toolName: "report", content: [], isError: false, timestamp: 1,
@@ -2314,6 +2432,13 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(statusPayload.totalCost, 1.376);
 		assert.match(fs.readFileSync(path.join(asyncDir, "output-0.log"), "utf-8"), /Recovered asynchronously/);
 		assert.equal(mockPi.callCount(), 2);
+		const [primarySession, fallbackSession] = [0, 1].map(index => {
+			const args = readMockPiArgs(mockPi, index);
+			assert.ok(args.includes("--session"));
+			return args[args.indexOf("--session") + 1];
+		});
+		assert.notEqual(primarySession, fallbackSession);
+		assert.equal(payload.results[0].sessionFile, fallbackSession);
 	});
 
 	it("background runs keep the paid attempt when stopped before fallback", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async t => {
@@ -3267,6 +3392,7 @@ ${mockScript}`);
 						] : []),
 						...(scenario === "missing-settlement" || scenario === "cancelled" ? [] : [{ ...success, delay: scenario === "delayed" ? 1500 : scenario === "activity" ? 200 : 0 }]),
 					],
+				...(scenario === "cancelled" ? { sessionSummaries: [savedSummary("before-interrupt")] } : {}),
 				keepAliveAfterFinalMessageMs: 10000,
 			});
 			const startedAt = Date.now();
@@ -3302,8 +3428,11 @@ ${mockScript}`);
 				assert.doesNotMatch(fs.readFileSync(path.join(ASYNC_DIR, id, "output-0.log"), "utf8"), /Forcing termination/);
 				const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf8"));
 				assert.equal(status.steps[0].status, "complete");
-			} else if (scenario === "cancelled") assert.equal(payload.state, "paused");
-			else if (scenario === "provider-error") assert.match(payload.results[0].error ?? "", /provider exploded/);
+			} else if (scenario === "cancelled") {
+				assert.equal(payload.state, "paused");
+				const status = JSON.parse(fs.readFileSync(path.join(runRoot, "status.json"), "utf8")) as AsyncStatusPayload;
+				assert.equal(status.totalCost, 0.101);
+			} else if (scenario === "provider-error") assert.match(payload.results[0].error ?? "", /provider exploded/);
 			else if (scenario === "unrelated-error") assert.match(payload.results[0].error ?? "", /unrelated failure/);
 			else if (scenario === "missing-settlement") assert.match(payload.results[0].error ?? "", /settlement.*silence/i);
 		});

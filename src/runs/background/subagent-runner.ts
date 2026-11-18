@@ -6,7 +6,9 @@ import * as fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import type { Message } from "@earendil-works/pi-ai";
+import { CURRENT_SESSION_VERSION, migrateSessionEntries, type FileEntry } from "@earendil-works/pi-coding-agent";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { formatInterruptedCleanup } from "../../shared/formatters.ts";
 import { appendJsonl, getArtifactPaths } from "../../shared/artifacts.ts";
@@ -168,19 +170,59 @@ interface StepResult {
 
 const ASYNC_INTERRUPT_SIGNAL: NodeJS.Signals = process.platform === "win32" ? "SIGBREAK" : "SIGUSR2";
 
-function findLatestSessionFile(sessionDir: string): string | null {
+function readStreamingSession(file: string) {
+	let fd: number;
 	try {
-		const files = fs
-			.readdirSync(sessionDir)
-			.filter((f) => f.endsWith(".jsonl"))
-			.map((f) => path.join(sessionDir, f));
-		if (files.length === 0) return null;
-		files.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
-		return files[0] ?? null;
-	} catch {
-		// Session lookup is optional metadata.
-		return null;
+		fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+		throw error;
 	}
+	try {
+		const stat = fs.fstatSync(fd);
+		if (!stat.isFile()) throw new Error("Not a regular session file");
+		const content = fs.readFileSync(fd, "utf8");
+		const entries: FileEntry[] = content ? content.replace(/\n$/, "").split("\n").map(line => JSON.parse(line)) : [];
+		if (entries.length > 0) {
+			const [header, ...body] = entries;
+			if (header?.type !== "session" || typeof header.id !== "string") throw new Error("Invalid session header");
+			const ids = new Set<string>();
+			for (const entry of body) {
+				if (typeof entry?.type !== "string" || entry.type === "session"
+					|| ((header.version ?? 1) >= 2 && (typeof entry.id !== "string" || ids.has(entry.id)))
+					|| (entry.type === "branch_summary" && entry.usage !== undefined && !isUsage(entry.usage))) {
+					throw new Error("Invalid session entry");
+				}
+				ids.add(entry.id);
+			}
+		}
+		return { stat, entries };
+	} finally {
+		fs.closeSync(fd);
+	}
+}
+
+function matchesStreamingPrefix(before: FileEntry[], after: FileEntry[]): boolean {
+	const prefix = after.slice(0, before.length);
+	if (isDeepStrictEqual(before, prefix)) return true;
+	const oldHeader = before[0];
+	const newHeader = prefix[0];
+	if (prefix.length !== before.length || oldHeader?.type !== "session" || newHeader?.type !== "session"
+		|| (oldHeader.version ?? 1) >= CURRENT_SESSION_VERSION || newHeader.version !== CURRENT_SESSION_VERSION) return false;
+
+	// Pi migrates in place. Compare the migrated entries in order, mapping v1's generated IDs to the IDs Pi wrote.
+	const migrated = structuredClone(before);
+	migrateSessionEntries(migrated);
+	if ((oldHeader.version ?? 1) < 2) {
+		const ids = new Map(migrated.slice(1).map((entry, i) => [entry.id, prefix[i + 1].id]));
+		for (const entry of migrated) {
+			if (entry.type === "session") continue;
+			entry.id = ids.get(entry.id)!;
+			if (entry.parentId !== null) entry.parentId = ids.get(entry.parentId)!;
+			if (entry.type === "compaction" && entry.firstKeptEntryId !== undefined) entry.firstKeptEntryId = ids.get(entry.firstKeptEntryId)!;
+		}
+	}
+	return isDeepStrictEqual(migrated, prefix);
 }
 
 function emptyUsage(): Usage {
@@ -258,7 +300,7 @@ interface ChildEvent {
 	aborted?: boolean;
 	message?: ChildMessage;
 	result?: { usage?: ChildUsage };
-	entry?: { type: string; usage?: ChildUsage };
+	entry?: { type: string; id?: string; usage?: ChildUsage };
 	toolName?: string;
 	args?: Record<string, unknown>;
 }
@@ -288,12 +330,20 @@ function runPiStreaming(
 	structuredRun = false,
 	controlConfig: ResolvedControlConfig = DEFAULT_CONTROL_CONFIG,
 	onPolicyStop?: (signal: () => boolean) => boolean,
+	sessionFile?: string,
 ): Promise<RunPiStreamingResult> {
 	return new Promise((resolve, reject) => {
 		const spawnSpec = getPiSpawnCommand(args, runtime);
 		const outputStream = fs.createWriteStream(outputFile, { flags: "w" });
 		const spawnEnv = { ...process.env, ...(env ?? {}), ...getSubagentDepthEnv(maxSubagentDepth) };
 		pinChildAgentDir(spawnEnv);
+		let sessionPrefix: ReturnType<typeof readStreamingSession>;
+		let prefixError: unknown;
+		try {
+			if (sessionFile) sessionPrefix = readStreamingSession(sessionFile);
+		} catch (error) {
+			prefixError = error;
+		}
 		const child = spawn(spawnSpec.command, spawnSpec.args, {
 			cwd,
 			stdio: ["ignore", "pipe", "pipe"],
@@ -305,6 +355,7 @@ function runPiStreaming(
 		let stderrBuf = "";
 		const messages: Message[] = [];
 		const usage = emptyUsage();
+		const streamedSummaries = new Set<string>();
 		const addCharge = (charge: ChildUsage) => {
 			usage.input += charge.input ?? charge.inputTokens ?? 0;
 			usage.output += charge.output ?? charge.outputTokens ?? 0;
@@ -362,7 +413,10 @@ function runPiStreaming(
 			onChildEvent?.(event);
 
 			if (event.type === "compaction_end" && event.result?.usage) addCharge(event.result.usage);
-			if (event.type === "entry_appended" && event.entry?.usage && event.entry.type !== "message") addCharge(event.entry.usage);
+			if (event.type === "entry_appended" && event.entry?.usage && event.entry.type !== "message") {
+				addCharge(event.entry.usage);
+				if (event.entry.type === "branch_summary" && event.entry.id) streamedSummaries.add(event.entry.id);
+			}
 
 			if (structuredRun && event.type === "agent_settled") {
 				clearSettlementWait();
@@ -524,6 +578,23 @@ function runPiStreaming(
 			clearStdioGuard();
 			if (stdoutBuf.trim()) processStdoutLine(stdoutBuf);
 			if (stderrBuf.trim()) appendChildLine("subagent.child.stderr", stderrBuf);
+			if (sessionFile) {
+				try {
+					if (prefixError) throw prefixError;
+					const saved = readStreamingSession(sessionFile);
+					const before = sessionPrefix?.entries ?? [];
+					if (sessionPrefix && (!saved || saved.stat.dev !== sessionPrefix.stat.dev || saved.stat.ino !== sessionPrefix.stat.ino
+						|| !matchesStreamingPrefix(before, saved.entries))) {
+						throw new Error("Session file was replaced or its existing prefix changed");
+					}
+					if (saved && !saved.entries.length) throw new Error("Missing session header");
+					for (const entry of saved?.entries.slice(before.length) ?? []) {
+						if (entry.type === "branch_summary" && entry.usage && !streamedSummaries.has(entry.id)) addCharge(entry.usage);
+					}
+				} catch (error) {
+					appendChildEvent({ type: "subagent.child.accounting", sessionFile, message: error instanceof Error ? error.message : String(error) });
+				}
+			}
 			outputStream.end();
 			const finalOutput = getFinalOutput(messages) || rawStdoutLines.join("\n").trim();
 			const finalError = error ?? assistantError;
@@ -1036,6 +1107,9 @@ async function runSingleStepAttempts(
 				// Missing/stale structured-output files are handled after the child exits.
 			}
 		}
+		const attemptSessionFile = step.sessionFile ?? (sessionEnabled && sessionDir
+			? path.join(sessionDir, `session-${ctx.flatIndex}-attempt-${index}-${randomUUID()}.jsonl`)
+			: undefined);
 		let piArgs: ReturnType<typeof buildPiArgs> | undefined;
 		let run: RunPiStreamingResult;
 		try {
@@ -1044,7 +1118,7 @@ async function runSingleStepAttempts(
 				task,
 				sessionEnabled,
 				sessionDir,
-				sessionFile: step.sessionFile,
+				sessionFile: attemptSessionFile,
 				model: candidate,
 				inheritProjectContext: step.inheritProjectContext,
 				inheritSkills: step.inheritSkills,
@@ -1096,7 +1170,9 @@ async function runSingleStepAttempts(
 					}
 					return sent;
 				},
+				attemptSessionFile,
 			);
+			finalSessionFile = step.sessionFile ?? (attemptSessionFile && fs.existsSync(attemptSessionFile) ? attemptSessionFile : undefined);
 		} catch (error) {
 			if (piArgs && !(error instanceof PiRuntimeLaunchError)) throw error;
 			const message = error instanceof Error ? error.message : String(error);
@@ -1335,7 +1411,7 @@ async function runSingleStepAttempts(
 		output: outputForSummary,
 		exitCode: effectiveFinalExitCode,
 		error: effectiveFinalError,
-		sessionFile: finalSessionFile ?? (sessionEnabled && sessionDir ? findLatestSessionFile(sessionDir) ?? undefined : undefined),
+		sessionFile: finalSessionFile,
 		model: finalResult?.model,
 		attemptedModels: attemptedModels.length > 0 ? attemptedModels : undefined,
 		modelAttempts,
