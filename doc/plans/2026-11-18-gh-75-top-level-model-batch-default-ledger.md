@@ -23,3 +23,4 @@ row 3 done | Verified that per-task models override parallel call defaults in fo
 row 4 done | Chain steps and fanout children now use the nearest model: their own, then their group's, then the call's, before the agent's pin. | Reuse chainModelScenario in test/support/helpers.ts to check recorded models across sequential steps, static groups, and fanout in both run modes.
 row 5 done | The tool schema explains that a child's own model wins over its parallel group's default, then the call's default, then the agent's pin. | Use test/unit/schemas.test.ts to check both descriptions and the 9,500-byte schema budget.
 amended | 1 item(s) | String-template fanout error text
+amended | 1 item(s) | Empty task list beside a chain

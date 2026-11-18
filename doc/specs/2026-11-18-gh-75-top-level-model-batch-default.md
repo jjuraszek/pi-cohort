@@ -174,6 +174,7 @@ Remove: nothing.
 Add:
 
 - `applyModelInheritance(params: SubagentParamsLike): SubagentParamsLike` in `src/runs/foreground/subagent-executor.ts`, and its one call on `normalized.params` where `normalizedParams` is assigned.
+- In `normalizeRepeatedParallelCounts` and `applyModelInheritance` (`src/runs/foreground/subagent-executor.ts`): the `tasks` branch is taken only for a non-empty list, so both passes rewrite the mode the executor runs, which it picks by length.
 - `model?: string` on `ParallelStep` and on `DynamicParallelStep` in `src/shared/settings.ts`.
 - `"model"` in `DYNAMIC_STEP_KEYS` in `src/runs/shared/dynamic-fanout.ts`.
 - The two descriptions in `src/extension/schemas.ts` (`SubagentParams.model`, `ChainItem.model`).
@@ -191,7 +192,8 @@ Paid or external actions: none. Implementation and verification run on the fake 
 - A static group's `model` in a saved `.chain.json` loads today and is dropped at run time. After the change it takes effect through `/run-chain`, like a group `model` on a direct call.
 - An empty `model` (`""`), `null`, or a non-string on the call, a group, or a child counts as not given; the next level applies, and with no given `model` above it a child's value is left as it arrived. A whitespace-only string counts as given and is kept as written.
 - A task with `count` inherits on every copy, because the fill runs on the expanded list.
-- A call with no `model` at any level behaves as today.
+- A call that carries an empty `tasks` list beside a `chain` is a chain call, because the executor picks the mode by length. Count expansion and the fill both treat it as a chain, so a task's `count`, a group's `model`, and the call's `model` all apply to its children.
+- A call with no `model` at any level behaves as today, with one exception: a chain sent beside an empty `tasks` list now expands a task's `count`, which that input dropped before.
 - A single-agent call behaves as today.
 - The clarify screen seeds each step with its inherited model, shown as the step's own and followed by the thinking suffix when one resolves, as the unchanged seeder does for any step model today. A model picked on the screen still wins, as today.
 - Resume reads no model of its own; an inherited model is the same stored field as one written on the task.
@@ -212,6 +214,7 @@ Every row that asserts an inherited model dispatches through `createSubagentExec
 - A saved `.chain.json` whose fanout group carries `model: Z` loads without a diagnostic, and `/run-chain` on it sends a chain whose group still carries `model: Z` - `test/unit/chain-serializer.test.ts` (load), `test/integration/slash-commands.test.ts` (params the command sends). The run on Z is the fanout row above.
 - A fanout group with a non-`model` unknown key (for example `when: "later"`), sent through `createSubagentExecutor(...).execute(...)`, still fails with the existing `does not support field` error naming that key - `test/integration/parallel-execution.test.ts`. The direct-validator tests in `test/unit/dynamic-fanout.test.ts` stay unchanged; they call the validator without the entry fill and cannot show that the fill leaves other keys alone.
 - A task with `count: 2` under top-level X: both copies run on X - `test/integration/parallel-execution.test.ts`
+- A chain sent with `tasks: []` and top-level `model: X` whose parallel group has a task with `count: 2`: both copies run and record X - `test/integration/parallel-execution.test.ts`
 - An empty top-level `model`: tasks keep the agent's pinned model - `test/integration/parallel-execution.test.ts`
 - The clarify seed for a step without `model` under top-level X is X followed by the thinking suffix when one resolves (`X:high` under a parent at thinking `high`); the seeder is not changed - `test/integration/parallel-execution.test.ts`. The test passes `{ ...makeMinimalCtx(dir), hasUI: true, ui: { custom } }` with the parent `model` and `thinkingLevel` as the executor's ctx argument (the ctx shape at `parallel-execution.test.ts:333-337`); the `custom` stub builds the component from the factory and reads `getEffectiveModel(i)`, as `chain-execution.test.ts:1797-1801` does.
 - A chain whose fanout group has a string template (`parallel: "x"`), sent through `createSubagentExecutor(...).execute(...)` with top-level `model: X` and again without it: both calls fail with the same error text, and it contains `Unknown agent: undefined (step 2)` (the executor's per-step agent check rejects the step before fanout validation runs) - `test/integration/parallel-execution.test.ts`
