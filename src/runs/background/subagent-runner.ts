@@ -88,6 +88,7 @@ import { resolveEffectiveThinking } from "../../shared/model-info.ts";
 import { writeInitialProgressFile } from "../../shared/settings.ts";
 import { acceptanceFailureMessage, aggregateAcceptanceReport, evaluateAcceptance, formatAcceptancePrompt, stripAcceptanceReport } from "../shared/acceptance.ts";
 import { selectConfiguredExecutionBackend } from "../../execution-backend/configured-selection.ts";
+import { isUsage } from "../../execution-backend/session-replay.ts";
 import { createDetachedExecutionBackendCoordinator, decodeDetachedExecutionBackendConfig, ExecutionBackendReloadError, type DetachedExecutionBackendCoordinator } from "../../execution-backend/reload.ts";
 import type { DetachedExecutionBackendConfig } from "../../execution-backend/types.ts";
 import {
@@ -381,7 +382,9 @@ function runPiStreaming(
 				const text = extractTextFromContent(event.message.content);
 				if (text) writeOutputText(text);
 
-				if (event.type !== "message_end" || event.message.role !== "assistant") return;
+				if (event.type !== "message_end") return;
+				if (event.message.role === "toolResult" && isUsage(event.message.usage)) addCharge(event.message.usage);
+				if (event.message.role !== "assistant") return;
 				if (event.message.model) model = event.message.model;
 				if (event.message.errorMessage) assistantError = event.message.errorMessage;
 				if (event.message.usage) {
@@ -1014,7 +1017,11 @@ async function runSingleStepAttempts(
 		}
 	} else {
 	for (let index = 0; index < candidates.length; index++) {
-		if (stopped()) return paused();
+		if (stopped()) return {
+			...paused(),
+			attemptedModels: attemptedModels.length > 0 ? attemptedModels : undefined,
+			modelAttempts: modelAttempts.length > 0 ? modelAttempts : undefined,
+		};
 		const candidate = candidates[index];
 		ctx.onAttemptStart?.({ model: candidate, thinking: resolveEffectiveThinking(candidate, step.thinking) });
 		const outputSnapshot = captureSingleOutputSnapshot(step.outputPath);

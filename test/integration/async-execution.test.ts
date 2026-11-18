@@ -2228,20 +2228,30 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 	});
 
 	it("background runs record fallback attempts and final model", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		const toolResult = {
+			role: "toolResult", toolCallId: "tool-1", toolName: "report", content: [], isError: false, timestamp: 1,
+			usage: { input: 5, output: 4, cacheRead: 3, cacheWrite: 2, totalTokens: 14, cost: { input: 0.125, output: 0.125, cacheRead: 0.125, cacheWrite: 0.125, total: 0.5 } },
+		};
 		mockPi.onCall({
-			jsonl: [{
-				type: "compaction_end",
-				result: { usage: { input: 7, output: 3, cacheRead: 2, cacheWrite: 1, cost: { total: 0.5 } } },
-			}, {
-				type: "message_end",
-				message: {
-					role: "assistant",
-					content: [{ type: "text", text: "primary failed" }],
-					model: "openai/gpt-5-mini",
-					errorMessage: "rate limit exceeded",
-					usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: { total: 0.25 } },
+			jsonl: [
+				{ type: "tool_execution_end", toolCallId: toolResult.toolCallId, toolName: toolResult.toolName, isError: false, result: { content: [], details: {}, usage: toolResult.usage } },
+				{ type: "message_start", message: toolResult },
+				{ type: "message_end", message: toolResult },
+				{
+					type: "compaction_end",
+					result: { usage: { input: 7, output: 3, cacheRead: 2, cacheWrite: 1, cost: { total: 0.5 } } },
 				},
-			}],
+				{
+					type: "message_end",
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: "primary failed" }],
+						model: "openai/gpt-5-mini",
+						errorMessage: "rate limit exceeded",
+						usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: { total: 0.25 } },
+					},
+				},
+			],
 			exitCode: 1,
 		});
 		mockPi.onCall({ jsonl: [
@@ -2296,14 +2306,57 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(statusPayload.steps[0]?.model, "anthropic/claude-sonnet-4:low");
 		assert.equal(statusPayload.steps[0]?.thinking, "low");
 		assert.deepEqual(statusPayload.steps[0]?.modelAttempts?.map(attempt => attempt.usage), [
-			{ input: 17, output: 8, cacheRead: 2, cacheWrite: 1, cost: 0.75, turns: 1 },
+			{ input: 22, output: 12, cacheRead: 5, cacheWrite: 3, cost: 1.25, turns: 1 },
 			{ input: 103, output: 50, cacheRead: 0, cacheWrite: 8, cost: 0.126, turns: 1 },
 		]);
-		assert.deepEqual(statusPayload.steps[0]?.tokens, { input: 120, output: 58, total: 178 });
+		assert.deepEqual(statusPayload.steps[0]?.tokens, { input: 125, output: 62, total: 187 });
 		assert.deepEqual(statusPayload.totalTokens, statusPayload.steps[0].tokens);
-		assert.equal(statusPayload.totalCost, 0.876);
+		assert.equal(statusPayload.totalCost, 1.376);
 		assert.match(fs.readFileSync(path.join(asyncDir, "output-0.log"), "utf-8"), /Recovered asynchronously/);
 		assert.equal(mockPi.callCount(), 2);
+	});
+
+	it("background runs keep the paid attempt when stopped before fallback", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async t => {
+		const id = `async-stopped-fallback-${Date.now().toString(36)}`;
+		const nestedRoute = createNestedRoute(id);
+		const stopDir = path.join(path.dirname(nestedRoute.eventSink), "stops");
+		const mockScript = fs.readFileSync(mockPi.runtime.piEntryPath, "utf8");
+		t.after(() => fs.writeFileSync(mockPi.runtime.piEntryPath, mockScript));
+		// Write the stop marker after emitting the paid turn but before the runner sees the exit.
+		fs.writeFileSync(mockPi.runtime.piEntryPath, `import { mkdirSync as makeStopDir, writeFileSync as markStop } from "node:fs";
+process.on("exit", code => {
+	if (code !== 1) return;
+	makeStopDir(${JSON.stringify(stopDir)}, { recursive: true });
+	markStop(${JSON.stringify(path.join(stopDir, id))}, "");
+});
+${mockScript}`);
+		mockPi.onCall({ exitCode: 1, jsonl: [{ type: "message_end", message: {
+			role: "assistant", content: [], errorMessage: "rate limit exceeded", usage: { input: 10, output: 5, cost: { total: 0.25 } },
+		} }] });
+		mockPi.onCall({ output: "Fallback should not launch" });
+		const run = executeAsyncSingle(id, {
+			agent: "worker", task: "Do work", nestedRoute,
+			agentConfig: makeAgent("worker", { model: "openai/gpt-5-mini", fallbackModels: ["anthropic/claude-sonnet-4"] }),
+			availableModels: [
+				{ provider: "openai", id: "gpt-5-mini", fullId: "openai/gpt-5-mini" },
+				{ provider: "anthropic", id: "claude-sonnet-4", fullId: "anthropic/claude-sonnet-4" },
+			],
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
+			artifactConfig: { enabled: false }, shareEnabled: false, maxSubagentDepth: 2,
+		});
+		assert.equal(run.details.asyncId, id);
+		await waitForAsyncResultFile(id);
+		const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf8")) as AsyncStatusPayload;
+		assert.equal(status.state, "paused");
+		assert.equal(status.steps[0]?.status, "paused");
+		assert.deepEqual(status.steps[0]?.modelAttempts, [{
+			model: "openai/gpt-5-mini", success: false, exitCode: 1, error: "rate limit exceeded",
+			usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: 0.25, turns: 1 },
+		}]);
+		assert.deepEqual(status.steps[0]?.tokens, { input: 10, output: 5, total: 15 });
+		assert.deepEqual(status.totalTokens, status.steps[0]?.tokens);
+		assert.equal(status.totalCost, 0.25);
+		assert.equal(mockPi.callCount(), 1);
 	});
 
 	it("background runs fail zero-exit provider errors when no fallback succeeds", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {

@@ -30,7 +30,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function isContent(value: unknown): boolean {
 	return Array.isArray(value) && value.every((part) => isRecord(part) && typeof part.type === "string");
 }
-function isUsage(value: unknown): value is Usage {
+export function isUsage(value: unknown): value is Usage {
 	return isRecord(value) && ["input", "output", "cacheRead", "cacheWrite", "totalTokens"].every((key) => typeof value[key] === "number")
 		&& isRecord(value.cost) && ["input", "output", "cacheRead", "cacheWrite", "total"].every((key) => typeof value.cost[key] === "number");
 }

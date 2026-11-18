@@ -217,8 +217,12 @@ describe("external foreground execution owner", () => {
 		assert.deepEqual(fake.controls, ["shutdown"]);
 	});
 
-	for (const context of ["fresh", "fork", "pane-fork"] as const) it(`counts only the ${context} child's own priced turn and model from its saved session`, async () => {
+	for (const context of ["fresh", "fork", "pane-fork"] as const) it(`counts only the ${context} child's own priced turn and tool result from its saved session`, async () => {
 		const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "external-owner-usage-")));
+		const toolResult = {
+			role: "toolResult" as const, toolCallId: "tool-1", toolName: "report", content: [], isError: false, timestamp: 3,
+			usage: { input: 5, output: 4, cacheRead: 3, cacheWrite: 2, totalTokens: 14, cost: { input: 0.125, output: 0.125, cacheRead: 0.125, cacheWrite: 0.125, total: 0.5 } },
+		};
 		try {
 			const childDirectory = path.join(directory, "child");
 			let child: SessionManager;
@@ -229,6 +233,7 @@ describe("external foreground execution owner", () => {
 				});
 				parent.appendMessage({ role: "user", content: "parent task", timestamp: 1 });
 				for (let index = 0; index < 3; index++) parent.appendMessage(assistant);
+				parent.appendMessage({ ...toolResult, usage: assistant.usage });
 				const resolver = createForkContextResolver(parent, "fork", { sessionDirForIndex: () => childDirectory });
 				const forkFile = resolver.sessionFileForIndex(0, directory);
 				assert.ok(forkFile);
@@ -254,6 +259,7 @@ describe("external foreground execution owner", () => {
 				child = SessionManager.open(sessionFile);
 				report("ready");
 				child.appendMessage({ role: "user", content: "child task", timestamp: 3 });
+				child.appendMessage(toolResult);
 				child.appendMessage(ownAssistant);
 				report("settled");
 				report("result", { outcome: "success", finalOutput: "child answer" });
@@ -278,8 +284,9 @@ describe("external foreground execution owner", () => {
 			fake.ready.resolve();
 			try {
 				const result = await owner.runAttempt(request({ sessionFile, cwd: directory }));
-				assert.deepEqual({ turns: result.turns, cost: result.usage.cost, model: result.model }, { turns: 1, cost: 0.25, model: "child-model" });
-				assert.deepEqual(result.usage, { input: 20, output: 30, cacheRead: 40, cacheWrite: 50, cost: 0.25, turns: 1 });
+				assert.equal(result.model, "child-model");
+				assert.equal(result.turns, 1);
+				assert.deepEqual(result.usage, { input: 25, output: 34, cacheRead: 43, cacheWrite: 52, cost: 0.75, turns: 1 });
 				assert.equal(result.finalOutput, "child answer");
 				const saved = SessionManager.open(sessionFile).getEntries();
 				assert.equal(saved.filter(entry => entry.type === "message" && entry.message.role === "assistant").length, context === "fresh" ? 1 : 4, "attribution must not remove saved history");

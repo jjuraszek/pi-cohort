@@ -14,7 +14,7 @@ import {
 	type ExecutionControlChannel,
 } from "../../execution-backend/control-channel.ts";
 import { PI_COHORT_REPORT_CONFIG, createExclusiveSessionFile, type ExecutionReportIdentity } from "../../execution-backend/reporting-protocol.ts";
-import { replayExecutionSession, type ReplayedSession } from "../../execution-backend/session-replay.ts";
+import { isUsage, replayExecutionSession, type ReplayedSession } from "../../execution-backend/session-replay.ts";
 import { createSessionWatcher, type OnNewSessionMessage, type SessionWatcher } from "../../execution-backend/session-watcher.ts";
 import type { ExecutionBackend, ExecutionSurfaceHandle } from "../../execution-backend/types.ts";
 
@@ -186,10 +186,13 @@ function usageFrom(messages: ReplayedSession["messages"], charges: readonly Usag
 	};
 	let model: string | undefined;
 	for (const message of messages) {
-		if (message.role !== "assistant") continue;
-		usage.turns++;
-		addCharge(message.usage);
-		model ??= message.model;
+		if (message.role === "assistant") {
+			usage.turns++;
+			addCharge(message.usage);
+			model ??= message.model;
+		} else if (message.role === "toolResult" && isUsage(message.usage)) {
+			addCharge(message.usage);
+		}
 	}
 	for (const charge of charges) addCharge(charge);
 	return { usage, model };

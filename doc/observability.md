@@ -20,9 +20,9 @@ foreground, background/async, and nested fanout. It is distinct from the
 built-in `$` figure, which counts the main loop only; the gap between them is
 your subagent spend.
 
-A pane attempt counts its own assistant turns and the charges on its final branch, including cache warming, compaction and branch summaries. A retry on the same saved conversation does not count the earlier attempt again. A forked child's pane footer still shows the whole conversation's spend, including copied parent turns; that footer does not feed the parent's total.
+A pane attempt counts its own assistant turns and charges on its final branch, including tool results, cache warming, compaction and branch summaries. Tool-result charges add tokens and cost, not turns. A retry on the same saved conversation does not count the earlier attempt again. A forked child's pane footer still shows the whole conversation's spend, including copied parent turns; that footer does not feed the parent's total.
 
-A background run saves the token and cost totals from its steps' attempt records. If a pane attempt ends without a result, its record counts all owned charges in its readable session file. When a child rewinds before producing a result, the completed status excludes turns abandoned on the old branch; the live run total and the session footer can therefore show more spend.
+A background run saves the token and cost totals from its steps' attempt records, including paid attempts when the run stops before a fallback starts. Background streaming counts tool-result charges from completed tool-result messages. If a pane attempt ends without a result, its record counts all owned charges in its readable session file. When a child rewinds before producing a result, the completed status excludes turns abandoned on the old branch; the live run total and the session footer can therefore show more spend.
 
 The total is per-session: it is zeroed on a new session, seeded from prior spend
 on resume, and only ever rises within a session for the main/sync/async slices
