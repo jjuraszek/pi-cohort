@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Forked pane children report only their own attempt's turns, cost, model and final answer, excluding copied parent history and earlier attempts on the same saved conversation. An attempt with no reply of its own fails with `result_missing` instead of returning the parent's answer. Background status keeps the child's recorded tokens and cost instead of resetting a forked step's cost to zero. Streaming background attempts also count branch summaries saved to their own session, without double-counting summaries reported on the stream or copied from the parent.
+
 ## [8.4.2] - 2026-11-18
 
 ### Fixed
@@ -11,8 +16,6 @@
 - The parent and child-safe `subagent` and the `structured_output` tool descriptions end with a `Codemode:` line saying the tool is not callable from scripts and is called directly, so the model is told before it writes a script pi refuses.
 
 ### Fixed
-
-- Forked pane children report only their own attempt's turns, cost, model and final answer, excluding copied parent history and earlier attempts on the same saved conversation. An attempt with no reply of its own fails with `result_missing` instead of returning the parent's answer. Background status keeps the child's recorded tokens and cost instead of resetting a forked step's cost to zero. Streaming background attempts also count branch summaries saved to their own session, without double-counting summaries reported on the stream or copied from the parent.
 - A child on an external execution backend whose result is already in its session file is no longer waited on until `maxRuntimeMs` or an interrupt when the operating system drops the file-change event for the last write. The session watcher also re-reads the file every second, so the result is picked up within about 1 s.
 
 ## [8.4.0] - 2026-11-17
