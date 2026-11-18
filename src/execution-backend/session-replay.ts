@@ -16,6 +16,7 @@ export interface ReplayedSession {
 	 * Used for incremental observation/forwarding of session activity.
 	 */
 	readonly pendingMessages: readonly SessionMessageEntry["message"][];
+	readonly pendingCharges: readonly Usage[];
 	readonly result?: ExecutionReport & { readonly kind: "result" };
 	readonly pendingResult: boolean;
 	readonly incompleteTrailingLine: boolean;
@@ -103,7 +104,8 @@ export function replayExecutionSession(content: string, identity: ExecutionRepor
 		candidates.push({ entry, report: validateExecutionReport(entry.data) });
 	}
 	const readyEntry = candidates.find(({ report }) => report.kind === "ready" && isIdentityMatch(report, identity))?.entry;
-	const ownedEntries = new Set(readyEntry ? entries.slice(entries.indexOf(readyEntry) + 1) : []);
+	const pending = readyEntry ? entries.slice(entries.indexOf(readyEntry) + 1) : [];
+	const ownedEntries = new Set(pending);
 	const reportedEntries = candidates.filter(({ entry, report }) => {
 		if (isIdentityMatch(report, identity)) return true;
 		if (ownedEntries.has(entry) && hasClaimedStream(report, identity)) throw new Error("execution report correlation mismatch");
@@ -133,10 +135,11 @@ export function replayExecutionSession(content: string, identity: ExecutionRepor
 	}
 	const branch = result && resultEntry ? reconstructBranch(byId, resultEntry).filter(entry => ownedEntries.has(entry)) : [];
 	const messages = messagesFrom(branch);
-	const pendingMessages = messagesFrom([...ownedEntries]);
+	const pendingMessages = messagesFrom(pending);
+	const pendingCharges = chargesFrom(pending);
 	const reports = reportedEntries.map(({ report }) => report);
 	const controls = reports.filter((report): report is ExecutionReport & { kind: "control" } => report.kind === "control");
-	return { reports, controls, messages, charges: chargesFrom(branch), pendingMessages, result, pendingResult: settled && !result, incompleteTrailingLine: trailing.length > 0 };
+	return { reports, controls, messages, charges: chargesFrom(branch), pendingMessages, pendingCharges, result, pendingResult: settled && !result, incompleteTrailingLine: trailing.length > 0 };
 }
 
 function chargesFrom(entries: readonly SessionEntry[]): Usage[] {

@@ -132,11 +132,15 @@ function defaultWatchDependencies(): WatchDependencies {
 	};
 }
 
+function assertTrustedSessionFile(sessionFile: string): void {
+	const details = fs.lstatSync(sessionFile);
+	if (!details.isFile() || details.isSymbolicLink()) throw new ExternalExecutionDiagnosticError("session_file_untrusted", "execution session path must be a regular non-symlink file");
+	if (process.platform !== "win32" && (details.mode & 0o077) !== 0) throw new ExternalExecutionDiagnosticError("session_file_untrusted", "execution session file must be owner-only");
+}
+
 function ensureTrustedSessionFile(sessionFile: string): void {
 	try {
-		const details = fs.lstatSync(sessionFile);
-		if (!details.isFile() || details.isSymbolicLink()) throw new ExternalExecutionDiagnosticError("session_file_untrusted", "execution session path must be a regular non-symlink file");
-		if (process.platform !== "win32" && (details.mode & 0o077) !== 0) throw new ExternalExecutionDiagnosticError("session_file_untrusted", "execution session file must be owner-only");
+		assertTrustedSessionFile(sessionFile);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 		createExclusiveSessionFile(sessionFile);
@@ -171,7 +175,7 @@ function startDeadline(timeoutMs: number): { readonly expired: Promise<void>; ca
 	return { expired, cancel: () => clearTimeout(timer) };
 }
 
-function usageFrom(messages: readonly Message[], charges: readonly Usage[]): { usage: ExternalAttemptUsage; model?: string } {
+function usageFrom(messages: ReplayedSession["messages"], charges: readonly Usage[]): { usage: ExternalAttemptUsage; model?: string } {
 	const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
 	const addCharge = (charge: Usage) => {
 		usage.input += charge.input;
@@ -189,6 +193,17 @@ function usageFrom(messages: readonly Message[], charges: readonly Usage[]): { u
 	}
 	for (const charge of charges) addCharge(charge);
 	return { usage, model };
+}
+
+export async function readPendingAttemptUsage(sessionFile: string, identity: ExecutionReportIdentity): Promise<ExternalAttemptUsage | undefined> {
+	try {
+		assertTrustedSessionFile(sessionFile);
+		const replay = replayExecutionSession(await fs.promises.readFile(sessionFile, "utf8"), identity);
+		return usageFrom(replay.pendingMessages, replay.pendingCharges).usage;
+	} catch {
+		// Usage is unavailable; the caller keeps the original attempt failure.
+		return undefined;
+	}
 }
 
 function proveControl(replayed: ReplayedSession, action: "abort" | "shutdown"): void {

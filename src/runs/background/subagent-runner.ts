@@ -72,8 +72,6 @@ import {
 	shouldEscalateMutatingFailures,
 	summarizeRecentMutatingFailures,
 } from "../shared/long-running-guard.ts";
-import { parseSessionTokens } from "../../shared/session-tokens.ts";
-import type { TokenUsage } from "../../shared/types.ts";
 import {
 	cleanupWorktrees,
 	removeTrees,
@@ -97,6 +95,7 @@ import {
 	externalExecutionDiagnosticCode,
 	ExternalStartDeadlineError,
 	isInterruptedExternalAttemptError,
+	readPendingAttemptUsage,
 	type ExternalExecution,
 } from "../shared/external-execution.ts";
 import { runExternalBackgroundAttempt } from "./external-attempt.ts";
@@ -186,16 +185,26 @@ function emptyUsage(): Usage {
 	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
 }
 
-function tokenUsageFromAttempts(attempts: ModelAttempt[] | undefined): TokenUsage | null {
-	if (!attempts || attempts.length === 0) return null;
-	let input = 0;
-	let output = 0;
-	for (const attempt of attempts) {
-		input += attempt.usage?.input ?? 0;
-		output += attempt.usage?.output ?? 0;
+function updateCompletedUsage(status: RunnerStatusPayload): void {
+	let totalInput = 0;
+	let totalOutput = 0;
+	let totalCost = 0;
+	for (const step of status.steps) {
+		if (step.status === "pending" || step.status === "running") continue;
+		let input = 0;
+		let output = 0;
+		for (const { usage } of step.modelAttempts ?? []) {
+			if (!usage) continue;
+			input += usage.input;
+			output += usage.output;
+			totalCost += usage.cost;
+		}
+		step.tokens = { input, output, total: input + output };
+		totalInput += input;
+		totalOutput += output;
 	}
-	const total = input + output;
-	return total > 0 ? { input, output, total } : null;
+	status.totalTokens = { input: totalInput, output: totalOutput, total: totalInput + totalOutput };
+	status.totalCost = totalCost;
 }
 
 function appendRecentStepOutput(step: RunnerStatusStep, lines: string[]): void {
@@ -797,11 +806,12 @@ async function runSingleStepAttempts(
 		const selection = backendSelection.selection;
 		// One AbortController per leaf for the external owner lifecycle.
 		const ownerController = new AbortController();
+		const childId = `${step.agent}-${ctx.flatIndex}`;
 		try {
 			externalOwner = await createExternalExecution({
 				runtime: ctx.runtime,
 				runId: ctx.id,
-				childId: `${step.agent}-${ctx.flatIndex}`,
+				childId,
 				backend: selection.backend,
 				cwd: childCwd,
 				title: step.agent,
@@ -840,6 +850,7 @@ async function runSingleStepAttempts(
 				if (!step.sessionFile) fs.mkdirSync(ctx.sessionDir!, { recursive: true });
 				const attemptSessionFile = step.sessionFile ?? path.join(ctx.sessionDir!, `session-${ctx.flatIndex}-attempt-${index}.jsonl`);
 				finalSessionFile = attemptSessionFile;
+				const attemptId = `${ctx.id}-${ctx.flatIndex}-attempt-${index}`;
 				let piArgs: ReturnType<typeof buildPiArgs> | undefined;
 				let run: import("./external-attempt.ts").ExternalBackgroundAttemptResult;
 				let startDeadlinePassed = false;
@@ -887,7 +898,7 @@ async function runSingleStepAttempts(
 						run = await runExternalBackgroundAttempt({
 							runtime: ctx.runtime,
 							owner: externalOwner,
-							attemptId: `${ctx.id}-${ctx.flatIndex}-attempt-${index}`,
+							attemptId,
 							args,
 							environment: mergedEnv,
 							cwd: childCwd,
@@ -904,7 +915,7 @@ async function runSingleStepAttempts(
 							exitCode: interrupted ? 0 : 1,
 							interrupted,
 							messages: [],
-							usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+							usage: await readPendingAttemptUsage(attemptSessionFile, { runId: ctx.id, childId, attemptId }) ?? emptyUsage(),
 							error: interrupted || startDeadlinePassed ? (error as Error).message : piArgs
 								? safeExternalFailure("attempt", error)
 								: error instanceof Error ? error.message : String(error),
@@ -1483,8 +1494,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	let stopError: string | undefined;
 	let currentActivityState: ActivityState | undefined;
 	let activityTimer: NodeJS.Timeout | undefined;
-	let previousCumulativeTokens: TokenUsage = { input: 0, output: 0, total: 0 };
-	let previousCumulativeCost = 0;
 
 	const parallelGroups: Array<{ start: number; count: number; stepIndex: number }> = [];
 	const queuedSteps: RunnerStatusStep[] = fs.existsSync(statusPath) ? JSON.parse(fs.readFileSync(statusPath, "utf8")).steps ?? [] : [];
@@ -2294,6 +2303,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				success: failures.length === 0,
 			}));
 			if (failures.length > 0) markDynamicGraphGroup(stepIndex, "failed", failures[0]?.error ?? "Dynamic fanout child failed.");
+			updateCompletedUsage(statusPayload);
 			statusPayload.lastUpdate = Date.now();
 			writeStatusPayload();
 			if (stopRecord || failures.length > 0 || statusPayload.error) break;
@@ -2523,23 +2533,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 
 				flatIndex += group.parallel.length;
 
-				for (let t = 0; t < group.parallel.length; t++) {
-					const fi = groupStartFlatIndex + t;
-					const sessionTokens = config.sessionDir
-						? parseSessionTokens(path.join(config.sessionDir, `parallel-${fi}`))
-						: null;
-					const taskTokens = sessionTokens ?? tokenUsageFromAttempts(parallelResults[t]?.modelAttempts);
-					if (!taskTokens) continue;
-					statusPayload.steps[fi].tokens = taskTokens;
-					previousCumulativeTokens = {
-						input: previousCumulativeTokens.input + taskTokens.input,
-						output: previousCumulativeTokens.output + taskTokens.output,
-						total: previousCumulativeTokens.total + taskTokens.total,
-					};
-					previousCumulativeCost += sessionTokens?.cost ?? 0;
-				}
-				statusPayload.totalTokens = { ...previousCumulativeTokens };
-				statusPayload.totalCost = previousCumulativeCost;
+				updateCompletedUsage(statusPayload);
 				statusPayload.lastUpdate = Date.now();
 				writeStatusPayload();
 
@@ -2695,17 +2689,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			}
 			statusPayload.outputs = outputs;
 
-			const sessionTokens = config.sessionDir ? parseSessionTokens(path.join(config.sessionDir, `parallel-${flatIndex}`)) : null;
-			const stepTokens = sessionTokens ?? tokenUsageFromAttempts(singleResult.modelAttempts);
-			if (stepTokens) {
-				previousCumulativeTokens = {
-					input: previousCumulativeTokens.input + stepTokens.input,
-					output: previousCumulativeTokens.output + stepTokens.output,
-					total: previousCumulativeTokens.total + stepTokens.total,
-				};
-				previousCumulativeCost += sessionTokens?.cost ?? 0;
-			}
-
 			const stepEndTime = Date.now();
 			if (singleResult.interrupted) interrupted = true;
 			statusPayload.steps[flatIndex].status = singleResult.interrupted ? "paused" : singleResult.exitCode === 0 ? "complete" : "failed";
@@ -2722,11 +2705,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			statusPayload.steps[flatIndex].structuredOutputPath = singleResult.structuredOutputPath;
 			statusPayload.steps[flatIndex].structuredOutputSchemaPath = singleResult.structuredOutputSchemaPath;
 			statusPayload.steps[flatIndex].acceptance = singleResult.acceptance;
-			if (stepTokens) {
-				statusPayload.steps[flatIndex].tokens = stepTokens;
-				statusPayload.totalTokens = { ...previousCumulativeTokens };
-				statusPayload.totalCost = previousCumulativeCost;
-			}
+			updateCompletedUsage(statusPayload);
 			statusPayload.lastUpdate = stepEndTime;
 			writeStatusPayload();
 
@@ -2738,7 +2717,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				agent: seqStep.agent,
 				exitCode: singleResult.exitCode,
 				durationMs: stepEndTime - stepStartTime,
-				tokens: stepTokens,
+				tokens: statusPayload.steps[flatIndex].tokens,
 			}));
 			if (singleResult.completionGuardTriggered) {
 				const event = buildControlEvent({
