@@ -2336,13 +2336,14 @@ ${script}`);
 		"missing-before-start", "fresh-empty-suffix", "reused-empty-suffix", "missing-after-turn", "malformed", "truncated",
 		"fresh-header-only", "reused-prefix-only", "lost-assistant", "lost-second-user", "lost-second-assistant",
 		"intact-tool-result", "lost-tool-result", "intact-entry-append", "lost-entry-append", "intact-compaction", "lost-compaction",
-		"lost-system", "lost-custom", "replaced", "fresh-replaced",
+		"lost-system", "lost-custom", "replaced", "fresh-replaced", "intact-summary", "lost-summary",
 	] as const) {
 		const neverStarted = state === "missing-before-start";
 		const emptySuffix = state === "fresh-empty-suffix" || state === "reused-empty-suffix";
 		const noCompletedMessages = neverStarted || emptySuffix;
 		const disappeared = state === "missing-after-turn";
-		const intact = state === "intact-tool-result" || state === "intact-entry-append" || state === "intact-compaction";
+		const summaryTail = state === "intact-summary" || state === "lost-summary";
+		const intact = state === "intact-tool-result" || state === "intact-entry-append" || state === "intact-compaction" || state === "intact-summary";
 		const compactionScenario = state === "intact-compaction" || state === "lost-compaction";
 		const toolScenario = state === "intact-tool-result" || state === "lost-tool-result";
 		const shortfalls: Partial<Record<typeof state, RegExp>> = {
@@ -2356,7 +2357,7 @@ ${script}`);
 			"lost-custom": /custom \(observed 1, saved 0\)/,
 		};
 		const shortfall = shortfalls[state];
-		const suffixLost = state === "fresh-header-only" || state === "reused-prefix-only" || shortfall !== undefined;
+		const suffixLost = state === "fresh-header-only" || state === "reused-prefix-only" || state === "lost-summary" || shortfall !== undefined;
 		const fresh = neverStarted || disappeared || state === "fresh-empty-suffix" || state === "fresh-header-only"
 			|| state === "lost-assistant" || state === "fresh-replaced";
 		const name = noCompletedMessages ? `streaming attempt stays silent with ${state}`
@@ -2409,6 +2410,7 @@ ${script}`);
 			const script = fs.readFileSync(mockPi.runtime.piEntryPath, "utf8");
 			t.after(() => fs.writeFileSync(mockPi.runtime.piEntryPath, script));
 			const change = {
+				"intact-summary": "", "lost-summary": "",
 				"missing-before-start": "",
 				"fresh-empty-suffix": "",
 				"reused-empty-suffix": "",
@@ -2444,8 +2446,20 @@ function dropLastEntry() {
 	});
 }
 ${change}
+${summaryTail ? `import { strict as assert } from "node:assert";
+import { truncateSync } from "node:fs";
+import { SessionManager } from ${JSON.stringify(import.meta.resolve("@earendil-works/pi-coding-agent"))};
+process.once("exit", () => {
+	const active = SessionManager.open(session);
+	const before = readFileSync(session);
+	const writer = SessionManager.open(session);
+	const id = writer.branchWithSummary(writer.getLeafId(), "Tail", undefined, false, ${JSON.stringify(savedSummary("tail").usage)});
+	assert.equal(SessionManager.open(session).getEntry(id).usage.cost.total, 0.10);
+	assert.equal(active.getEntry(id), undefined);
+	${state === "lost-summary" ? "truncateSync(session, before.length); assert.deepEqual(readFileSync(session), before);" : ""}
+});` : ""}
 ${script}`);
-			mockPi.onCall({ sessionSummaries: noCompletedMessages ? [] : [savedSummary("ambiguous")], jsonl });
+			mockPi.onCall({ sessionSummaries: noCompletedMessages || summaryTail ? [] : [savedSummary("ambiguous")], jsonl });
 			const result = await runner.runSingleStep({
 				agent: "worker", task: "Do work", ...(!fresh ? { sessionFile: file } : {}),
 			}, {
