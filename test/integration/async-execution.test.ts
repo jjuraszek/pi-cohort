@@ -2332,6 +2332,25 @@ ${script}`);
 		assert.doesNotMatch(fs.readFileSync(path.join(tempDir, "events.jsonl"), "utf8"), /subagent\.child\.accounting/);
 	});
 
+	it("rejects a streaming attempt when its close-time diagnostic cannot be written", { timeout: 10_000 }, async () => {
+		const { runSingleStep } = await import("../../src/runs/background/subagent-runner.ts");
+		const file = path.join(tempDir, "existing.jsonl");
+		const header = JSON.stringify({ type: "session", version: 3, id: "existing", cwd: tempDir }) + "\n";
+		fs.writeFileSync(file, header);
+		const eventsPath = path.join(tempDir, "events.jsonl");
+		mockPi.onCall({ output: "Done" });
+		await assert.rejects(runSingleStep({ agent: "worker", task: "Do work", sessionFile: file }, {
+			cwd: tempDir, previousOutput: "", placeholder: "{previous}", sessionEnabled: true,
+			id: "diagnostic-write", flatIndex: 0, flatStepCount: 1, outputFile: path.join(tempDir, "output.log"), runtime: mockPi.runtime,
+			onChildEvent(event) {
+				if (event.type !== "message_end") return;
+				fs.writeFileSync(file, header);
+				fs.unlinkSync(eventsPath);
+				fs.mkdirSync(eventsPath);
+			},
+		}), { syscall: "open", path: eventsPath });
+	});
+
 	for (const state of [
 		"missing-before-start", "fresh-empty-suffix", "reused-empty-suffix", "missing-after-turn", "malformed", "truncated",
 		"fresh-header-only", "reused-prefix-only", "lost-assistant", "lost-second-user", "lost-second-assistant",

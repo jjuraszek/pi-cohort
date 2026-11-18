@@ -593,9 +593,7 @@ function runPiStreaming(
 			childExited = true;
 			clearDrainTimers();
 		});
-		child.on("close", async (exitCode, signal) => {
-			if (settled) return;
-			settled = true;
+		async function finishStreaming(exitCode: number | null, signal: NodeJS.Signals | null): Promise<RunPiStreamingResult> {
 			registerInterrupt?.(undefined);
 			clearDrainTimers();
 			clearStdioGuard();
@@ -647,11 +645,10 @@ function runPiStreaming(
 					appendChildEvent({ type: "subagent.child.accounting", sessionFile, message: error instanceof Error ? error.message : String(error) });
 				}
 			}
-			outputStream.end();
 			const finalOutput = getFinalOutput(messages) || rawStdoutLines.join("\n").trim();
 			const finalError = error ?? assistantError;
 			const forcedDrainAfterFinalSuccess = forcedTerminationSignal && cleanTerminalAssistantStopReceived && !finalError;
-			resolve({
+			return {
 				stderr,
 				exitCode: interrupted || forcedDrainAfterFinalSuccess ? 0 : forcedTerminationSignal || signal ? (exitCode ?? 1) : exitCode,
 				messages,
@@ -661,7 +658,12 @@ function runPiStreaming(
 				finalOutput,
 				interrupted,
 				observedMutationAttempt,
-			});
+			};
+		}
+		child.on("close", (exitCode, signal) => {
+			if (settled) return;
+			settled = true;
+			finishStreaming(exitCode, signal).finally(() => outputStream.end()).then(resolve, reject);
 		});
 
 		child.on("error", (spawnError) => {
