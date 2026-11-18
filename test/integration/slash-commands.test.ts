@@ -622,6 +622,7 @@ Review {previous}
 				chain: [
 					{ agent: "scout", task: "Return targets", as: "targets", outputSchema: { type: "object" } },
 					{
+						model: "openai/gpt-4o",
 						expand: { from: { output: "targets", path: "/items" }, item: "target", key: "/path", maxItems: 4 },
 						parallel: { agent: "reviewer", task: "Review {target.path}", outputSchema: { type: "object" } },
 						collect: { as: "reviews" },
@@ -637,6 +638,7 @@ Review {previous}
 			assert.equal(runParams.agentScope, "both");
 			assert.equal(runParams.chain?.[0]?.agent, "scout");
 			assert.deepEqual(runParams.chain?.[1]?.expand, { from: { output: "targets", path: "/items" }, item: "target", key: "/path", maxItems: 4 });
+			assert.equal(runParams.chain?.[1]?.model, "openai/gpt-4o");
 			assert.deepEqual(runParams.chain?.[1]?.collect, { as: "reviews" });
 		});
 	});

@@ -15,7 +15,7 @@ import { syncBuiltinESMExports } from "node:module";
 import defaultFs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createEventBus, createMockPi, createTempDir, events, makeAgent, makeMinimalCtx, makeParentSessionCtx, removeTempDir, tryImport } from "../support/helpers.ts";
+import { chainModelScenario, createEventBus, createMockPi, createTempDir, events, makeAgent, makeMinimalCtx, makeParentSessionCtx, removeTempDir, tryImport } from "../support/helpers.ts";
 import type { MockPi } from "../support/helpers.ts";
 import { getArtifactPaths } from "../../src/shared/artifacts.ts";
 import { formatModelAttemptNote } from "../../src/runs/shared/model-fallback.ts";
@@ -672,6 +672,29 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			assert.deepEqual(status.steps?.map((step) => step.model), expectedModels);
 			assert.equal(mockPi.callCount(), 3);
 			assert.deepEqual(params, original, "inheritance must not mutate the caller's tasks");
+		});
+	}
+
+	for (const group of [undefined, "openai/gpt-4o"]) {
+		it(`async chain children record the nearest model (group: ${group ?? "unset"})`, async () => {
+			assert.ok(isAsyncAvailable());
+			const { params, expected } = chainModelScenario(mockPi, group);
+			const thinking = group ? "high" : undefined;
+			const executor = createSubagentExecutor({
+				pi: { events: createEventBus(), getSessionName: () => undefined },
+				state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
+				resolveConfig: () => ({}), tempArtifactsDir: tempDir,
+				getSubagentSessionRoot: () => tempDir, expandTilde: (p: string) => p,
+				discoverAgents: () => ({ agents: [makeAgent("pinned", { model: "openai/gpt-5-mini" })] }),
+			});
+			const run = await executor.execute("chain-models", { ...params, async: true, clarify: false }, new AbortController().signal, undefined,
+				makeParentSessionCtx(tempDir, "github-copilot", "gpt-6", thinking));
+			const id = run.details?.asyncId;
+			assert.ok(id, run.content[0]?.text);
+			const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf8")) as AsyncResultPayload;
+			assert.equal(payload.success, true, payload.summary);
+			const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf8")) as AsyncStatusPayload;
+			assert.deepEqual(status.steps?.map((step) => step.model), expected.map((value) => thinking ? `${value}:${thinking}` : value));
 		});
 	}
 

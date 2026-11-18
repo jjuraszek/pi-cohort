@@ -18,6 +18,7 @@ import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { MockPi } from "../support/helpers.ts";
 import {
+	chainModelScenario,
 	createEventBus,
 	createMockPi,
 	createTempDir,
@@ -304,6 +305,55 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 			assert.deepEqual(params, original, "count expansion and inheritance must not mutate the caller's tasks");
 		});
 	}
+
+	for (const group of [undefined, "openai/gpt-4o"]) {
+		it(`chain children record the nearest model (group: ${group ?? "unset"})`, async () => {
+			const { params, expected } = chainModelScenario(mockPi, group);
+			const original = structuredClone(params);
+			const executor = makeExecutor([makeAgent("pinned", { model: "openai/gpt-5-mini" })]);
+			const thinking = group ? "high" : undefined;
+			const result = await executor.execute("chain-models", params, new AbortController().signal, undefined,
+				makeParentSessionCtx(tempDir, "github-copilot", "gpt-6", thinking));
+			assert.ok(!result.isError, result.content[0]?.text);
+			const models = result.details.results.map((child) => JSON.parse(fs.readFileSync(child.artifactPaths.metadataPath, "utf8")).model);
+			assert.deepEqual(models, expected.map((value) => thinking ? `${value}:${thinking}` : value));
+			assert.deepEqual(params, original);
+		});
+	}
+
+	it("chain clarify seeds the inherited call model with the parent's thinking", async () => {
+		const executor = makeExecutor([makeAgent("echo", { model: "openai/gpt-5-mini" })]);
+		let seeded: string | undefined;
+		const custom = async (factory) => {
+			const component = factory({ requestRender() {} }, { fg(_key, text) { return text; } }, {}, () => {});
+			seeded = component.getEffectiveModel(0);
+			return { confirmed: false, templates: [], behaviorOverrides: [] };
+		};
+		await executor.execute("chain-clarify", { model: "anthropic/claude-sonnet-4", chain: [{ agent: "echo", task: "Review" }], clarify: true },
+			new AbortController().signal, undefined, { ...makeParentSessionCtx(tempDir, "github-copilot", "gpt-6", "high"), hasUI: true, ui: { custom } });
+		assert.equal(seeded, "anthropic/claude-sonnet-4:high");
+	});
+
+	it("chain model inheritance preserves fanout validation errors", async () => {
+		const executor = makeExecutor();
+		for (const [invalid, error] of [
+			[{ parallel: "x" }, /Unknown agent: undefined \(step 2\)/],
+			[{ when: "later" }, /does not support field 'when'/],
+		] as const) {
+			const chain = [
+				{ agent: "echo", task: "Seed", as: "targets", outputSchema: { type: "object" } },
+				{ expand: { from: { output: "targets", path: "/items" }, maxItems: 2 }, collect: { as: "reviews" }, parallel: { agent: "echo", task: "Review" }, ...invalid },
+			];
+			const messages = [];
+			for (const model of [undefined, "anthropic/claude-sonnet-4"]) {
+				const result = await executor.execute("invalid-fanout", { chain, model }, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
+				assert.equal(result.isError, true);
+				assert.match(result.content[0].text, error);
+				messages.push(result.content[0].text);
+			}
+			assert.equal(messages[0], messages[1]);
+		}
+	});
 
 	it("top-level parallel defaults require explicit output and progress", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
 		mockPi.onCall({ output: "Omitted" });
