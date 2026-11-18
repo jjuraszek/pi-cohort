@@ -153,7 +153,7 @@ The baseline window is recounted with this procedure in the same run as the post
 
 ## Errors and edge cases
 
-- The model ignores the line and scripts the call: pi refuses it exactly as today and the direct retry works. The line lowers how often this happens; it enforces nothing.
+- The model ignores the line and scripts the call: pi refuses it exactly as today and the direct retry works. The line warns the model before it chooses a route; it enforces nothing.
 - A child scripts `structured_output`, is refused, then calls it directly: the existing recovery in `detectSubagentError` applies unchanged.
 - Codemode `only`: the three tools stay declared, so the line is shown and stays true.
 - Codemode is not among a session's active tools (for example a child whose tool allowlist leaves it out): the line is a static string and is still shown; it stays true and has no effect. No conditional registration.
