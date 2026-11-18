@@ -118,6 +118,7 @@ describe("subagent prompt runtime", () => {
 		await withStructuredRuntime(({ tool }) => {
 			assert.equal(tool.name, "structured_output");
 			assert.equal(tool.exposure, "model-only");
+			assert.ok(tool.description.endsWith("\n\nCodemode: not callable from scripts - call `structured_output` directly, as its own tool call."));
 		});
 	});
 
