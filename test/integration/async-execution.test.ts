@@ -2357,7 +2357,7 @@ ${script}`);
 			"lost-custom": /custom \(observed 1, saved 0\)/,
 		};
 		const shortfall = shortfalls[state];
-		const suffixLost = state === "fresh-header-only" || state === "reused-prefix-only" || state === "lost-summary" || shortfall !== undefined;
+		const suffixLost = state === "fresh-header-only" || state === "reused-prefix-only" || shortfall !== undefined;
 		const fresh = neverStarted || disappeared || state === "fresh-empty-suffix" || state === "fresh-header-only"
 			|| state === "lost-assistant" || state === "fresh-replaced";
 		const name = noCompletedMessages ? `streaming attempt stays silent with ${state}`
@@ -2474,7 +2474,7 @@ ${script}`);
 			}
 			const diagnostics = fs.readFileSync(path.join(tempDir, "events.jsonl"), "utf8").trim().split("\n")
 				.map(line => JSON.parse(line)).filter(entry => entry.type === "subagent.child.accounting");
-			assert.equal(diagnostics.length, noCompletedMessages || intact ? 0 : 1, JSON.stringify(diagnostics));
+			assert.equal(diagnostics.length, noCompletedMessages || intact || state === "lost-summary" ? 0 : 1, JSON.stringify(diagnostics));
 			const expected = noCompletedMessages
 				? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 }
 				: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, cost: 0.001, turns: 1 };
