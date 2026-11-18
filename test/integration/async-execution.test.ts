@@ -2315,9 +2315,13 @@ ${script}`);
 		assert.doesNotMatch(fs.readFileSync(path.join(tempDir, "events.jsonl"), "utf8"), /subagent\.child\.accounting/);
 	});
 
-	for (const state of ["missing", "malformed", "truncated", "replaced", "fresh-replaced"] as const) {
-		const fresh = state === "missing" || state === "fresh-replaced";
-		const name = state === "fresh-replaced" ? "fresh streaming attempt rejects a replaced session file"
+	for (const state of ["missing-before-start", "missing-after-turn", "malformed", "truncated", "replaced", "fresh-replaced"] as const) {
+		const neverStarted = state === "missing-before-start";
+		const disappeared = state === "missing-after-turn";
+		const fresh = neverStarted || disappeared || state === "fresh-replaced";
+		const name = neverStarted ? "fresh streaming attempt stays silent if no conversation started"
+			: disappeared ? "fresh streaming attempt diagnoses a missing session after a paid turn"
+			: state === "fresh-replaced" ? "fresh streaming attempt rejects a replaced session file"
 			: `streaming saved summaries preserve event spend with a ${state} session`;
 		it(name, async t => {
 			const runner = await tryImport<typeof import("../../src/runs/background/subagent-runner.ts")>("./src/runs/background/subagent-runner.ts");
@@ -2329,7 +2333,8 @@ ${script}`);
 			const script = fs.readFileSync(mockPi.runtime.piEntryPath, "utf8");
 			t.after(() => fs.writeFileSync(mockPi.runtime.piEntryPath, script));
 			const change = {
-				missing: `process.stdout.write(${JSON.stringify(JSON.stringify(event) + "\n")});\nawait new Promise(resolve => process.stdout.write("", resolve));\nprocess.exit(0);`,
+				"missing-before-start": `await new Promise(resolve => process.stdout.write(${JSON.stringify(header)}, resolve));\nprocess.exit(0);`,
+				"missing-after-turn": `process.on("exit", () => unlinkSync(session));`,
 				malformed: `process.on("exit", () => appendFileSync(session, "{bad json\\n"));`,
 				truncated: `process.on("exit", () => writeFileSync(session, ${JSON.stringify(header)}));`,
 				replaced: `process.on("exit", () => { copyFileSync(session, session + ".replacement"); renameSync(session + ".replacement", session); });`,
@@ -2339,7 +2344,7 @@ ${script}`);
 	renameSync(session + ".replacement", session);
 });`,
 			}[state];
-			fs.writeFileSync(mockPi.runtime.piEntryPath, `import { appendFileSync, copyFileSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+			fs.writeFileSync(mockPi.runtime.piEntryPath, `import { appendFileSync, copyFileSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 const session = process.argv[process.argv.indexOf("--session") + 1];
 ${change}
 ${script}`);
@@ -2351,17 +2356,18 @@ ${script}`);
 				id: state, flatIndex: 0, flatStepCount: 1, outputFile: path.join(tempDir, "output.log"), runtime: mockPi.runtime,
 			});
 			assert.equal(result.exitCode, 0, result.error);
-			assert.deepEqual(result.modelAttempts?.[0]?.usage, { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, cost: 0.001, turns: 1 });
+			assert.deepEqual(result.modelAttempts?.[0]?.usage, { input: neverStarted ? 0 : 100, output: neverStarted ? 0 : 50, cacheRead: 0, cacheWrite: 0, cost: neverStarted ? 0 : 0.001, turns: neverStarted ? 0 : 1 });
 			const diagnostics = fs.readFileSync(path.join(tempDir, "events.jsonl"), "utf8").trim().split("\n")
 				.map(line => JSON.parse(line)).filter(entry => entry.type === "subagent.child.accounting");
-			assert.equal(diagnostics.length, state === "missing" ? 0 : 1);
+			assert.equal(diagnostics.length, neverStarted ? 0 : 1);
+			if (disappeared) assert.match(diagnostics[0].message, /missing/i);
 			if (state === "fresh-replaced") {
 				assert.match(diagnostics[0].message, /replaced/i);
 				const args = readMockPiArgs(mockPi, 0);
 				assert.ok(args.includes("--session"));
 				assert.equal(result.sessionFile, args[args.indexOf("--session") + 1]);
 			} else {
-				assert.equal(result.sessionFile, state === "missing" ? undefined : file);
+				assert.equal(result.sessionFile, fresh ? undefined : file);
 			}
 		});
 	}

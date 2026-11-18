@@ -590,6 +590,9 @@ function runPiStreaming(
 						|| !matchesStreamingPrefix(before, saved.entries))) {
 						throw new Error("Session file was replaced or its existing prefix changed");
 					}
+					if (!saved && messages.some(message => message.role === "user" || message.role === "assistant")) {
+						throw new Error("Missing session file after conversation started");
+					}
 					if (saved && !saved.entries.length) throw new Error("Missing session header");
 					if (saved && streamedSessionId !== undefined && saved.entries[0].id !== streamedSessionId) {
 						throw new Error("Session file was replaced: its header does not match the streamed session ID");
