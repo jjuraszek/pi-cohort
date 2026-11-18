@@ -890,6 +890,19 @@ function normalizeRepeatedParallelCounts(params: SubagentParamsLike): { params?:
 	return { params };
 }
 
+function applyModelInheritance(params: SubagentParamsLike): SubagentParamsLike {
+	const hasModel = (model: unknown): model is string => typeof model === "string" && model.length > 0;
+	if (!params.tasks || !hasModel(params.model)) return params;
+	return {
+		...params,
+		tasks: params.tasks.map((task) =>
+			task !== null && typeof task === "object" && !Array.isArray(task) && !hasModel(task.model)
+				? { ...task, model: params.model }
+				: task,
+		),
+	};
+}
+
 function withForkContext(
 	result: AgentToolResult<Details>,
 	context: SubagentParamsLike["context"],
@@ -2320,7 +2333,7 @@ export function createSubagentExecutor(services: ExecutorDeps): {
 
 		const normalized = normalizeRepeatedParallelCounts(paramsWithResolvedCwd);
 		if (normalized.error) return normalized.error;
-		const normalizedParams = normalized.params!;
+		const normalizedParams = applyModelInheritance(normalized.params!);
 
 		let effectiveParams = applyForceTopLevelAsyncOverride(
 			normalizedParams,

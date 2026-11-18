@@ -636,6 +636,41 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.deepEqual(resumedPayload.results[0]?.attemptedModels, ["anthropic/claude-sonnet-4:low"]);
 	});
 
+	for (const thinking of [undefined, "high"]) {
+		it(`top-level async parallel model overrides pinned and unpinned agents (${thinking ?? "no thinking"})`, async () => {
+			assert.ok(isAsyncAvailable(), "jiti must be available for background model inheritance");
+			const agents = [makeAgent("pinned", { model: "openai/gpt-5-mini" }), makeAgent("unpinned")];
+			mockPi.onCall({ output: "Done" });
+			const executor = createSubagentExecutor({
+				pi: { events: createEventBus(), getSessionName: () => undefined },
+				state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
+				resolveConfig: () => ({}), tempArtifactsDir: tempDir,
+				getSubagentSessionRoot: () => tempDir, expandTilde: (p: string) => p,
+				discoverAgents: () => ({ agents }),
+			});
+			const params = {
+				model: "anthropic/claude-sonnet-4",
+				tasks: agents.map((agent) => ({ agent: agent.name, task: "Do work" })),
+				async: true, clarify: false,
+			};
+			const original = structuredClone(params);
+			const run = await executor.execute(
+				"async-parallel-model-default", params, new AbortController().signal, undefined,
+				makeParentSessionCtx(tempDir, "github-copilot", "gpt-6", thinking),
+			);
+			assert.ok(run.details?.asyncId, JSON.stringify(run.content));
+			const id = run.details.asyncId;
+			const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf-8")) as AsyncResultPayload;
+			const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf-8")) as AsyncStatusPayload;
+			const expectedModel = `${params.model}${thinking ? `:${thinking}` : ""}`;
+			assert.equal(payload.success, true);
+			assert.equal(payload.mode, "parallel");
+			assert.deepEqual(status.steps?.map((step) => step.model), [expectedModel, expectedModel]);
+			assert.equal(mockPi.callCount(), 2);
+			assert.deepEqual(params, original, "inheritance must not mutate the caller's tasks");
+		});
+	}
+
 	it("top-level async parallel defaults require explicit output and progress", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
 		fs.writeFileSync(path.join(tempDir, "input.md"), "input\n", "utf-8");
 		mockPi.onCall({ output: "Async parallel inline report" });

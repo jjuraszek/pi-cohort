@@ -268,6 +268,40 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 		assert.equal(args[args.indexOf("--model") + 1], "github-copilot/gpt-6:high");
 	});
 
+	for (const { model, thinking } of [
+		{ model: "anthropic/claude-sonnet-4", thinking: undefined },
+		{ model: "anthropic/claude-sonnet-4", thinking: "high" },
+		{ model: "", thinking: "high" },
+	]) {
+		it(`top-level parallel model reaches child metadata (${model || "empty model"}, ${thinking ?? "no thinking"})`, async () => {
+			mockPi.onCall({ output: "Done" });
+			const executor = makeExecutor([makeAgent("pinned", { model: "openai/gpt-5-mini" }), makeAgent("unpinned")]);
+			const params = {
+				model,
+				tasks: [
+					{ agent: "pinned", task: "Do work", count: 2 },
+					{ agent: "unpinned", task: "Do work" },
+				],
+			};
+			const original = structuredClone(params);
+			const result = await executor.execute(
+				"parallel-model-default", params, new AbortController().signal, undefined,
+				makeParentSessionCtx(tempDir, "github-copilot", "gpt-6", thinking),
+			);
+			assert.equal(result.isError, undefined);
+			const models = result.details.results.map((child) => {
+				assert.equal(child.exitCode, 0);
+				assert.ok(child.artifactPaths?.metadataPath, "expected a child metadata artifact");
+				return JSON.parse(fs.readFileSync(child.artifactPaths.metadataPath, "utf-8")).model;
+			});
+			const expectedModels = [model || "openai/gpt-5-mini", model || "openai/gpt-5-mini", model || "github-copilot/gpt-6"]
+				.map((value) => `${value}${thinking ? `:${thinking}` : ""}`);
+			assert.deepEqual(models, expectedModels);
+			assert.equal(mockPi.callCount(), 3);
+			assert.deepEqual(params, original, "count expansion and inheritance must not mutate the caller's tasks");
+		});
+	}
+
 	it("top-level parallel defaults require explicit output and progress", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
 		mockPi.onCall({ output: "Omitted" });
 		mockPi.onCall({ output: "Explicit" });

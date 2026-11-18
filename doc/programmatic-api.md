@@ -6,6 +6,8 @@ instead - see [README](../README.md) and [commands.md](commands.md).
 
 ## Execution examples
 
+For `tasks` calls, a top-level `model` is the default for tasks without their own model, ahead of the agent's pinned model. This applies to foreground and background runs, including `count` copies. An empty top-level model adds no default.
+
 ```ts
 // Single agent
 { agent: "worker", task: "refactor auth" }
@@ -18,6 +20,7 @@ instead - see [README](../README.md) and [commands.md](commands.md).
 
 // Parallel
 { tasks: [{ agent: "scout", task: "a" }, { agent: "reviewer", task: "b" }] }
+{ model: "anthropic/claude-sonnet-4", tasks: [{ agent: "scout", task: "a" }, { agent: "reviewer", task: "b" }] }
 { tasks: [{ agent: "scout", task: "audit auth", count: 3 }] }
 { tasks: [{ agent: "scout", task: "audit frontend" }, { agent: "reviewer", task: "audit backend" }], context: "fork" }
 

@@ -26,8 +26,10 @@ Resolution per dispatch, first defined wins:
 
 | Field | 1 | 2 | 3 | 4 |
 |---|---|---|---|---|
-| model | per-call `model:` (single, per-task, per-chain-step) | agent `model` after `agentOverrides` merge | parent session model as `provider/id` | none - no `--model`, child pi uses its `defaultModel` |
+| model | per-call `model:` (single, per-task, per-chain-step; tasks inherit the top-level model by default) | agent `model` after `agentOverrides` merge | parent session model as `provider/id` | none - no `--model`, child pi uses its `defaultModel` |
 | thinking | agent `thinking` after `agentOverrides` merge | parent session thinking level | none - no suffix | - |
+
+For foreground and background `tasks` calls, a task's own model wins over the top-level model, which wins over the agent's pin. Only non-empty strings count as models at the call and task levels; an empty top-level model adds no default. Inheritance keeps model strings unchanged, including whitespace.
 
 `model: false` / `thinking: false` in a builtin override clear the pin, so the agent inherits. There is no setting for "use pi's default model": pin a model to diverge from the parent. Values are captured at dispatch; a running async job does not follow a later `/model` switch, and a resume of an unpinned agent picks up the parent's then-current values. A parent model unavailable to the child (missing key, or an extension provider excluded by an agent's `extensions:` setting) fails like an explicitly pinned unknown model; `fallbackModels` behavior is unchanged.
 
