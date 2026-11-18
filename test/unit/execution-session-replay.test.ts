@@ -12,6 +12,7 @@ const identity = { runId: "run", childId: "child", attemptId: "attempt" };
 function report(kind: string, sequence: number, extras = {}, entry = {}) { return { type: "custom", id: `r${sequence}`, parentId: sequence === 1 ? null : `r${sequence - 1}`, customType: "pi-cohort:execution-report:v1", data: { protocolVersion: 1, kind, ...identity, sequence, timestamp: "2026-09-06T00:00:00.000Z", ...extras }, ...entry }; }
 function replay(entries: unknown[]) { return replayExecutionSession(entries.map(JSON.stringify).join("\n") + "\n", identity); }
 const lifecycle = () => [report("ready", 1), report("settled", 2), report("result", 3, { outcome: "success", finalOutput: "done" })];
+const parentTurn = { role: "assistant" as const, content: [{ type: "text" as const, text: "parent answer" }], api: "openai-completions", provider: "test", model: "parent-model", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0.5, output: 0.5, cacheRead: 0, cacheWrite: 0, total: 1 } }, stopReason: "stop" as const, timestamp: 2 };
 
 describe("execution session replay", () => {
 	it("owns only entries appended after ready even when the final branch rewinds into inherited history", () => {
@@ -19,7 +20,6 @@ describe("execution session replay", () => {
 		try {
 			const parent = SessionManager.create(directory, path.join(directory, "parent"));
 			parent.appendMessage({ role: "user", content: "parent task", timestamp: 1 });
-			const parentTurn = { role: "assistant" as const, content: [{ type: "text" as const, text: "parent answer" }], api: "openai-completions", provider: "test", model: "parent-model", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0.5, output: 0.5, cacheRead: 0, cacheWrite: 0, total: 1 } }, stopReason: "stop" as const, timestamp: 2 };
 			parent.appendMessage(parentTurn);
 			const forkPoint = parent.appendUsage("cache_warm", "test", "parent-model", parentTurn.usage).id;
 			const charge = (total: number) => ({ ...parentTurn.usage, cost: { ...parentTurn.usage.cost, input: total, output: 0, total } });
@@ -107,10 +107,28 @@ describe("execution session replay", () => {
 	});
 
 	for (const mismatch of [{ childId: "wrong" }, { runId: "wrong" }]) it(`rejects a mismatched ${Object.keys(mismatch)[0]} only after the attempt claims its stream`, () => {
-		const inherited = report("ready", 1, mismatch, { id: "inherited-ready" });
-		assert.deepEqual(replay([inherited]).reports, []);
-		assert.deepEqual(replay([inherited, report("ready", 1)]).reports, [report("ready", 1).data]);
-		assert.throws(() => replay([report("ready", 1), inherited]), /correlation/);
+		const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "session-replay-fork-")));
+		try {
+			const parent = SessionManager.create(directory, path.join(directory, "parent"));
+			const partialReady = report("ready", 1, mismatch).data;
+			const inheritedId = parent.appendCustomEntry(EXECUTION_REPORT_TYPE, partialReady);
+			parent.appendMessage({ role: "user", content: "parent task", timestamp: 1 });
+			parent.appendMessage(parentTurn);
+			const resolver = createForkContextResolver(parent, "fork", { sessionDirForIndex: () => path.join(directory, "child") });
+			const sessionFile = resolver.sessionFileForIndex(0, directory);
+			assert.ok(sessionFile);
+			const child = SessionManager.open(sessionFile);
+			assert.deepEqual(child.getEntry(inheritedId), parent.getEntry(inheritedId));
+			const read = () => replayExecutionSession(fs.readFileSync(sessionFile, "utf8"), identity);
+			assert.deepEqual(read().reports, []);
+			const ownReady = report("ready", 1).data;
+			child.appendCustomEntry(EXECUTION_REPORT_TYPE, ownReady);
+			assert.deepEqual(read().reports, [ownReady]);
+			child.appendCustomEntry(EXECUTION_REPORT_TYPE, partialReady);
+			assert.throws(read, /execution report correlation mismatch/);
+		} finally {
+			fs.rmSync(directory, { recursive: true, force: true });
+		}
 	});
 
 	it("rejects sequence gaps and duplicates", () => {
