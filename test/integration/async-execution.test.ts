@@ -2378,7 +2378,7 @@ ${script}`);
 				fs.unlinkSync(eventsPath);
 				fs.mkdirSync(eventsPath);
 			},
-		}), { syscall: "open", path: eventsPath });
+		}), { code: "EISDIR" });
 	});
 
 	for (const state of [
