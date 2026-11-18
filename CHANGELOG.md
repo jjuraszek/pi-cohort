@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [8.4.2] - 2026-11-18
 
 ### Fixed
 - Foreground and background parallel tasks and chain steps now inherit the call's `model` ahead of the agent's pin. A chain's parallel group can override the call model for its children; a child's own model wins. (#75)
