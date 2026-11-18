@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { ChildHostAttempt, ChildHostController, ChildHostExit } from "../../src/execution-backend/child-host-controller.ts";
 import type { ExecutionControlChannel } from "../../src/execution-backend/control-channel.ts";
 import { replayExecutionSession, type ReplayedSession } from "../../src/execution-backend/session-replay.ts";
@@ -18,6 +19,8 @@ import {
 	type ExternalExecutionDependencies,
 } from "../../src/runs/shared/external-execution.ts";
 import { DEFAULT_CONTROL_CONFIG } from "../../src/runs/shared/subagent-control.ts";
+import { createForkContextResolver } from "../../src/shared/fork-context.ts";
+import { EXECUTION_REPORT_PROTOCOL_VERSION, EXECUTION_REPORT_TYPE, type ExecutionReport } from "../../src/execution-backend/reporting-protocol.ts";
 
 const identity = { runId: "run", childId: "child", attemptId: "attempt" };
 const handle: ExecutionSurfaceHandle = { protocolVersion: 1, backend: "fake", surface: { kind: "pane", id: "p1" }, display: { label: "fake pane", hint: "safe" }, data: "SUCCESS fake terminal text" };
@@ -48,14 +51,16 @@ const assistant = {
 function sessionContent(outcome: "success" | "failed" | "interrupted" = "success", controls: readonly ("abort" | "shutdown")[] = [], attemptId = "attempt", messageOverrides: Record<string, unknown> = {}): string {
 	const reportIdentity = { ...identity, attemptId };
 	const assistantId = `${attemptId}-assistant`;
-	let content = `${JSON.stringify({ type: "message", id: assistantId, parentId: null, message: { ...assistant, ...messageOverrides } })}\n`;
-	content += line("ready", 1, {}, {}, reportIdentity);
-	content += line("settled", 2, {}, {}, reportIdentity);
-	content += line("result", 3, { outcome, finalOutput: "done", ...(outcome === "failed" ? { error: "failed safely" } : {}) }, { parentId: assistantId }, reportIdentity);
+	let content = line("ready", 1, {}, {}, reportIdentity);
+	content += `${JSON.stringify({ type: "message", id: assistantId, parentId: `${attemptId}-report-1`, message: { ...assistant, ...messageOverrides } })}\n`;
+	content += line("settled", 2, {}, { parentId: assistantId }, reportIdentity);
+	content += line("result", 3, { outcome, finalOutput: "done", ...(outcome === "failed" ? { error: "failed safely" } : {}) }, { parentId: `${attemptId}-report-2` }, reportIdentity);
 	let sequence = 4;
 	for (const action of controls) {
-		content += line("control", sequence++, { action, state: "requested" }, {}, reportIdentity);
-		content += line("control", sequence++, { action, state: "applied" }, {}, reportIdentity);
+		for (const state of ["requested", "applied"]) {
+			content += line("control", sequence, { action, state }, { parentId: `${attemptId}-report-${sequence - 1}` }, reportIdentity);
+			sequence++;
+		}
 	}
 	return content;
 }
@@ -207,6 +212,77 @@ describe("external foreground execution owner", () => {
 		assert.deepEqual(result.usage, { input: 2, output: 3, cacheRead: 4, cacheWrite: 5, cost: 1, turns: 1 });
 		assert.deepEqual(result.exit, { code: 0, signal: null });
 		assert.deepEqual(fake.controls, ["shutdown"]);
+	});
+
+	for (const context of ["fresh", "fork"] as const) it(`counts only the ${context} child's own priced turn and model from its saved session`, async () => {
+		const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "external-owner-usage-")));
+		try {
+			const childDirectory = path.join(directory, "child");
+			let child: SessionManager;
+			if (context === "fork") {
+				const parent = SessionManager.create(directory, path.join(directory, "parent"));
+				parent.appendMessage({ role: "user", content: "parent task", timestamp: 1 });
+				for (let index = 0; index < 3; index++) parent.appendMessage(assistant);
+				const resolver = createForkContextResolver(parent, "fork", { sessionDirForIndex: () => childDirectory });
+				const forkFile = resolver.sessionFileForIndex(0, directory);
+				assert.ok(forkFile);
+				child = SessionManager.open(forkFile);
+				assert.deepEqual(child.getBranch(), parent.getBranch(), "the real resolver copies parent entries with their ids");
+			} else {
+				child = SessionManager.create(directory, childDirectory);
+			}
+			const sessionFile = child.getSessionFile();
+			assert.ok(sessionFile);
+			const ownAssistant = {
+				...assistant,
+				model: "child-model",
+				content: [{ type: "text" as const, text: "child answer" }],
+				usage: { input: 20, output: 30, cacheRead: 40, cacheWrite: 50, totalTokens: 140, cost: { input: 0.05, output: 0.1, cacheRead: 0.05, cacheWrite: 0.05, total: 0.25 } },
+			};
+			let sequence = 0;
+			const report = (kind: ExecutionReport["kind"], extras: Record<string, unknown> = {}) => child.appendCustomEntry(EXECUTION_REPORT_TYPE, {
+				protocolVersion: EXECUTION_REPORT_PROTOCOL_VERSION, ...identity, kind, sequence: ++sequence, timestamp: "2026-11-18T00:00:00.000Z", ...extras,
+			});
+			const fake = harness();
+			fake.controller.startAttempt = async () => {
+				child = SessionManager.open(sessionFile);
+				report("ready");
+				child.appendMessage({ role: "user", content: "child task", timestamp: 3 });
+				child.appendMessage(ownAssistant);
+				report("settled");
+				report("result", { outcome: "success", finalOutput: "child answer" });
+				return { status: 0, signal: null };
+			};
+			const owner = await createExternalExecution({ backend: fake.backend, runId: identity.runId, childId: identity.childId, cwd: directory, signal: new AbortController().signal }, {
+				createController: fake.dependencies.createController,
+				async createControl() {
+					return {
+						configPath: path.join(directory, "report-config.json"),
+						connected: Promise.resolve(),
+						async request(action) {
+							assert.equal(action, "shutdown");
+							report("control", { action, state: "requested" });
+							report("control", { action, state: "applied" });
+							return "shutdown-id";
+						},
+						async close() {},
+					};
+				},
+			});
+			fake.ready.resolve();
+			try {
+				const result = await owner.runAttempt(request({ sessionFile, cwd: directory }));
+				assert.deepEqual({ turns: result.turns, cost: result.usage.cost, model: result.model }, { turns: 1, cost: 0.25, model: "child-model" });
+				assert.deepEqual(result.usage, { input: 20, output: 30, cacheRead: 40, cacheWrite: 50, cost: 0.25, turns: 1 });
+				assert.equal(result.finalOutput, "child answer");
+				const saved = SessionManager.open(sessionFile).getEntries();
+				assert.equal(saved.filter(entry => entry.type === "message" && entry.message.role === "assistant").length, context === "fork" ? 4 : 1, "attribution must not remove saved history");
+			} finally {
+				await owner.finish("retained");
+			}
+		} finally {
+			fs.rmSync(directory, { recursive: true, force: true });
+		}
 	});
 
 	it("creates an absent session and rejects unsafe existing paths", async () => {
