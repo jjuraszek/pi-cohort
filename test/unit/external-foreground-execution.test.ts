@@ -4,6 +4,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { runSync } from "../../src/runs/foreground/execution.ts";
+import { createMockPi, makeAgent } from "../support/helpers.ts";
+import { forkWithParentEdit } from "../support/fork-with-parent-edit.ts";
 import type { ChildHostAttempt, ChildHostController, ChildHostExit } from "../../src/execution-backend/child-host-controller.ts";
 import type { ExecutionControlChannel } from "../../src/execution-backend/control-channel.ts";
 import { replayExecutionSession, type ReplayedSession } from "../../src/execution-backend/session-replay.ts";
@@ -286,6 +289,50 @@ describe("external foreground execution owner", () => {
 		} finally {
 			fs.rmSync(directory, { recursive: true, force: true });
 		}
+	});
+
+	it("does not credit a forked foreground worker for its parent's edit", async t => {
+		const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "foreground-edit-")));
+		t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+		const mock = createMockPi();
+		mock.install();
+		t.after(() => mock.uninstall());
+		const { sessionFile } = forkWithParentEdit(directory);
+		const fake = harness();
+		fake.ready.resolve();
+		const result = await runSync(directory, [makeAgent("worker")], "worker", "Edit file.txt", {
+			runtime: mock.runtime, sessionFile, runId: "edit-run", acceptance: { level: "none", reason: "exercise the completion guard" },
+		}, {
+			selectBackend: async () => ({ selection: { kind: "external", backend: fake.backend, detection: await fake.backend.detect() }, diagnostics: [] }),
+			createExternalOwner: options => createExternalExecution(options, {
+				createController: fake.dependencies.createController,
+				async createControl(reportIdentity) {
+					const child = SessionManager.open(sessionFile);
+					let sequence = 0;
+					const report = (kind: ExecutionReport["kind"], extra: Record<string, unknown> = {}) => child.appendCustomEntry(EXECUTION_REPORT_TYPE, {
+						protocolVersion: EXECUTION_REPORT_PROTOCOL_VERSION, ...reportIdentity, kind, sequence: ++sequence, timestamp: new Date().toISOString(), ...extra,
+					});
+					fake.controller.startAttempt = async () => {
+						report("ready");
+						child.appendMessage(assistant);
+						report("settled");
+						report("result", { outcome: "success", finalOutput: "answer" });
+						return { status: 0, signal: null };
+					};
+					return {
+						configPath: path.join(directory, "report-config.json"), connected: Promise.resolve(),
+						async request(action) {
+							report("control", { action, state: "requested" });
+							report("control", { action, state: "applied" });
+							return `${action}-id`;
+						},
+						async close() {},
+					};
+				},
+			}),
+		});
+		assert.match(result.error ?? "", /completed without making edits/);
+		assert.equal(result.exitCode, 1);
 	});
 
 	it("creates an absent session and rejects unsafe existing paths", async () => {

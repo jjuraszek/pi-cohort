@@ -25,6 +25,7 @@ import { DEFAULT_CONTROL_CONFIG } from "../../src/runs/shared/subagent-control.t
 import { getArtifactPaths } from "../../src/shared/artifacts.ts";
 import { PINNED_AGENT_DIR } from "../../src/shared/agent-dir.ts";
 import { createMockPi, createTempDir, removeTempDir } from "../support/helpers.ts";
+import { forkWithParentEdit } from "../support/fork-with-parent-edit.ts";
 
 const mockPi = createMockPi();
 function fixtureRuntime(cwd: string) {
@@ -42,7 +43,7 @@ const unixOnly = { skip: process.platform === "win32" };
 // It reads --session <file> from args, connects to the control socket, and
 // writes session entries directly. The --extension arg (injected by
 // runExternalBackgroundAttempt) is silently ignored.
-function makeFixtureScript(outcome: "success" | "fail" | "missing-result" | "interrupted", argsPath?: string) {
+function makeFixtureScript(outcome: "success" | "fail" | "missing-result" | "interrupted", argsPath?: string, initialParentId: string | null = null) {
 	return `#!/usr/bin/env node
 "use strict";
 const fs = require("node:fs");
@@ -57,7 +58,7 @@ if (${JSON.stringify(outcome)} === "missing-result") process.exit(0);
 const config = JSON.parse(fs.readFileSync(process.env.PI_COHORT_REPORT_CONFIG, "utf8"));
 let sequence = 0;
 let reportSequence = 0;
-let parentId = null;
+let parentId = ${JSON.stringify(initialParentId)};
 const append = entry => {
   const id = "entry-" + (++sequence);
   fs.appendFileSync(sessionFile, JSON.stringify({ id, parentId, ...entry }) + "\\n");
@@ -184,12 +185,13 @@ function promptTempDir(argsPath: string): string {
 	return path.dirname(promptPath);
 }
 
-test("runExternalBackgroundAttempt: success path writes session, returns exitCode 0 and handle", unixOnly, async () => {
+for (const context of ["fresh", "fork"] as const) test(`runExternalBackgroundAttempt: ${context} child with no edits succeeds without a mutation flag`, unixOnly, async () => {
 	const tempDir = createTempDir("bg-ext-success-");
+	const fork = context === "fork" ? forkWithParentEdit(tempDir) : undefined;
 	const binDir = path.join(tempDir, "bin");
 	const fixturePath = path.join(binDir, "pi");
 	fs.mkdirSync(binDir);
-	fs.writeFileSync(fixturePath, makeFixtureScript("success"), { mode: 0o755 });
+	fs.writeFileSync(fixturePath, makeFixtureScript("success", undefined, fork?.leafId), { mode: 0o755 });
 
 	const requests: ExecutionSurfaceRequest[] = [];
 	const hosts: ReturnType<typeof spawn>[] = [];
@@ -199,7 +201,7 @@ test("runExternalBackgroundAttempt: success path writes session, returns exitCod
 	const savedPath = process.env.PATH;
 	process.env.PATH = `${binDir}${path.delimiter}${savedPath ?? ""}`;
 
-	const sessionFile = path.join(tempDir, "session-attempt-0.jsonl");
+	const sessionFile = fork?.sessionFile ?? path.join(tempDir, "session-attempt-0.jsonl");
 	const abort = new AbortController();
 
 	try {
@@ -226,6 +228,7 @@ test("runExternalBackgroundAttempt: success path writes session, returns exitCod
 		await owner.finish("delivered");
 
 		assert.equal(result.exitCode, 0, `expected success but got: ${result.error}`);
+		assert.equal(result.observedMutationAttempt, false);
 		assert.equal(result.finalOutput, "background answer");
 		assert.equal(result.interrupted, false);
 		assert.ok(!result.error, `unexpected error: ${result.error}`);
