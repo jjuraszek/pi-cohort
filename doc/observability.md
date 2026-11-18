@@ -20,7 +20,7 @@ foreground, background/async, and nested fanout. It is distinct from the
 built-in `$` figure, which counts the main loop only; the gap between them is
 your subagent spend.
 
-A forked pane child's reported turns and assistant spend exclude copied parent turns. The child's own pane footer still shows the whole conversation's spend; that footer does not feed the parent's total.
+A pane attempt counts its own assistant turns and the charges on its final branch, including cache warming, compaction and branch summaries. A retry on the same saved conversation does not count the earlier attempt again. A forked child's pane footer still shows the whole conversation's spend, including copied parent turns; that footer does not feed the parent's total.
 
 The total is per-session: it is zeroed on a new session, seeded from prior spend
 on resume, and only ever rises within a session for the main/sync/async slices

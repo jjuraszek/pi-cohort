@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionMessageEntry } from "@earendil-works/pi-coding-agent";
-import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Message, Usage } from "@earendil-works/pi-ai";
 import { EXECUTION_REPORT_TYPE, type ExecutionReport, type ExecutionReportIdentity, validateExecutionReport } from "./reporting-protocol.ts";
 
 export interface ReplayedSession {
@@ -8,6 +8,8 @@ export interface ReplayedSession {
 	readonly controls: readonly (ExecutionReport & { readonly kind: "control" })[];
 	/** Owned messages on the terminal branch (only present when `result` is set). */
 	readonly messages: readonly SessionMessageEntry["message"][];
+	/** Non-message usage on the same owned terminal branch as messages. */
+	readonly charges: readonly Usage[];
 	/**
 	 * Messages appended after this attempt's ready report, in document order.
 	 * Empty until ready; available before the terminal result arrives.
@@ -18,7 +20,7 @@ export interface ReplayedSession {
 	readonly pendingResult: boolean;
 	readonly incompleteTrailingLine: boolean;
 }
-interface SessionEntry { readonly type: string; readonly id?: string; readonly parentId?: string | null; readonly message?: AgentMessage; readonly customType?: string; readonly data?: unknown }
+interface SessionEntry { readonly type: string; readonly id?: string; readonly parentId?: string | null; readonly message?: AgentMessage; readonly usage?: unknown; readonly customType?: string; readonly data?: unknown }
 interface ReportedEntry { readonly entry: SessionEntry; readonly report: ExecutionReport }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -27,7 +29,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function isContent(value: unknown): boolean {
 	return Array.isArray(value) && value.every((part) => isRecord(part) && typeof part.type === "string");
 }
-function isUsage(value: unknown): boolean {
+function isUsage(value: unknown): value is Usage {
 	return isRecord(value) && ["input", "output", "cacheRead", "cacheWrite", "totalTokens"].every((key) => typeof value[key] === "number")
 		&& isRecord(value.cost) && ["input", "output", "cacheRead", "cacheWrite", "total"].every((key) => typeof value.cost[key] === "number");
 }
@@ -134,7 +136,11 @@ export function replayExecutionSession(content: string, identity: ExecutionRepor
 	const pendingMessages = messagesFrom([...ownedEntries]);
 	const reports = reportedEntries.map(({ report }) => report);
 	const controls = reports.filter((report): report is ExecutionReport & { kind: "control" } => report.kind === "control");
-	return { reports, controls, messages, pendingMessages, result, pendingResult: settled && !result, incompleteTrailingLine: trailing.length > 0 };
+	return { reports, controls, messages, charges: chargesFrom(branch), pendingMessages, result, pendingResult: settled && !result, incompleteTrailingLine: trailing.length > 0 };
+}
+
+function chargesFrom(entries: readonly SessionEntry[]): Usage[] {
+	return entries.flatMap(entry => entry.type !== "message" && isUsage(entry.usage) ? [entry.usage] : []);
 }
 
 function messagesFrom(entries: readonly SessionEntry[]): readonly SessionMessageEntry["message"][] {

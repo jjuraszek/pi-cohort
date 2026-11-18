@@ -6,7 +6,7 @@ import { describe, it } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { runSync } from "../../src/runs/foreground/execution.ts";
 import { createMockPi, makeAgent } from "../support/helpers.ts";
-import { forkWithParentEdit } from "../support/fork-with-parent-edit.ts";
+import { editCall, forkWithParentEdit } from "../support/fork-with-parent-edit.ts";
 import type { ChildHostAttempt, ChildHostController, ChildHostExit } from "../../src/execution-backend/child-host-controller.ts";
 import type { ExecutionControlChannel } from "../../src/execution-backend/control-channel.ts";
 import { replayExecutionSession, type ReplayedSession } from "../../src/execution-backend/session-replay.ts";
@@ -333,6 +333,51 @@ describe("external foreground execution owner", () => {
 		});
 		assert.match(result.error ?? "", /completed without making edits/);
 		assert.equal(result.exitCode, 1);
+	});
+
+	it("counts each attempt's turns and charges once when a fallback reuses the saved session", async t => {
+		const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "foreground-retry-")));
+		t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+		const mock = createMockPi();
+		mock.install();
+		t.after(() => mock.uninstall());
+		const { sessionFile } = forkWithParentEdit(directory);
+		const agent = makeAgent("worker", { model: "primary", fallbackModels: ["fallback"] });
+		const fake = harness();
+		fake.ready.resolve();
+		fake.controller.startAttempt = async ({ args, attemptId }) => {
+			assert.equal(args[args.indexOf("--session") + 1], sessionFile);
+			const child = SessionManager.open(sessionFile);
+			const model = args[args.indexOf("--model") + 1];
+			const first = model === "primary";
+			let sequence = 0;
+			const report = (kind: ExecutionReport["kind"], extra: Record<string, unknown> = {}) => child.appendCustomEntry(EXECUTION_REPORT_TYPE, {
+				protocolVersion: EXECUTION_REPORT_PROTOCOL_VERSION, runId: "retry", childId: "child-0", attemptId, kind, sequence: ++sequence, timestamp: new Date().toISOString(), ...extra,
+			});
+			report("ready");
+			if (first) {
+				child.appendUsage("cache_warm", assistant.provider, model, assistant.usage);
+				child.appendMessage({ ...assistant, model, content: [editCall], stopReason: "toolUse" });
+			}
+			child.appendMessage({ ...assistant, model, ...(first ? { stopReason: "error" as const, errorMessage: "rate limited" } : {}) });
+			report("settled");
+			report("result", first ? { outcome: "failed", error: "rate limited", finalOutput: "" } : { outcome: "success", finalOutput: "answer" });
+			return { status: first ? 1 : 0, signal: null };
+		};
+		const result = await runSync(directory, [agent], "worker", "Edit file.txt", {
+			runtime: mock.runtime, sessionFile, runId: "retry", acceptance: { level: "none", reason: "exercise the completion guard" },
+		}, {
+			selectBackend: async () => ({ selection: { kind: "external", backend: fake.backend, detection: await fake.backend.detect() }, diagnostics: [] }),
+			createExternalOwner: options => createExternalExecution(options, {
+				createController: fake.dependencies.createController, createControl: fake.dependencies.createControl, createWatcher: fake.dependencies.createWatcher,
+			}),
+		});
+		assert.match(result.error ?? "", /completed without making edits/);
+		assert.deepEqual(result.modelAttempts?.map(attempt => attempt.usage), [
+			{ input: 6, output: 9, cacheRead: 12, cacheWrite: 15, turns: 2, cost: 3 },
+			{ input: 2, output: 3, cacheRead: 4, cacheWrite: 5, turns: 1, cost: 1 },
+		]);
+		assert.deepEqual(result.usage, { input: 8, output: 12, cacheRead: 16, cacheWrite: 20, turns: 3, cost: 4 });
 	});
 
 	it("creates an absent session and rejects unsafe existing paths", async () => {

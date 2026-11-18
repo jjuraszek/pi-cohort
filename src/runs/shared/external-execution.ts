@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import type { ChildSettings } from "./child-settings.ts";
 import type { PiRuntimeIdentity } from "./pi-spawn.ts";
 import { DEFAULT_CONTROL_CONFIG } from "./subagent-control.ts";
-import type { Message } from "@earendil-works/pi-ai";
+import type { Message, Usage } from "@earendil-works/pi-ai";
 import {
 	createChildHostController,
 	type ChildHostController,
@@ -171,25 +171,24 @@ function startDeadline(timeoutMs: number): { readonly expired: Promise<void>; ca
 	return { expired, cancel: () => clearTimeout(timer) };
 }
 
-function usageFrom(messages: readonly Message[]): { usage: ExternalAttemptUsage; model?: string } {
-	let input = 0;
-	let output = 0;
-	let cacheRead = 0;
-	let cacheWrite = 0;
-	let cost = 0;
-	let turns = 0;
+function usageFrom(messages: readonly Message[], charges: readonly Usage[]): { usage: ExternalAttemptUsage; model?: string } {
+	const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
+	const addCharge = (charge: Usage) => {
+		usage.input += charge.input;
+		usage.output += charge.output;
+		usage.cacheRead += charge.cacheRead;
+		usage.cacheWrite += charge.cacheWrite;
+		usage.cost += charge.cost.total;
+	};
 	let model: string | undefined;
 	for (const message of messages) {
 		if (message.role !== "assistant") continue;
-		turns++;
-		input += message.usage?.input ?? 0;
-		output += message.usage?.output ?? 0;
-		cacheRead += message.usage?.cacheRead ?? 0;
-		cacheWrite += message.usage?.cacheWrite ?? 0;
-		cost += message.usage?.cost?.total ?? 0;
+		usage.turns++;
+		addCharge(message.usage);
 		model ??= message.model;
 	}
-	return { usage: { input, output, cacheRead, cacheWrite, cost, turns }, model };
+	for (const charge of charges) addCharge(charge);
+	return { usage, model };
 }
 
 function proveControl(replayed: ReplayedSession, action: "abort" | "shutdown"): void {
@@ -203,7 +202,7 @@ function mapResult(request: ExternalAttemptRequest, replayed: ReplayedSession, e
 	if (!replayed.result) throw new ExternalExecutionDiagnosticError("result_missing");
 	if (validateExit && replayed.result.outcome === "success" && (exit.status !== 0 || exit.signal !== null)) throw new Error("successful durable result conflicts with child exit");
 	const messages = replayed.messages.filter((message): message is Message => message.role === "user" || message.role === "assistant" || message.role === "toolResult");
-	const aggregate = usageFrom(messages);
+	const aggregate = usageFrom(messages, replayed.charges);
 	return {
 		attemptId: request.attemptId,
 		sessionFile: request.sessionFile,
