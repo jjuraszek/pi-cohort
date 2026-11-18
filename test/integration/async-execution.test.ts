@@ -650,7 +650,10 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			});
 			const params = {
 				model: "anthropic/claude-sonnet-4",
-				tasks: agents.map((agent) => ({ agent: agent.name, task: "Do work" })),
+				tasks: [
+					...agents.map((agent) => ({ agent: agent.name, task: "Do work" })),
+					{ agent: "pinned", task: "Use my own model", model: "anthropic/claude-opus-4" },
+				],
 				async: true, clarify: false,
 			};
 			const original = structuredClone(params);
@@ -662,11 +665,12 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			const id = run.details.asyncId;
 			const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf-8")) as AsyncResultPayload;
 			const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf-8")) as AsyncStatusPayload;
-			const expectedModel = `${params.model}${thinking ? `:${thinking}` : ""}`;
+			const expectedModels = [params.model, params.model, "anthropic/claude-opus-4"]
+				.map((value) => `${value}${thinking ? `:${thinking}` : ""}`);
 			assert.equal(payload.success, true);
 			assert.equal(payload.mode, "parallel");
-			assert.deepEqual(status.steps?.map((step) => step.model), [expectedModel, expectedModel]);
-			assert.equal(mockPi.callCount(), 2);
+			assert.deepEqual(status.steps?.map((step) => step.model), expectedModels);
+			assert.equal(mockPi.callCount(), 3);
 			assert.deepEqual(params, original, "inheritance must not mutate the caller's tasks");
 		});
 	}
