@@ -2309,7 +2309,7 @@ SessionManager.open(process.argv[process.argv.indexOf("--session") + 1]);
 ${script}`);
 		mockPi.onCall({ sessionSummaries: [savedSummary("first-attempt")], stderr: "429 rate limit exceeded", exitCode: 1 });
 		const streamed = savedSummary("stream-and-disk");
-		mockPi.onCall({ sessionSummaries: [streamed, savedSummary("second-attempt")], jsonl: [
+		mockPi.onCall({ sessionSummaries: [savedSummary("second-attempt")], jsonl: [
 			{ type: "entry_appended", entry: { type: "branch_summary", ...streamed } },
 			events.assistantMessage("Recovered"),
 		] });
@@ -2333,16 +2333,23 @@ ${script}`);
 
 	for (const state of [
 		"missing-before-start", "fresh-empty-suffix", "reused-empty-suffix", "missing-after-turn", "malformed", "truncated",
-		"fresh-header-only", "reused-prefix-only", "lost-assistant", "lost-second-user", "lost-second-assistant", "replaced", "fresh-replaced",
+		"fresh-header-only", "reused-prefix-only", "lost-assistant", "lost-second-user", "lost-second-assistant",
+		"intact-tool-result", "lost-tool-result", "intact-entry-append", "lost-entry-append", "lost-system", "lost-custom", "replaced", "fresh-replaced",
 	] as const) {
 		const neverStarted = state === "missing-before-start";
 		const emptySuffix = state === "fresh-empty-suffix" || state === "reused-empty-suffix";
 		const noCompletedMessages = neverStarted || emptySuffix;
 		const disappeared = state === "missing-after-turn";
+		const intact = state === "intact-tool-result" || state === "intact-entry-append";
+		const toolScenario = state === "intact-tool-result" || state === "lost-tool-result";
 		const shortfalls: Partial<Record<typeof state, RegExp>> = {
 			"lost-assistant": /assistant \(observed 1, saved 0\)/,
 			"lost-second-user": /user \(observed 2, saved 1\)/,
 			"lost-second-assistant": /assistant \(observed 2, saved 1\)/,
+			"lost-tool-result": /toolResult \(observed 1, saved 0\)/,
+			"lost-entry-append": /setup-entry/,
+			"lost-system": /system \(observed 1, saved 0\)/,
+			"lost-custom": /custom \(observed 1, saved 0\)/,
 		};
 		const shortfall = shortfalls[state];
 		const suffixLost = state === "fresh-header-only" || state === "reused-prefix-only" || shortfall !== undefined;
@@ -2351,7 +2358,7 @@ ${script}`);
 		const name = noCompletedMessages ? `streaming attempt stays silent with ${state}`
 			: disappeared ? "fresh streaming attempt diagnoses a missing session after a paid turn"
 			: state === "fresh-replaced" ? "fresh streaming attempt rejects a replaced session file"
-			: `streaming saved summaries preserve event spend with a ${state} session`;
+			: `streaming transcript completeness: ${state}`;
 		it(name, async t => {
 			const runner = await tryImport<typeof import("../../src/runs/background/subagent-runner.ts")>("./src/runs/background/subagent-runner.ts");
 			assert.ok(runner);
@@ -2359,7 +2366,23 @@ ${script}`);
 			const header = JSON.stringify({ type: "session", version: 3, id: "existing", cwd: tempDir }) + "\n";
 			const reply = events.assistantMessage("Done");
 			const user = { type: "message_end", message: { role: "user", content: "Prompt", timestamp: 2 } };
-			const jsonl = state === "lost-assistant" ? [user, reply]
+			const setupEntry = { type: "entry_appended", entry: { type: "custom", id: "setup-entry", customType: "test" } };
+			const boundaryEntry = { type: "entry_appended", entry: { type: "custom_message", id: "boundary-entry", customType: "test", content: "Boundary hint", display: false } };
+			const custom = { type: "message_end", message: { role: "custom", customType: "test", content: "Hint", display: false, timestamp: 2 } };
+			const system = { type: "message_end", message: { role: "system", content: "Instruction", timestamp: 2 } };
+			const toolResult = { type: "message_end", message: {
+				role: "toolResult", toolCallId: "tool-1", toolName: "report", content: [], isError: false, timestamp: 3,
+				usage: { input: 5, output: 4, cacheRead: 0, cacheWrite: 0, totalTokens: 9, cost: { input: 0.125, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.125 } },
+			} };
+			const toolCall = { ...reply, message: { ...reply.message, stopReason: "toolUse", content: [
+				{ type: "toolCall", id: "tool-1", name: "report", arguments: {} },
+			] } };
+			const jsonl = neverStarted ? [setupEntry, custom, system]
+				: toolScenario ? [system, custom, user, toolCall, toolResult]
+				: state === "intact-entry-append" || state === "lost-entry-append" ? [reply, boundaryEntry, setupEntry]
+				: state === "lost-custom" ? [reply, boundaryEntry, custom]
+				: state === "lost-system" ? [reply, system]
+				: state === "lost-assistant" ? [user, reply]
 				: state === "lost-second-user" ? [user, reply, { ...user, message: { ...user.message, content: "Follow up" } }]
 				: state === "lost-second-assistant" ? [reply, { type: "message_end", message: { role: "assistant", content: [] } }]
 				: emptySuffix ? [{ ...user, type: "message_start" }]
@@ -2371,7 +2394,7 @@ ${script}`);
 			const script = fs.readFileSync(mockPi.runtime.piEntryPath, "utf8");
 			t.after(() => fs.writeFileSync(mockPi.runtime.piEntryPath, script));
 			const change = {
-				"missing-before-start": `await new Promise(resolve => process.stdout.write(${JSON.stringify(header)}, resolve));\nprocess.exit(0);`,
+				"missing-before-start": "",
 				"fresh-empty-suffix": "",
 				"reused-empty-suffix": "",
 				"missing-after-turn": `process.on("exit", () => unlinkSync(session));`,
@@ -2382,6 +2405,12 @@ ${script}`);
 				"lost-assistant": `dropLastEntry();`,
 				"lost-second-user": `dropLastEntry();`,
 				"lost-second-assistant": `dropLastEntry();`,
+				"intact-tool-result": "",
+				"lost-tool-result": `dropLastEntry();`,
+				"intact-entry-append": "",
+				"lost-entry-append": `dropLastEntry();`,
+				"lost-system": `dropLastEntry();`,
+				"lost-custom": `dropLastEntry();`,
 				replaced: `process.on("exit", () => { copyFileSync(session, session + ".replacement"); renameSync(session + ".replacement", session); });`,
 				"fresh-replaced": `process.on("exit", () => {
 	const [header, ...entries] = readFileSync(session, "utf8").split("\\n");
@@ -2407,17 +2436,31 @@ ${script}`);
 				id: state, flatIndex: 0, flatStepCount: 1, outputFile: path.join(tempDir, "output.log"), runtime: mockPi.runtime,
 			});
 			assert.equal(result.exitCode, 0, result.error);
-			assert.deepEqual(result.modelAttempts?.[0]?.usage, noCompletedMessages
-				? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 }
-				: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, cost: 0.001, turns: 1 });
 			const diagnostics = fs.readFileSync(path.join(tempDir, "events.jsonl"), "utf8").trim().split("\n")
 				.map(line => JSON.parse(line)).filter(entry => entry.type === "subagent.child.accounting");
-			assert.equal(diagnostics.length, noCompletedMessages ? 0 : 1);
+			assert.equal(diagnostics.length, noCompletedMessages || intact ? 0 : 1, JSON.stringify(diagnostics));
+			const expected = noCompletedMessages
+				? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 }
+				: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, cost: 0.001, turns: 1 };
+			if (toolScenario) {
+				expected.input += toolResult.message.usage.input;
+				expected.output += toolResult.message.usage.output;
+				expected.cost += toolResult.message.usage.cost.total;
+			}
+			if (intact) {
+				const { usage } = savedSummary("ambiguous");
+				expected.input += usage.input;
+				expected.output += usage.output;
+				expected.cacheRead += usage.cacheRead;
+				expected.cacheWrite += usage.cacheWrite;
+				expected.cost += usage.cost.total;
+			}
+			assert.deepEqual(result.modelAttempts?.[0]?.usage, expected);
 			if (disappeared) assert.match(diagnostics[0].message, /missing/i);
 			if (suffixLost) assert.match(diagnostics[0].message, /truncated/i);
 			if (shortfall) assert.match(diagnostics[0].message, shortfall);
 			if (state === "fresh-replaced") assert.match(diagnostics[0].message, /replaced/i);
-			if (fresh && !neverStarted && !disappeared) {
+			if (fresh && !noCompletedMessages && !disappeared) {
 				const args = readMockPiArgs(mockPi, 0);
 				assert.ok(args.includes("--session"));
 				assert.equal(result.sessionFile, args[args.indexOf("--session") + 1]);
@@ -2455,7 +2498,7 @@ ${script}`);
 			exitCode: 1,
 		});
 		mockPi.onCall({ jsonl: [
-			{ type: "entry_appended", entry: { type: "usage", kind: "cache_warm", usage: { input: 3, output: 0, cacheRead: 0, cacheWrite: 8, cost: { total: 0.125 } } } },
+			{ type: "entry_appended", entry: { type: "usage", id: "cache-warm", kind: "cache_warm", usage: { input: 3, output: 0, cacheRead: 0, cacheWrite: 8, cost: { total: 0.125 } } } },
 			events.assistantMessage("Recovered asynchronously"),
 		] });
 		const id = `async-fallback-${Date.now().toString(36)}`;

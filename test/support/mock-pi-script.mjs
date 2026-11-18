@@ -132,28 +132,24 @@ function isJsonMode(args) {
 	return false;
 }
 
-function writeSessionFile(args) {
+function resolveSessionFile(args) {
 	if (args.includes("--no-session")) return;
 	for (let i = 0; i < args.length; i++) {
 		if (args[i] !== "--session") continue;
 		const sessionFile = args[i + 1];
 		if (!sessionFile) return;
-		fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
-		fs.writeFileSync(sessionFile, "", { flag: "a" });
 		return sessionFile;
 	}
 	const directoryIndex = args.indexOf("--session-dir");
 	const directory = directoryIndex < 0 ? undefined : args[directoryIndex + 1];
 	if (!directory) return;
-	fs.mkdirSync(directory, { recursive: true });
-	const sessionFile = path.join(directory, `${randomUUID()}.jsonl`);
-	fs.writeFileSync(sessionFile, "", { flag: "wx" });
-	return sessionFile;
+	return path.join(directory, `${randomUUID()}.jsonl`);
 }
 
 async function sessionWriter(sessionFile, cwd, jsonMode) {
 	if (!sessionFile) return () => {};
-	const content = fs.readFileSync(sessionFile, "utf8");
+	let flushed = fs.existsSync(sessionFile);
+	const content = flushed ? fs.readFileSync(sessionFile, "utf8") : "";
 	let parentId = null;
 	let header;
 	for (const line of content.split("\n")) {
@@ -167,15 +163,26 @@ async function sessionWriter(sessionFile, cwd, jsonMode) {
 	}
 	if (!content) {
 		header = { type: "session", version: 3, id: randomUUID(), timestamp: new Date().toISOString(), cwd };
-		fs.appendFileSync(sessionFile, `${JSON.stringify(header)}\n`);
+		if (flushed) fs.appendFileSync(sessionFile, `${JSON.stringify(header)}\n`);
 	} else if (!content.endsWith("\n")) {
 		fs.appendFileSync(sessionFile, "\n");
 	}
 	if (jsonMode && header) await writeJsonlLine(header);
+	const pending = [header];
 	return (entry) => {
 		const id = entry.id ?? randomUUID();
-		fs.appendFileSync(sessionFile, `${JSON.stringify({ id, parentId, timestamp: new Date().toISOString(), ...entry })}\n`);
+		const saved = { id, parentId, timestamp: new Date().toISOString(), ...entry };
 		parentId = id;
+		if (flushed) {
+			fs.appendFileSync(sessionFile, `${JSON.stringify(saved)}\n`);
+			return;
+		}
+		pending.push(saved);
+		if (entry.type === "message" && (entry.message.role === "user" || entry.message.role === "assistant")) {
+			fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
+			fs.writeFileSync(sessionFile, pending.map(value => `${JSON.stringify(value)}\n`).join(""), { flag: "wx" });
+			flushed = true;
+		}
 	};
 }
 
@@ -202,7 +209,7 @@ function extractPlainText(entry) {
 	return "";
 }
 
-async function writeResponseEntries(entries, jsonMode, args, persistMessage) {
+async function writeResponseEntries(entries, jsonMode, args, persistEntry) {
 	let sawProviderError = false;
 	for (const entry of entries) {
 		if (entry?.type === "message_end") {
@@ -213,7 +220,24 @@ async function writeResponseEntries(entries, jsonMode, args, persistMessage) {
 				textPart.text = withAcceptanceReport(textPart.text, args);
 			}
 		}
-		if (entry?.type === "message_end" && (entry.message?.role === "user" || entry.message?.role === "assistant")) persistMessage(entry.message);
+		if (entry?.type === "message_end") {
+			const message = entry.message;
+			switch (message?.role) {
+				case "system":
+				case "user":
+				case "assistant":
+				case "toolResult":
+					persistEntry({ type: "message", message });
+					break;
+				case "custom": {
+					const { customType, content, display, details } = message;
+					persistEntry({ type: "custom_message", customType, content, display, details });
+					break;
+				}
+			}
+		} else if (entry?.type === "entry_appended" && entry.entry) {
+			persistEntry(entry.entry);
+		}
 		if (jsonMode) {
 			await writeJsonlLine(entry);
 			continue;
@@ -296,9 +320,8 @@ async function main() {
 		}
 		response.output = `${response.output ?? ""}\n${JSON.stringify(observation)}`;
 	}
-	const persistEntry = await sessionWriter(writeSessionFile(args), selectedCwd, jsonMode);
+	const persistEntry = await sessionWriter(resolveSessionFile(args), selectedCwd, jsonMode);
 	for (const summary of response.sessionSummaries ?? []) persistEntry({ type: "branch_summary", ...summary });
-	const persistMessage = (message) => persistEntry({ type: "message", message });
 	fs.writeFileSync(
 		path.join(queueDir, `call-${Date.now()}-${process.pid}-${Math.random().toString(16).slice(2)}.json`),
 		JSON.stringify({ args }),
@@ -326,24 +349,24 @@ async function main() {
 			}
 			await maybeWriteStructuredOutput(step, false);
 			if (Array.isArray(step?.jsonl) && step.jsonl.length > 0) {
-				await writeResponseEntries(step.jsonl, jsonMode, args, persistMessage);
+				await writeResponseEntries(step.jsonl, jsonMode, args, persistEntry);
 			}
 			if (typeof step?.stderr === "string" && step.stderr.length > 0) {
 				process.stderr.write(step.stderr);
 			}
 		}
 	} else if (Array.isArray(response.jsonl) && response.jsonl.length > 0) {
-		await writeResponseEntries(response.jsonl, jsonMode, args, persistMessage);
+		await writeResponseEntries(response.jsonl, jsonMode, args, persistEntry);
 	} else if (response.echoAgentSettings) {
 		const agentDir = process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), ".pi", "agent");
 		const settings = fs.readFileSync(path.join(agentDir, "settings.json"), "utf-8");
-		await writeResponseEntries([defaultAssistantMessage(settings)], jsonMode, args, persistMessage);
+		await writeResponseEntries([defaultAssistantMessage(settings)], jsonMode, args, persistEntry);
 	} else if (Array.isArray(response.echoEnv) && response.echoEnv.length > 0) {
 		const envSnapshot = Object.fromEntries(response.echoEnv.map((key) => [key, process.env[key] ?? null]));
-		await writeResponseEntries([defaultAssistantMessage(JSON.stringify(envSnapshot))], jsonMode, args, persistMessage);
+		await writeResponseEntries([defaultAssistantMessage(JSON.stringify(envSnapshot))], jsonMode, args, persistEntry);
 	} else if (typeof response.output === "string") {
 		const entry = defaultAssistantMessage(response.output);
-		await writeResponseEntries([entry], jsonMode, args, persistMessage);
+		await writeResponseEntries([entry], jsonMode, args, persistEntry);
 		if (!jsonMode && entry.message.content[0].text === "") await writeStdout("\n");
 	}
 	await maybeWriteStructuredOutput(response, jsonMode);

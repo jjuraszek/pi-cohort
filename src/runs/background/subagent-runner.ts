@@ -170,6 +170,9 @@ interface StepResult {
 
 const ASYNC_INTERRUPT_SIGNAL: NodeJS.Signals = process.platform === "win32" ? "SIGBREAK" : "SIGUSR2";
 
+// Pi's AgentSession persists these message_end roles; other roles can be saved outside that event path.
+const PERSISTED_MESSAGE_ROLES = new Set(["system", "user", "assistant", "toolResult", "custom"]);
+
 function readStreamingSession(file: string) {
 	let fd: number;
 	try {
@@ -355,7 +358,8 @@ function runPiStreaming(
 		let stdoutBuf = "";
 		let stderrBuf = "";
 		let streamedSessionId: string | undefined;
-		const observedMessages = { user: 0, assistant: 0 };
+		const observedMessages = new Map<string, number>();
+		const observedEntryIds = new Set<string>();
 		const messages: Message[] = [];
 		const usage = emptyUsage();
 		const streamedSummaries = new Set<string>();
@@ -417,9 +421,13 @@ function runPiStreaming(
 			onChildEvent?.(event);
 
 			if (event.type === "compaction_end" && event.result?.usage) addCharge(event.result.usage);
-			if (event.type === "entry_appended" && event.entry?.usage && event.entry.type !== "message") {
-				addCharge(event.entry.usage);
-				if (event.entry.type === "branch_summary" && event.entry.id) streamedSummaries.add(event.entry.id);
+			if (event.type === "entry_appended" && event.entry) {
+				const { id, type, usage } = event.entry;
+				if (typeof id === "string") observedEntryIds.add(id);
+				if (usage && type !== "message") {
+					addCharge(usage);
+					if (type === "branch_summary" && id) streamedSummaries.add(id);
+				}
 			}
 
 			if (structuredRun && event.type === "agent_settled") {
@@ -442,7 +450,8 @@ function runPiStreaming(
 				if (text) writeOutputText(text);
 
 				if (event.type !== "message_end") return;
-				if (event.message.role === "user" || event.message.role === "assistant") observedMessages[event.message.role]++;
+				const { role } = event.message;
+				if (PERSISTED_MESSAGE_ROLES.has(role)) observedMessages.set(role, (observedMessages.get(role) ?? 0) + 1);
 				if (event.message.role === "toolResult" && isUsage(event.message.usage)) addCharge(event.message.usage);
 				if (event.message.role !== "assistant") return;
 				if (event.message.model) model = event.message.model;
@@ -596,22 +605,29 @@ function runPiStreaming(
 					if (saved && streamedSessionId !== undefined && saved.entries[0].id !== streamedSessionId) {
 						throw new Error("Session file was replaced: its header does not match the streamed session ID");
 					}
-					// Compaction hides messages from model context but keeps their entries on disk.
-					const ownEntries = saved?.entries.slice(before.length || 1) ?? [];
-					const savedMessages = { user: 0, assistant: 0 };
-					for (const entry of ownEntries) {
-						if (entry.type !== "message") continue;
-						const role = entry.message?.role;
-						if (role === "user" || role === "assistant") savedMessages[role]++;
-					}
-					const shortfalls = (["user", "assistant"] as const)
-						.filter(role => savedMessages[role] < observedMessages[role])
-						.map(role => `${role} (observed ${observedMessages[role]}, saved ${savedMessages[role]})`);
-					if (shortfalls.length) {
-						throw new Error(`${saved ? "Session file was truncated" : "Missing session file"}: ${shortfalls.join(", ")}`);
-					}
-					for (const entry of ownEntries) {
-						if (entry.type === "branch_summary" && entry.usage && !streamedSummaries.has(entry.id)) addCharge(entry.usage);
+					// A fresh session keeps setup entries in memory until its first user or assistant message.
+					if (saved || observedMessages.has("user") || observedMessages.has("assistant")) {
+						const ownEntries = saved?.entries.slice(before.length || 1) ?? [];
+						const savedMessages = new Map<string, number>();
+						const missingEntryIds = new Set(observedEntryIds);
+						for (const entry of ownEntries) {
+							// An entry_appended custom_message is a separate write, not proof of a message_end write.
+							if (entry.type !== "session" && missingEntryIds.delete(entry.id)) continue;
+							const role = entry.type === "custom_message" ? "custom" : entry.type === "message" ? entry.message?.role : undefined;
+							if (role) savedMessages.set(role, (savedMessages.get(role) ?? 0) + 1);
+						}
+						const shortfalls = [];
+						for (const [role, observed] of observedMessages) {
+							const count = savedMessages.get(role) ?? 0;
+							if (count < observed) shortfalls.push(`${role} (observed ${observed}, saved ${count})`);
+						}
+						if (missingEntryIds.size) shortfalls.push(`entry_appended (missing IDs: ${[...missingEntryIds].join(", ")})`);
+						if (shortfalls.length) {
+							throw new Error(`${saved ? "Session file was truncated" : "Missing session file"}: ${shortfalls.join(", ")}`);
+						}
+						for (const entry of ownEntries) {
+							if (entry.type === "branch_summary" && entry.usage && !streamedSummaries.has(entry.id)) addCharge(entry.usage);
+						}
 					}
 				} catch (error) {
 					appendChildEvent({ type: "subagent.child.accounting", sessionFile, message: error instanceof Error ? error.message : String(error) });
