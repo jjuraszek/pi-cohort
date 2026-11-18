@@ -232,8 +232,8 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 
 	it("keeps sibling results when a parallel child reports a blocker", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
 		const blocked = "BLOCKED: select an API\nDone: compared options\nRemaining: implement";
-		mockPi.onCall({ output: blocked });
-		mockPi.onCall({ output: "Sibling completed" });
+		mockPi.onCall({ taskIncludes: "Review docs", output: "Sibling completed" });
+		mockPi.onCall({ taskIncludes: "Implement API", output: blocked });
 		const executor = makeExecutor([makeAgent("blocked"), makeAgent("sibling")]);
 
 		const result = await executor.execute(
@@ -246,8 +246,9 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 
 		assert.equal(result.isError, undefined);
 		assert.equal(result.details?.results?.length, 2);
-		assert.ok(result.details?.results?.some((item: any) => item.exitCode === 1 && item.error === blocked));
-		assert.ok(result.details?.results?.some((item: any) => item.finalOutput === "Sibling completed"));
+		const [blockedChild, sibling] = result.details.results;
+		assert.deepEqual([blockedChild.agent, blockedChild.exitCode, blockedChild.error], ["blocked", 1, blocked]);
+		assert.deepEqual([sibling.agent, sibling.exitCode, sibling.finalOutput], ["sibling", 0, "Sibling completed"]);
 		assert.match(result.content[0]?.text ?? "", /BLOCKED: select an API/);
 		assert.match(result.content[0]?.text ?? "", /Sibling completed/);
 	});

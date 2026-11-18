@@ -21,7 +21,6 @@ function listPendingFiles(dir) {
 function claimNextResponse(dir, args) {
 	for (const fileName of listPendingFiles(dir)) {
 		const sourcePath = path.join(dir, fileName);
-		const targetPath = path.join(dir, fileName.replace(/^pending-/, "consumed-"));
 		try {
 			const candidate = JSON.parse(fs.readFileSync(sourcePath, "utf-8"));
 			if (candidate.taskIncludes && !args.some((arg) => {
@@ -30,8 +29,9 @@ function claimNextResponse(dir, args) {
 				try { return fs.readFileSync(arg.slice(1), "utf-8").includes(candidate.taskIncludes); }
 				catch { return false; }
 			})) continue;
-			fs.renameSync(sourcePath, targetPath);
-			return JSON.parse(fs.readFileSync(targetPath, "utf-8"));
+			// Claim once without renaming a response another child may have open on Windows.
+			fs.writeFileSync(`${sourcePath}.claimed`, "", { flag: "wx" });
+			return candidate;
 		} catch (error) {
 			if (error && typeof error === "object" && "code" in error) {
 				const code = error.code;
