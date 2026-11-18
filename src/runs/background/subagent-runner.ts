@@ -917,6 +917,11 @@ async function runSingleStepAttempts(
 							onChildEvent: ctx.onChildEvent,
 						});
 					} catch (error) {
+						if (!piArgs) {
+							const message = error instanceof Error ? error.message : String(error);
+							finalResult = { stderr: "", exitCode: 1, messages: [], usage: emptyUsage(), error: message, finalOutput: "" };
+							break;
+						}
 						if (error instanceof PiRuntimeLaunchError) throw error;
 						startDeadlinePassed = error instanceof ExternalStartDeadlineError;
 						const interrupted = isInterruptedExternalAttemptError(error);
@@ -926,9 +931,7 @@ async function runSingleStepAttempts(
 							interrupted,
 							messages: [],
 							usage: await readPendingAttemptUsage(attemptSessionFile, { runId: ctx.id, childId, attemptId }) ?? emptyUsage(),
-							error: interrupted || startDeadlinePassed ? (error as Error).message : piArgs
-								? safeExternalFailure("attempt", error)
-								: error instanceof Error ? error.message : String(error),
+							error: interrupted || startDeadlinePassed ? (error as Error).message : safeExternalFailure("attempt", error),
 							finalOutput: "",
 							executionHandle: externalOwner.handle,
 						};

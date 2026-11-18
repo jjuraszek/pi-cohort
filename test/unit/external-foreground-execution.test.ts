@@ -217,7 +217,13 @@ describe("external foreground execution owner", () => {
 		assert.deepEqual(fake.controls, ["shutdown"]);
 	});
 
-	for (const context of ["fresh", "fork", "pane-fork"] as const) it(`counts only the ${context} child's own priced turn and tool result from its saved session`, async () => {
+	const usageCases = [
+		{ name: "fresh assistant-only child", fork: false, paneReport: false, chargedTool: false },
+		{ name: "forked assistant-only child", fork: true, paneReport: false, chargedTool: false },
+		{ name: "forked child with a charged tool", fork: true, paneReport: false, chargedTool: true },
+		{ name: "forked child with a charged tool and a copied pane report", fork: true, paneReport: true, chargedTool: true },
+	];
+	for (const { name, fork, paneReport, chargedTool } of usageCases) it(`counts only owned usage for a ${name}`, async () => {
 		const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "external-owner-usage-")));
 		const toolResult = {
 			role: "toolResult" as const, toolCallId: "tool-1", toolName: "report", content: [], isError: false, timestamp: 3,
@@ -226,14 +232,14 @@ describe("external foreground execution owner", () => {
 		try {
 			const childDirectory = path.join(directory, "child");
 			let child: SessionManager;
-			if (context !== "fresh") {
+			if (fork) {
 				const parent = SessionManager.create(directory, path.join(directory, "parent"));
-				if (context === "pane-fork") parent.appendCustomEntry(EXECUTION_REPORT_TYPE, {
+				if (paneReport) parent.appendCustomEntry(EXECUTION_REPORT_TYPE, {
 					protocolVersion: EXECUTION_REPORT_PROTOCOL_VERSION, ...identity, runId: "parent-run", kind: "ready", sequence: 1, timestamp: "2026-11-18T00:00:00.000Z",
 				});
 				parent.appendMessage({ role: "user", content: "parent task", timestamp: 1 });
 				for (let index = 0; index < 3; index++) parent.appendMessage(assistant);
-				parent.appendMessage({ ...toolResult, usage: assistant.usage });
+				if (chargedTool) parent.appendMessage({ ...toolResult, usage: assistant.usage });
 				const resolver = createForkContextResolver(parent, "fork", { sessionDirForIndex: () => childDirectory });
 				const forkFile = resolver.sessionFileForIndex(0, directory);
 				assert.ok(forkFile);
@@ -259,7 +265,7 @@ describe("external foreground execution owner", () => {
 				child = SessionManager.open(sessionFile);
 				report("ready");
 				child.appendMessage({ role: "user", content: "child task", timestamp: 3 });
-				child.appendMessage(toolResult);
+				if (chargedTool) child.appendMessage(toolResult);
 				child.appendMessage(ownAssistant);
 				report("settled");
 				report("result", { outcome: "success", finalOutput: "child answer" });
@@ -286,10 +292,12 @@ describe("external foreground execution owner", () => {
 				const result = await owner.runAttempt(request({ sessionFile, cwd: directory }));
 				assert.equal(result.model, "child-model");
 				assert.equal(result.turns, 1);
-				assert.deepEqual(result.usage, { input: 25, output: 34, cacheRead: 43, cacheWrite: 52, cost: 0.75, turns: 1 });
+				assert.deepEqual(result.usage, chargedTool
+					? { input: 25, output: 34, cacheRead: 43, cacheWrite: 52, cost: 0.75, turns: 1 }
+					: { input: 20, output: 30, cacheRead: 40, cacheWrite: 50, cost: 0.25, turns: 1 });
 				assert.equal(result.finalOutput, "child answer");
 				const saved = SessionManager.open(sessionFile).getEntries();
-				assert.equal(saved.filter(entry => entry.type === "message" && entry.message.role === "assistant").length, context === "fresh" ? 1 : 4, "attribution must not remove saved history");
+				assert.equal(saved.filter(entry => entry.type === "message" && entry.message.role === "assistant").length, fork ? 4 : 1, "attribution must not remove saved history");
 			} finally {
 				await owner.finish("retained");
 			}

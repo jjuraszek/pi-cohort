@@ -10,7 +10,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import * as fs from "node:fs";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import * as os from "node:os";
 import { pathToFileURL } from "node:url";
 import * as path from "node:path";
@@ -544,6 +545,8 @@ test(`runSingleStep retains the surface after an external ${failure} failure`, u
 		assert.equal(requests.length, 1);
 		if (failure === "settings-build") {
 			assert.equal(fs.existsSync(`${argsPath}.count`), false, "a settings-build failure must not launch a child");
+			assert.deepEqual(result.modelAttempts, []);
+			assert.equal(result.attemptedModels, undefined);
 			assert.ok(hosts.every(host => host.exitCode !== null || host.signalCode !== null), "the unused host must exit before finalization");
 			assert.ok(closeReasons.every(reason => reason === "explicit_cleanup"), "an unused host may need cleanup but must not be marked delivered");
 		} else {
@@ -967,7 +970,9 @@ await import(${JSON.stringify(pathToFileURL(runnerPath).href)});
 	});
 }
 
-test("noninterrupted fallback reuses the host and closes only after output persistence", unixOnly, async () => {
+for (const setupFails of [false, true]) test(setupFails
+	? "fallback setup failure preserves the paid attempt without launching or recording another"
+	: "noninterrupted fallback reuses the host and closes only after output persistence", unixOnly, async t => {
 	const tempDir = createTempDir("bg-fallback-");
 	const binDir = path.join(tempDir, "bin");
 	const argsPath = path.join(tempDir, "args.json");
@@ -975,7 +980,8 @@ test("noninterrupted fallback reuses the host and closes only after output persi
 	fs.mkdirSync(binDir);
 	const script = makeFixtureScript("success", argsPath)
 		.replace('outcome: "success"', 'outcome: args.includes("first") ? "failed" : "success", error: args.includes("first") ? "rate limit timeout" : ""')
-		.replaceAll('"background answer"', 'args.includes("first") ? "rate limit timeout" : "background answer"');
+		.replaceAll('"background answer"', 'args.includes("first") ? "rate limit timeout" : "background answer"')
+		.replace('cacheWrite: 0, total: 0', 'cacheWrite: 0, total: args.includes("first") ? 0.25 : 0');
 	fs.writeFileSync(path.join(binDir, "pi"), script, { mode: 0o755 });
 	const hosts: ReturnType<typeof spawn>[] = [];
 	const requests: ExecutionSurfaceRequest[] = [];
@@ -985,23 +991,40 @@ test("noninterrupted fallback reuses the host and closes only after output persi
 	} };
 	const name = `bg-fallback-${process.pid}`;
 	const dispose = registerExecutionBackend(makeBackend(name, binDir, requests, hosts, lifecycle));
+	const setupError = "Cannot write fallback prompt";
+	let restorePromptWrite: (() => void) | undefined;
 	try {
-		const result = await runSingleStep({ agent: "worker", task: "Inspect", modelCandidates: ["first", "second"], completionGuard: false, inheritProjectContext: false, inheritSkills: false }, {
+		const result = await runSingleStep({ agent: "worker", task: "Inspect", modelCandidates: ["first", "second"], systemPrompt: "fixture prompt", completionGuard: false, inheritProjectContext: false, inheritSkills: false }, {
 			previousOutput: "", outputs: {}, placeholder: "", cwd: tempDir, sessionEnabled: true,
 			id: "fallback", childId: "child-fallback", flatIndex: 0, flatStepCount: 1, outputFile,
+			onAttemptStart: ({ model }) => {
+				if (!setupFails || model !== "second") return;
+				const write = fs.writeFileSync;
+				const promptWrite = t.mock.method(fs, "writeFileSync", (...args: Parameters<typeof write>) => {
+					const [file] = args;
+					if (typeof file === "string" && path.basename(file) === "worker.md") throw new Error(setupError);
+					return write(...args);
+				});
+				syncBuiltinESMExports();
+				restorePromptWrite = () => { promptWrite.mock.restore(); syncBuiltinESMExports(); };
+			},
 			executionBackendCoordinator: createDetachedExecutionBackendCoordinator({ protocolVersion: 1, registrations: [] }),
 			executionBackendConfig: { protocolVersion: 1, registrations: [], userPreference: name },
 		});
-		assert.equal(result.exitCode, 0, result.error);
-		assert.equal(result.interrupted, false);
-		assert.equal(result.modelAttempts.length, 2);
-		assert.deepEqual(result.modelAttempts.map(attempt => attempt.success), [false, true]);
+		assert.equal(result.exitCode, setupFails ? 1 : 0, result.error);
+		assert.equal(result.error, setupFails ? setupError : undefined);
 		assert.equal(requests.length, 1);
-		assert.equal(fixtureInvocationCount(argsPath), 2);
-		assert.equal(lifecycle.closes, 1);
+		assert.equal(fixtureInvocationCount(argsPath), setupFails ? 1 : 2);
+		assert.deepEqual(result.modelAttempts.map(({ model, success, usage }) => ({ model, success, cost: usage.cost })), setupFails
+			? [{ model: "first", success: false, cost: 0.25 }]
+			: [{ model: "first", success: false, cost: 0.25 }, { model: "second", success: true, cost: 0 }]);
+		assert.deepEqual(result.attemptedModels, setupFails ? ["first"] : ["first", "second"]);
+		if (!setupFails) assert.equal(result.interrupted, false);
+		assert.equal(lifecycle.closes, setupFails ? 0 : 1);
 		assert.equal(lifecycle.releases, 1);
-		assert.equal(result.executionSurface.retained, false);
+		assert.equal(result.executionSurface.retained, setupFails);
 	} finally {
+		restorePromptWrite?.();
 		dispose();
 		await cleanupHosts(hosts);
 		removeTempDir(tempDir);
