@@ -7,7 +7,7 @@
  * Requires pi packages to be importable. Skips gracefully if unavailable.
  */
 
-import { after, afterEach, before, beforeEach, describe, it } from "node:test";
+import { after, afterEach, before, beforeEach, describe, it, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -2297,12 +2297,11 @@ ${script}`);
 		assert.doesNotMatch(fs.readFileSync(path.join(ASYNC_DIR, id, "events.jsonl"), "utf8"), /subagent\.child\.accounting/);
 	});
 
-	it("the detached runner uses the selected host SDK to exclude legacy history and earlier attempts on the same file", async t => {
+	async function runLegacySession(t: TestContext, sdkProbe: string) {
 		const sdk = path.join(mockPi.runtime.piPackageRoot, "dist", "index.js");
-		const marker = path.join(tempDir, "selected-pi-loaded");
 		const originalSdk = fs.readFileSync(sdk, "utf8");
 		t.after(() => fs.writeFileSync(sdk, originalSdk));
-		fs.appendFileSync(sdk, `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(marker)}, import.meta.url);\n`);
+		fs.appendFileSync(sdk, sdkProbe);
 		const file = path.join(tempDir, "legacy.jsonl");
 		const { id: _id, ...legacySummary } = savedSummary("not-used-by-v1");
 		fs.writeFileSync(file, [
@@ -2314,12 +2313,6 @@ ${script}`);
 		fs.writeFileSync(mockPi.runtime.piEntryPath, `import { SessionManager } from ${JSON.stringify(import.meta.resolve("@earendil-works/pi-coding-agent"))};
 SessionManager.open(process.argv[process.argv.indexOf("--session") + 1]);
 ${script}`);
-		mockPi.onCall({ sessionSummaries: [savedSummary("first-attempt")], stderr: "429 rate limit exceeded", exitCode: 1 });
-		const streamed = savedSummary("stream-and-disk");
-		mockPi.onCall({ sessionSummaries: [savedSummary("second-attempt")], jsonl: [
-			{ type: "entry_appended", entry: { type: "branch_summary", ...streamed } },
-			events.assistantMessage("Recovered"),
-		] });
 		const resultPath = path.join(tempDir, "result.json");
 		const cfg = {
 			runtime: mockPi.runtime, id: "legacy", cwd: tempDir, asyncDir: tempDir, sessionDir: tempDir, resultPath,
@@ -2332,15 +2325,41 @@ ${script}`);
 		const { success, results: [result] } = JSON.parse(fs.readFileSync(resultPath, "utf8"));
 		assert.equal(success, true, result.error);
 		assert.equal(result.sessionFile, file);
+		const [header, inherited, ...entries] = fs.readFileSync(file, "utf8").trimEnd().split("\n").map(line => JSON.parse(line));
+		assert.equal(header.version, 3);
+		assert.ok(inherited.id);
+		return { result, entries, sdk };
+	}
+
+	it("the detached runner uses the selected host SDK to exclude legacy history and earlier attempts on the same file", async t => {
+		mockPi.onCall({ sessionSummaries: [savedSummary("first-attempt")], stderr: "429 rate limit exceeded", exitCode: 1 });
+		const streamed = savedSummary("stream-and-disk");
+		mockPi.onCall({ sessionSummaries: [savedSummary("second-attempt")], jsonl: [
+			{ type: "entry_appended", entry: { type: "branch_summary", ...streamed } },
+			events.assistantMessage("Recovered"),
+		] });
+		const marker = path.join(tempDir, "selected-pi-loaded");
+		const { result, sdk } = await runLegacySession(t, `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(marker)}, import.meta.url);\n`);
 		assert.deepEqual(result.modelAttempts.map((attempt: ModelAttempt) => attempt.usage), [
 			{ input: 2, output: 3, cacheRead: 4, cacheWrite: 5, cost: 0.10, turns: 0 },
 			{ input: 104, output: 56, cacheRead: 8, cacheWrite: 10, cost: 0.201, turns: 1 },
 		]);
-		const [header, inherited] = fs.readFileSync(file, "utf8").split("\n").map(line => line && JSON.parse(line));
-		assert.equal(header.version, 3);
-		assert.ok(inherited.id);
 		assert.equal(fs.readFileSync(marker, "utf8"), pathToFileURL(sdk).href);
 		assert.doesNotMatch(fs.readFileSync(path.join(tempDir, "events.jsonl"), "utf8"), /subagent\.child\.accounting/);
+	});
+
+	it("keeps streamed usage when the selected host SDK throws during import", async t => {
+		mockPi.onCall({ sessionSummaries: [savedSummary("disk-only")], jsonl: [events.assistantMessage("Done")] });
+		const { result, entries } = await runLegacySession(t, 'throw new Error("selected SDK import failed");\n');
+		const summary = entries.find(entry => entry.type === "branch_summary" && entry.id === "disk-only");
+		assert.equal(summary?.usage.cost.total, 0.10);
+		assert.deepEqual(result.modelAttempts.map((attempt: ModelAttempt) => attempt.usage), [
+			{ input: 100, output: 50, cacheRead: 0, cacheWrite: 0, cost: 0.001, turns: 1 },
+		]);
+		const diagnostics = fs.readFileSync(path.join(tempDir, "events.jsonl"), "utf8").trimEnd().split("\n")
+			.map(line => JSON.parse(line)).filter(event => event.type === "subagent.child.accounting");
+		assert.equal(diagnostics.length, 1);
+		assert.match(diagnostics[0].message, /selected SDK import failed/);
 	});
 
 	it("rejects a streaming attempt when its close-time diagnostic cannot be written", { timeout: 10_000 }, async () => {
