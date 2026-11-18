@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
+import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { it } from "node:test";
@@ -7,8 +9,10 @@ import { createJitiCliResolver, ensureJitiCliPath, resolveHostModuleAliases } fr
 
 function installation(root: string, bin: string | Record<string, string> = { jiti: "cli.mjs" }): string {
 	fs.mkdirSync(root, { recursive: true });
-	fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent" }));
+	fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", type: "module" }));
 	fs.writeFileSync(path.join(root, "pi.mjs"), "");
+	fs.mkdirSync(path.join(root, "dist"));
+	fs.writeFileSync(path.join(root, "dist", "index.js"), "export function migrateSessionEntries() {}\n");
 	const jiti = path.join(root, "node_modules", "jiti");
 	fs.mkdirSync(jiti, { recursive: true });
 	fs.writeFileSync(path.join(jiti, "package.json"), JSON.stringify({ name: "jiti", bin }));
@@ -35,6 +39,7 @@ it("resolves only the selected installation while argv1 and cwd select B", () =>
 				typebox: path.join(root, "node_modules", "typebox", "index.js"),
 				"typebox/compile": path.join(root, "node_modules", "typebox", "compile.js"),
 				"typebox/value": path.join(root, "node_modules", "typebox", "value.js"),
+				"@earendil-works/pi-coding-agent": path.join(root, "dist", "index.js"),
 			});
 		}
 		fs.rmSync(path.join(a, "node_modules", "jiti"), { recursive: true });
@@ -46,6 +51,27 @@ it("resolves only the selected installation while argv1 and cwd select B", () =>
 		process.argv[1] = argv1;
 		fs.rmSync(temp, { recursive: true, force: true });
 	}
+});
+
+it("loads Pi's migration API in a bare jiti runner outside the selected installation", t => {
+	const temp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "pi-jiti-detached-")));
+	t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+	const host = installation(path.join(temp, "selected host"));
+	const extension = path.join(temp, "extension");
+	fs.mkdirSync(extension);
+	const runner = path.join(extension, "runner.ts");
+	fs.writeFileSync(runner, `import { migrateSessionEntries } from "@earendil-works/pi-coding-agent";
+console.log(typeof migrateSessionEntries);
+`);
+	const jitiCli = path.join(path.dirname(createRequire(import.meta.url).resolve("jiti")), "jiti-cli.mjs");
+	const result = spawnSync(process.execPath, [jitiCli, runner], {
+		cwd: extension,
+		env: { ...process.env, JITI_ALIAS: JSON.stringify(resolveHostModuleAliases(host)) },
+		encoding: "utf8",
+		timeout: 10_000,
+	});
+	assert.equal(result.status, 0, String(result.error ?? result.stderr));
+	assert.equal(result.stdout.trim(), "function");
 });
 
 it("rechecks disappeared and replaced CLI entries without caching the selected root", () => {

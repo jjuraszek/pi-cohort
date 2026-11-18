@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createRequire } from "node:module";
+import { PI_CODING_AGENT_PACKAGE } from "./pi-spawn.ts";
 
 function resolveJitiCliFromPackageJson(packageJsonPath: string): string | undefined {
 	if (!fs.existsSync(packageJsonPath)) return undefined;
@@ -39,14 +40,16 @@ function resolveJitiCliPath(piPackageRoot: string): string | undefined {
 
 // Pi's extension loader aliases these to its own copies; the detached runner boots
 // under the bare jiti CLI, so it gets the same map through JITI_ALIAS.
-const HOST_ALIASED_SPECIFIERS = ["typebox", "typebox/compile", "typebox/value"];
+const HOST_ALIASED_SPECIFIERS = ["typebox", "typebox/compile", "typebox/value", PI_CODING_AGENT_PACKAGE];
 
 export function resolveHostModuleAliases(piPackageRoot: string): Record<string, string> {
 	const require = createRequire(path.join(piPackageRoot, "package.json"));
 	const aliases: Record<string, string> = {};
 	for (const specifier of HOST_ALIASED_SPECIFIERS) {
 		try {
-			aliases[specifier] = require.resolve(specifier);
+			// Pi's loader binds its own ESM entry directly rather than resolving it as a dependency.
+			const request = specifier === PI_CODING_AGENT_PACKAGE ? path.join(piPackageRoot, "dist", "index.js") : specifier;
+			aliases[specifier] = require.resolve(request);
 		} catch (cause) {
 			throw new Error(`Cannot resolve required alias ${specifier} from selected Pi installation ${piPackageRoot}`, { cause });
 		}

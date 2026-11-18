@@ -151,23 +151,27 @@ function writeSessionFile(args) {
 	return sessionFile;
 }
 
-function sessionWriter(sessionFile, cwd) {
+async function sessionWriter(sessionFile, cwd, jsonMode) {
 	if (!sessionFile) return () => {};
 	const content = fs.readFileSync(sessionFile, "utf8");
 	let parentId = null;
+	let header;
 	for (const line of content.split("\n")) {
 		try {
 			const entry = JSON.parse(line);
-			if (entry.type !== "session" && typeof entry.id === "string") parentId = entry.id;
+			if (entry.type === "session") header ??= entry;
+			else if (typeof entry.id === "string") parentId = entry.id;
 		} catch {
 			// Existing fixture sentinels are retained even when they are not JSONL.
 		}
 	}
 	if (!content) {
-		fs.appendFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: randomUUID(), timestamp: new Date().toISOString(), cwd })}\n`);
+		header = { type: "session", version: 3, id: randomUUID(), timestamp: new Date().toISOString(), cwd };
+		fs.appendFileSync(sessionFile, `${JSON.stringify(header)}\n`);
 	} else if (!content.endsWith("\n")) {
 		fs.appendFileSync(sessionFile, "\n");
 	}
+	if (jsonMode && header) await writeJsonlLine(header);
 	return (entry) => {
 		const id = entry.id ?? randomUUID();
 		fs.appendFileSync(sessionFile, `${JSON.stringify({ id, parentId, timestamp: new Date().toISOString(), ...entry })}\n`);
@@ -292,7 +296,7 @@ async function main() {
 		}
 		response.output = `${response.output ?? ""}\n${JSON.stringify(observation)}`;
 	}
-	const persistEntry = sessionWriter(writeSessionFile(args), selectedCwd);
+	const persistEntry = await sessionWriter(writeSessionFile(args), selectedCwd, jsonMode);
 	for (const summary of response.sessionSummaries ?? []) persistEntry({ type: "branch_summary", ...summary });
 	const persistMessage = (message) => persistEntry({ type: "message", message });
 	fs.writeFileSync(

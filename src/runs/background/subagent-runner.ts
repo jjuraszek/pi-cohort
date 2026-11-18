@@ -297,6 +297,7 @@ type ChildMessage = Message & {
 
 interface ChildEvent {
 	type?: string;
+	id?: string;
 	aborted?: boolean;
 	message?: ChildMessage;
 	result?: { usage?: ChildUsage };
@@ -353,6 +354,7 @@ function runPiStreaming(
 		let stderr = "";
 		let stdoutBuf = "";
 		let stderrBuf = "";
+		let streamedSessionId: string | undefined;
 		const messages: Message[] = [];
 		const usage = emptyUsage();
 		const streamedSummaries = new Set<string>();
@@ -409,6 +411,7 @@ function runPiStreaming(
 				return;
 			}
 
+			if (event.type === "session" && typeof event.id === "string") streamedSessionId ??= event.id;
 			appendChildEvent(event);
 			onChildEvent?.(event);
 
@@ -588,6 +591,9 @@ function runPiStreaming(
 						throw new Error("Session file was replaced or its existing prefix changed");
 					}
 					if (saved && !saved.entries.length) throw new Error("Missing session header");
+					if (saved && streamedSessionId !== undefined && saved.entries[0].id !== streamedSessionId) {
+						throw new Error("Session file was replaced: its header does not match the streamed session ID");
+					}
 					for (const entry of saved?.entries.slice(before.length) ?? []) {
 						if (entry.type === "branch_summary" && entry.usage && !streamedSummaries.has(entry.id)) addCharge(entry.usage);
 					}

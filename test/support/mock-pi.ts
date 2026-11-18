@@ -82,6 +82,8 @@ export function createMockPi(): MockPi {
 	const entryPath = path.join(packageRoot, "dist", "cli.mjs");
 	ensureDir(path.dirname(entryPath));
 	fs.copyFileSync(SCRIPT_PATH, entryPath);
+	fs.writeFileSync(path.join(packageRoot, "dist", "index.js"),
+		`export { CURRENT_SESSION_VERSION, migrateSessionEntries } from ${JSON.stringify(import.meta.resolve("@earendil-works/pi-coding-agent"))};\n`);
 	fs.writeFileSync(path.join(packageRoot, "package.json"), JSON.stringify({
 		name: "@earendil-works/pi-coding-agent", type: "module", bin: { pi: "dist/cli.mjs" },
 	}));

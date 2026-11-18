@@ -2315,13 +2315,16 @@ ${script}`);
 		assert.doesNotMatch(fs.readFileSync(path.join(tempDir, "events.jsonl"), "utf8"), /subagent\.child\.accounting/);
 	});
 
-	for (const state of ["missing", "malformed", "truncated", "replaced"] as const) {
-		it(`streaming saved summaries preserve event spend with a ${state} session`, async t => {
+	for (const state of ["missing", "malformed", "truncated", "replaced", "fresh-replaced"] as const) {
+		const fresh = state === "missing" || state === "fresh-replaced";
+		const name = state === "fresh-replaced" ? "fresh streaming attempt rejects a replaced session file"
+			: `streaming saved summaries preserve event spend with a ${state} session`;
+		it(name, async t => {
 			const runner = await tryImport<typeof import("../../src/runs/background/subagent-runner.ts")>("./src/runs/background/subagent-runner.ts");
 			assert.ok(runner);
 			const file = path.join(tempDir, "existing.jsonl");
 			const header = JSON.stringify({ type: "session", version: 3, id: "existing", cwd: tempDir }) + "\n";
-			if (state !== "missing") fs.writeFileSync(file, header + JSON.stringify({ type: "branch_summary", ...savedSummary("inherited") }) + "\n");
+			if (!fresh) fs.writeFileSync(file, header + JSON.stringify({ type: "branch_summary", ...savedSummary("inherited") }) + "\n");
 			const event = events.assistantMessage("Done");
 			const script = fs.readFileSync(mockPi.runtime.piEntryPath, "utf8");
 			t.after(() => fs.writeFileSync(mockPi.runtime.piEntryPath, script));
@@ -2330,24 +2333,36 @@ ${script}`);
 				malformed: `process.on("exit", () => appendFileSync(session, "{bad json\\n"));`,
 				truncated: `process.on("exit", () => writeFileSync(session, ${JSON.stringify(header)}));`,
 				replaced: `process.on("exit", () => { copyFileSync(session, session + ".replacement"); renameSync(session + ".replacement", session); });`,
+				"fresh-replaced": `process.on("exit", () => {
+	const [header, ...entries] = readFileSync(session, "utf8").split("\\n");
+	writeFileSync(session + ".replacement", [JSON.stringify({ ...JSON.parse(header), id: "replacement" }), ...entries].join("\\n"));
+	renameSync(session + ".replacement", session);
+});`,
 			}[state];
-			fs.writeFileSync(mockPi.runtime.piEntryPath, `import { appendFileSync, copyFileSync, renameSync, writeFileSync } from "node:fs";
+			fs.writeFileSync(mockPi.runtime.piEntryPath, `import { appendFileSync, copyFileSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 const session = process.argv[process.argv.indexOf("--session") + 1];
 ${change}
 ${script}`);
 			mockPi.onCall({ sessionSummaries: [savedSummary("ambiguous")], jsonl: [event] });
 			const result = await runner.runSingleStep({
-				agent: "worker", task: "Do work", ...(state !== "missing" ? { sessionFile: file } : {}),
+				agent: "worker", task: "Do work", ...(!fresh ? { sessionFile: file } : {}),
 			}, {
 				cwd: tempDir, previousOutput: "", placeholder: "{previous}", sessionEnabled: true, sessionDir: tempDir,
 				id: state, flatIndex: 0, flatStepCount: 1, outputFile: path.join(tempDir, "output.log"), runtime: mockPi.runtime,
 			});
 			assert.equal(result.exitCode, 0, result.error);
-			assert.equal(result.modelAttempts?.[0]?.usage?.cost, 0.001);
+			assert.deepEqual(result.modelAttempts?.[0]?.usage, { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, cost: 0.001, turns: 1 });
 			const diagnostics = fs.readFileSync(path.join(tempDir, "events.jsonl"), "utf8").trim().split("\n")
 				.map(line => JSON.parse(line)).filter(entry => entry.type === "subagent.child.accounting");
 			assert.equal(diagnostics.length, state === "missing" ? 0 : 1);
-			assert.equal(result.sessionFile, state === "missing" ? undefined : file);
+			if (state === "fresh-replaced") {
+				assert.match(diagnostics[0].message, /replaced/i);
+				const args = readMockPiArgs(mockPi, 0);
+				assert.ok(args.includes("--session"));
+				assert.equal(result.sessionFile, args[args.indexOf("--session") + 1]);
+			} else {
+				assert.equal(result.sessionFile, state === "missing" ? undefined : file);
+			}
 		});
 	}
 
