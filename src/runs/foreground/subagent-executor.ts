@@ -873,7 +873,7 @@ function expandChainParallelCounts(chain: ChainStep[]): { chain?: ChainStep[]; e
 }
 
 function normalizeRepeatedParallelCounts(params: SubagentParamsLike): { params?: SubagentParamsLike; error?: AgentToolResult<Details> } {
-	if (params.tasks) {
+	if (params.tasks?.length) {
 		const expandedTasks = expandTopLevelTaskCounts(params.tasks);
 		if (expandedTasks.error) {
 			return { error: buildRequestedModeError(params, expandedTasks.error) };
@@ -888,6 +888,29 @@ function normalizeRepeatedParallelCounts(params: SubagentParamsLike): { params?:
 		return { params: { ...params, chain: expandedChain.chain } };
 	}
 	return { params };
+}
+
+function applyModelInheritance(params: SubagentParamsLike): SubagentParamsLike {
+	const hasModel = (model: unknown): model is string => typeof model === "string" && model.length > 0;
+	const isObject = (value: unknown) => value !== null && typeof value === "object" && !Array.isArray(value);
+	const inherit = <T extends { model?: string }>(child: T, model: string | undefined): T =>
+		hasModel(model) && isObject(child) && !hasModel(child.model)
+			? { ...child, model }
+			: child;
+	if (params.tasks?.length && hasModel(params.model)) {
+		return { ...params, tasks: params.tasks.map((task) => inherit(task, params.model)) };
+	}
+	if (!params.chain) return params;
+	const chain = params.chain.map((step) => {
+		if (!isObject(step)) return step;
+		if (!("parallel" in step)) return inherit(step, params.model);
+		const { model, ...group } = step;
+		const inherited = hasModel(model) ? model : params.model;
+		if (isParallelStep(group)) return { ...group, parallel: group.parallel.map((task) => inherit(task, inherited)) };
+		if (isDynamicParallelStep(group) && isObject(group.parallel)) return { ...group, parallel: inherit(group.parallel, inherited) };
+		return step;
+	});
+	return { ...params, chain };
 }
 
 function withForkContext(
@@ -2320,7 +2343,7 @@ export function createSubagentExecutor(services: ExecutorDeps): {
 
 		const normalized = normalizeRepeatedParallelCounts(paramsWithResolvedCwd);
 		if (normalized.error) return normalized.error;
-		const normalizedParams = normalized.params!;
+		const normalizedParams = applyModelInheritance(normalized.params!);
 
 		let effectiveParams = applyForceTopLevelAsyncOverride(
 			normalizedParams,

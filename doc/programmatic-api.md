@@ -6,6 +6,8 @@ instead - see [README](../README.md) and [commands.md](commands.md).
 
 ## Execution examples
 
+Model inheritance applies to foreground and background runs, including `count` copies. An empty top-level `model` adds no default.
+
 ```ts
 // Single agent
 { agent: "worker", task: "refactor auth" }
@@ -18,6 +20,7 @@ instead - see [README](../README.md) and [commands.md](commands.md).
 
 // Parallel
 { tasks: [{ agent: "scout", task: "a" }, { agent: "reviewer", task: "b" }] }
+{ model: "anthropic/claude-sonnet-4", tasks: [{ agent: "scout", task: "a" }, { agent: "reviewer", task: "b" }] }
 { tasks: [{ agent: "scout", task: "audit auth", count: 3 }] }
 { tasks: [{ agent: "scout", task: "audit frontend" }, { agent: "reviewer", task: "audit backend" }], context: "fork" }
 
@@ -200,7 +203,7 @@ Rejections stop nothing and send no signal:
 | `output` | `string \| boolean` | disabled | Top-level output is opt-in: `true` selects the agent-configured filename, a string selects that path, and `false` disables it. If no configured filename exists, `true` leaves output disabled; no filename is invented. |
 | `outputMode` | `"inline" \| "file-only"` | `inline` | Return saved output inline or as a concise saved-file reference. `file-only` requires `output: true` with a configured filename or an explicit output path. |
 | `skill` | `string \| string[] \| false` | agent default | Override skills or disable all. |
-| `model` | string | agent default | Override model. |
+| `model` | string | agent default | Model for a single call. With `tasks` or `chain`, the default for tasks or steps without their own model: child first, then its parallel group, then the call, then the agent. |
 | `settings` | object | agent default | `settings.json` keys the child launches with in place of the parent's values, merged over the agent's own `settings`. See [Child settings override](../skills/pi-cohort/reference/config-fields.md#child-settings-override-settings). |
 | `tasks` | array | - | Top-level parallel tasks. Supports `agent`, `task`, `label`, `cwd`, `count`, `output`, `outputMode`, `reads`, `progress`, `skill`, `model`, `settings`, and `acceptance`. |
 | `concurrency` | number | config or `4` | Top-level parallel concurrency. |
@@ -228,7 +231,7 @@ At top level, output starts disabled for foreground and async single/parallel ru
 
 Use `outputMode: "file-only"` when a saved output may be large and the parent only needs a pointer. It requires `output: true` with an agent-configured filename or an explicit output path. The returned text is a compact reference like `Output saved to: /abs/report.md (48.2 KB, 2847 lines). Read this file if needed.` Non-BLOCKED file-only failures return failure status and `Full reply preserved at <path>` only after the artifact copy is written, or `Full reply not preserved (artifact output disabled)` / `Full reply not preserved (artifact write failed: <msg>)` when it is not preserved. Foreground single failures return `FAILED (exit code N)[: error]`, a blank line, then the pointer. Save errors return `Output file error: <path>\n<err>`, a blank line, then the pointer, without the reply inline; foreground save errors keep exit code 0, while background save errors flip it to 1. The runner does not write the requested output path on child failure. `BLOCKED:` handoffs remain inline, and inline mode is unchanged. Disabling artifact output can make the full reply unavailable. In chains, successful file-only steps pass the compact reference as `{previous}`; exit-0 save-error steps pass the save error plus pointer, while failed chains stop with their existing summaries.
 
-Sequential and parallel chain tasks accept `agent`, `task`, `phase`, `label`, `as`, `outputSchema`, `cwd`, `output`, `outputMode`, `reads`, `progress`, `skill`, `model`, and `settings`. Parallel tasks also accept `count`. Parallel step groups accept `parallel`, `concurrency`, `failFast`, and `worktree`. Every step shape accepts `stopOn: { path, in }` - a JSON Pointer into the step's structured output and the string values that end the chain after that step (see [Stop conditions](agents-and-chains.md#stop-conditions-stopon)); it requires `outputSchema` on the step (every task of a parallel step). If `outputSchema` is present, the child must call `structured_output` with schema-valid JSON; prose-only completion or invalid JSON fails the step. Validated structured values are preserved on the step result, `as` exposes a compact text representation through `{outputs.name}`, and a `worktree: true` parallel task's patch through `{outputs.name.patchPath}`.
+Sequential and parallel chain tasks accept `agent`, `task`, `phase`, `label`, `as`, `outputSchema`, `cwd`, `output`, `outputMode`, `reads`, `progress`, `skill`, `model`, and `settings`. Parallel tasks also accept `count`. Parallel step groups accept `parallel`, `concurrency`, `failFast`, `worktree`, and `model`. A static or fanout group's `model` supplies its children's default, ahead of the call and agent models. A child's own model wins. Every step shape accepts `stopOn: { path, in }` - a JSON Pointer into the step's structured output and the string values that end the chain after that step (see [Stop conditions](agents-and-chains.md#stop-conditions-stopon)); it requires `outputSchema` on the step (every task of a parallel step). If `outputSchema` is present, the child must call `structured_output` with schema-valid JSON; prose-only completion or invalid JSON fails the step. Validated structured values are preserved on the step result, `as` exposes a compact text representation through `{outputs.name}`, and a `worktree: true` parallel task's patch through `{outputs.name.patchPath}`.
 
 ## Control configuration
 

@@ -85,6 +85,25 @@ export function makeAgent(name: string, overrides: Partial<AgentConfig> = {}): A
 	};
 }
 
+export function chainModelScenario(mockPi: MockPi, groupModel?: string) {
+	const model = "anthropic/claude-sonnet-4";
+	const own = "anthropic/claude-opus-4";
+	const leaf = { agent: "pinned", task: "Review" };
+	const group = groupModel ? { model: groupModel } : {};
+	mockPi.onCall({ output: "Targets", structuredOutput: { items: ["a", "b"] } });
+	mockPi.onCall({ output: "Done" });
+	return {
+		params: { model, chain: [
+			{ ...leaf, as: "targets", outputSchema: { type: "object" } },
+			{ ...leaf, model: own },
+			{ ...group, parallel: [{ ...leaf, model: "" }, { ...leaf, model: own }] },
+			{ ...group, expand: { from: { output: "targets", path: "/items" }, maxItems: 2 },
+				parallel: { ...leaf, task: "Review {item}" }, collect: { as: "reviews" } },
+		] },
+		expected: [model, own, groupModel ?? model, own, groupModel ?? model, groupModel ?? model],
+	};
+}
+
 interface MinimalCtx {
 	cwd: string;
 	hasUI: boolean;

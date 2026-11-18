@@ -56,6 +56,7 @@ interface SubagentParamsSchema {
 			};
 		};
 		acceptance?: JsonSchemaNode;
+		model?: JsonSchemaNode;
 		skill?: JsonSchemaNode;
 		output?: JsonSchemaNode;
 		config?: JsonSchemaNode;
@@ -149,6 +150,24 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		assert.equal(concurrencySchema.minimum, 1);
 		assert.match(String(concurrencySchema.description ?? ""), /parallel/i);
 	});
+
+	const modelDescriptions: Array<[string, JsonSchemaNode | undefined, string]> = [
+		[
+			"top-level",
+			SubagentParams?.properties?.model,
+			"Model for a single call, e.g. 'anthropic/claude-sonnet-4'. With tasks or chain: default for every task or step that sets no model, unless its parallel group sets one; a task's or step's own model wins. Outranks the agent's model.",
+		],
+		[
+			"chain-step",
+			SubagentParams?.properties?.chain?.items?.properties?.model,
+			"Step model. On a parallel group: default for its tasks, ahead of the call's model; a task's own model wins. Outranks the agent's model.",
+		],
+	];
+	for (const [position, schema, description] of modelDescriptions) {
+		it(`documents ${position} model inheritance and child precedence`, () => {
+			assert.equal(schema?.description, description);
+		});
+	}
 
 	it("documents top-level output as opt-in", () => {
 		const outputSchema = SubagentParams?.properties?.output;

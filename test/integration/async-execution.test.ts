@@ -15,7 +15,7 @@ import { syncBuiltinESMExports } from "node:module";
 import defaultFs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createEventBus, createMockPi, createTempDir, events, makeAgent, makeMinimalCtx, makeParentSessionCtx, removeTempDir, tryImport } from "../support/helpers.ts";
+import { chainModelScenario, createEventBus, createMockPi, createTempDir, events, makeAgent, makeMinimalCtx, makeParentSessionCtx, removeTempDir, tryImport } from "../support/helpers.ts";
 import type { MockPi } from "../support/helpers.ts";
 import { getArtifactPaths } from "../../src/shared/artifacts.ts";
 import { formatModelAttemptNote } from "../../src/runs/shared/model-fallback.ts";
@@ -635,6 +635,68 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(resumedPayload.results[0]?.model, "anthropic/claude-sonnet-4:low");
 		assert.deepEqual(resumedPayload.results[0]?.attemptedModels, ["anthropic/claude-sonnet-4:low"]);
 	});
+
+	for (const thinking of [undefined, "high"]) {
+		it(`top-level async parallel model overrides pinned and unpinned agents (${thinking ?? "no thinking"})`, async () => {
+			assert.ok(isAsyncAvailable(), "jiti must be available for background model inheritance");
+			const agents = [makeAgent("pinned", { model: "openai/gpt-5-mini" }), makeAgent("unpinned")];
+			mockPi.onCall({ output: "Done" });
+			const executor = createSubagentExecutor({
+				pi: { events: createEventBus(), getSessionName: () => undefined },
+				state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
+				resolveConfig: () => ({}), tempArtifactsDir: tempDir,
+				getSubagentSessionRoot: () => tempDir, expandTilde: (p: string) => p,
+				discoverAgents: () => ({ agents }),
+			});
+			const params = {
+				model: "anthropic/claude-sonnet-4",
+				tasks: [
+					...agents.map((agent) => ({ agent: agent.name, task: "Do work" })),
+					{ agent: "pinned", task: "Use my own model", model: "anthropic/claude-opus-4" },
+				],
+				async: true, clarify: false,
+			};
+			const original = structuredClone(params);
+			const run = await executor.execute(
+				"async-parallel-model-default", params, new AbortController().signal, undefined,
+				makeParentSessionCtx(tempDir, "github-copilot", "gpt-6", thinking),
+			);
+			assert.ok(run.details?.asyncId, JSON.stringify(run.content));
+			const id = run.details.asyncId;
+			const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf-8")) as AsyncResultPayload;
+			const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf-8")) as AsyncStatusPayload;
+			const expectedModels = [params.model, params.model, "anthropic/claude-opus-4"]
+				.map((value) => `${value}${thinking ? `:${thinking}` : ""}`);
+			assert.equal(payload.success, true);
+			assert.equal(payload.mode, "parallel");
+			assert.deepEqual(status.steps?.map((step) => step.model), expectedModels);
+			assert.equal(mockPi.callCount(), 3);
+			assert.deepEqual(params, original, "inheritance must not mutate the caller's tasks");
+		});
+	}
+
+	for (const group of [undefined, "openai/gpt-4o"]) {
+		it(`async chain children record the nearest model (group: ${group ?? "unset"})`, async () => {
+			assert.ok(isAsyncAvailable());
+			const { params, expected } = chainModelScenario(mockPi, group);
+			const thinking = group ? "high" : undefined;
+			const executor = createSubagentExecutor({
+				pi: { events: createEventBus(), getSessionName: () => undefined },
+				state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), grandTotal: { mainCost: 0, syncCostByRun: new Map(), asyncCostByJob: new Map(), externalCostBySource: new Map() }, foregroundControls: new Map(), lastForegroundControlId: null },
+				resolveConfig: () => ({}), tempArtifactsDir: tempDir,
+				getSubagentSessionRoot: () => tempDir, expandTilde: (p: string) => p,
+				discoverAgents: () => ({ agents: [makeAgent("pinned", { model: "openai/gpt-5-mini" })] }),
+			});
+			const run = await executor.execute("chain-models", { ...params, async: true, clarify: false }, new AbortController().signal, undefined,
+				makeParentSessionCtx(tempDir, "github-copilot", "gpt-6", thinking));
+			const id = run.details?.asyncId;
+			assert.ok(id, run.content[0]?.text);
+			const payload = JSON.parse(fs.readFileSync(await waitForAsyncResultFile(id), "utf8")) as AsyncResultPayload;
+			assert.equal(payload.success, true, payload.summary);
+			const status = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, id, "status.json"), "utf8")) as AsyncStatusPayload;
+			assert.deepEqual(status.steps?.map((step) => step.model), expected.map((value) => thinking ? `${value}:${thinking}` : value));
+		});
+	}
 
 	it("top-level async parallel defaults require explicit output and progress", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
 		fs.writeFileSync(path.join(tempDir, "input.md"), "input\n", "utf-8");

@@ -116,6 +116,7 @@ Review the diff
 			chain: [
 				{ agent: "scout", task: "Return targets", as: "targets", outputSchema: { type: "object" } },
 				{
+					model: "openai/gpt-4o",
 					expand: { from: { output: "targets", path: "/items" }, item: "target", key: "/path", maxItems: 4 },
 					parallel: { agent: "reviewer", task: "Review {target.path}", outputSchema: { type: "object" } },
 					collect: { as: "reviews" },
@@ -124,6 +125,7 @@ Review the diff
 		}), "project", "/tmp/dynamic-review.chain.json");
 
 		assert.equal(parsed.name, "dynamic-review");
+		assert.equal(parsed.steps[1].model, "openai/gpt-4o");
 		assert.equal(parsed.steps.length, 2);
 		assert.deepEqual((parsed.steps[1] as { collect?: { as?: string } }).collect, { as: "reviews" });
 		assert.deepEqual((parsed.steps[0] as { outputSchema?: unknown }).outputSchema, { type: "object" });

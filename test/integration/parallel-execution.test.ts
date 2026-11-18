@@ -18,6 +18,7 @@ import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { MockPi } from "../support/helpers.ts";
 import {
+	chainModelScenario,
 	createEventBus,
 	createMockPi,
 	createTempDir,
@@ -231,8 +232,8 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 
 	it("keeps sibling results when a parallel child reports a blocker", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
 		const blocked = "BLOCKED: select an API\nDone: compared options\nRemaining: implement";
-		mockPi.onCall({ output: blocked });
-		mockPi.onCall({ output: "Sibling completed" });
+		mockPi.onCall({ taskIncludes: "Review docs", output: "Sibling completed" });
+		mockPi.onCall({ taskIncludes: "Implement API", output: blocked });
 		const executor = makeExecutor([makeAgent("blocked"), makeAgent("sibling")]);
 
 		const result = await executor.execute(
@@ -245,8 +246,9 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 
 		assert.equal(result.isError, undefined);
 		assert.equal(result.details?.results?.length, 2);
-		assert.ok(result.details?.results?.some((item: any) => item.exitCode === 1 && item.error === blocked));
-		assert.ok(result.details?.results?.some((item: any) => item.finalOutput === "Sibling completed"));
+		const [blockedChild, sibling] = result.details.results;
+		assert.deepEqual([blockedChild.agent, blockedChild.exitCode, blockedChild.error], ["blocked", 1, blocked]);
+		assert.deepEqual([sibling.agent, sibling.exitCode, sibling.finalOutput], ["sibling", 0, "Sibling completed"]);
 		assert.match(result.content[0]?.text ?? "", /BLOCKED: select an API/);
 		assert.match(result.content[0]?.text ?? "", /Sibling completed/);
 	});
@@ -266,6 +268,103 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 		assert.equal(result.isError, undefined);
 		const args = readLastCallArgs();
 		assert.equal(args[args.indexOf("--model") + 1], "github-copilot/gpt-6:high");
+	});
+
+	for (const { model, thinking } of [
+		{ model: "anthropic/claude-sonnet-4", thinking: undefined },
+		{ model: "anthropic/claude-sonnet-4", thinking: "high" },
+		{ model: "", thinking: "high" },
+	]) {
+		it(`top-level parallel model reaches child metadata (${model || "empty model"}, ${thinking ?? "no thinking"})`, async () => {
+			mockPi.onCall({ output: "Done" });
+			const executor = makeExecutor([makeAgent("pinned", { model: "openai/gpt-5-mini" }), makeAgent("unpinned")]);
+			const params = {
+				model,
+				tasks: [
+					{ agent: "pinned", task: "Do work", count: 2 },
+					{ agent: "unpinned", task: "Do work" },
+					{ agent: "pinned", task: "Use my own model", model: "anthropic/claude-opus-4" },
+				],
+			};
+			const original = structuredClone(params);
+			const result = await executor.execute(
+				"parallel-model-default", params, new AbortController().signal, undefined,
+				makeParentSessionCtx(tempDir, "github-copilot", "gpt-6", thinking),
+			);
+			assert.equal(result.isError, undefined);
+			const models = result.details.results.map((child) => {
+				assert.equal(child.exitCode, 0);
+				assert.ok(child.artifactPaths?.metadataPath, "expected a child metadata artifact");
+				return JSON.parse(fs.readFileSync(child.artifactPaths.metadataPath, "utf-8")).model;
+			});
+			const expectedModels = [
+				model || "openai/gpt-5-mini", model || "openai/gpt-5-mini", model || "github-copilot/gpt-6",
+				"anthropic/claude-opus-4",
+			].map((value) => `${value}${thinking ? `:${thinking}` : ""}`);
+			assert.deepEqual(models, expectedModels);
+			assert.equal(mockPi.callCount(), 4);
+			assert.deepEqual(params, original, "count expansion and inheritance must not mutate the caller's tasks");
+		});
+	}
+
+	for (const group of [undefined, "openai/gpt-4o"]) {
+		it(`chain children record the nearest model (group: ${group ?? "unset"})`, async () => {
+			const { params: chainParams, expected } = chainModelScenario(mockPi, group);
+			const params = group ? chainParams : {
+				...chainParams,
+				tasks: [],
+				chain: chainParams.chain.map((step) => Array.isArray(step.parallel)
+					? { ...step, parallel: [{ ...step.parallel[0], count: 2 }, ...step.parallel.slice(1)] }
+					: step),
+			};
+			if (!group) expected.splice(2, 0, chainParams.model);
+			const original = structuredClone(params);
+			const executor = makeExecutor([makeAgent("pinned", { model: "openai/gpt-5-mini" })]);
+			const thinking = group ? "high" : undefined;
+			const result = await executor.execute("chain-models", params, new AbortController().signal, undefined,
+				makeParentSessionCtx(tempDir, "github-copilot", "gpt-6", thinking));
+			assert.ok(!result.isError, result.content[0]?.text);
+			const models = result.details.results.map((child) => JSON.parse(fs.readFileSync(child.artifactPaths.metadataPath, "utf8")).model);
+			assert.deepEqual(models, expected.map((value) => thinking ? `${value}:${thinking}` : value));
+			assert.deepEqual(params, original);
+		});
+	}
+
+	it("chain clarify seeds the inherited call model with the parent's thinking", async () => {
+		const executor = makeExecutor([makeAgent("echo", { model: "openai/gpt-5-mini" })]);
+		const step = { agent: "echo", task: "Review" };
+		const chain = [step, { ...step, model: "" }, { ...step, model: " " }, { ...step, model: 42 }];
+		let seeded: string[] = [];
+		const custom = async (factory) => {
+			const component = factory({ requestRender() {} }, { fg(_key, text) { return text; } }, {}, () => {});
+			seeded = chain.map((_, index) => component.getEffectiveModel(index));
+			return { confirmed: false, templates: [], behaviorOverrides: [] };
+		};
+		await executor.execute("chain-clarify", { model: "anthropic/claude-sonnet-4", chain, clarify: true },
+			new AbortController().signal, undefined, { ...makeParentSessionCtx(tempDir, "github-copilot", "gpt-6", "high"), hasUI: true, ui: { custom } });
+		const inherited = "anthropic/claude-sonnet-4:high";
+		assert.deepEqual(seeded, [inherited, inherited, " :high", inherited]);
+	});
+
+	it("chain model inheritance preserves fanout validation errors", async () => {
+		const executor = makeExecutor();
+		for (const [invalid, error] of [
+			[{ parallel: "x" }, /Unknown agent: undefined \(step 2\)/],
+			[{ when: "later" }, /does not support field 'when'/],
+		] as const) {
+			const chain = [
+				{ agent: "echo", task: "Seed", as: "targets", outputSchema: { type: "object" } },
+				{ expand: { from: { output: "targets", path: "/items" }, maxItems: 2 }, collect: { as: "reviews" }, parallel: { agent: "echo", task: "Review" }, ...invalid },
+			];
+			const messages = [];
+			for (const model of [undefined, "anthropic/claude-sonnet-4"]) {
+				const result = await executor.execute("invalid-fanout", { chain, model }, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
+				assert.equal(result.isError, true);
+				assert.match(result.content[0].text, error);
+				messages.push(result.content[0].text);
+			}
+			assert.equal(messages[0], messages[1]);
+		}
 	});
 
 	it("top-level parallel defaults require explicit output and progress", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {

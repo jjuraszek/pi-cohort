@@ -102,6 +102,7 @@ export interface DynamicCollectSpec {
 export interface DynamicParallelStep {
 	expand: DynamicExpandSpec;
 	parallel: DynamicParallelTemplate;
+	model?: string;
 	collect: DynamicCollectSpec;
 	concurrency?: number;
 	failFast?: boolean;
@@ -114,6 +115,7 @@ export interface DynamicParallelStep {
 /** Parallel step: multiple agents running concurrently */
 export interface ParallelStep {
 	parallel: ParallelTaskItem[];
+	model?: string;
 	concurrency?: number;
 	failFast?: boolean;
 	worktree?: boolean;

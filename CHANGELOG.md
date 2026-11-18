@@ -6,6 +6,7 @@
 - The parent and child-safe `subagent` and the `structured_output` tool descriptions end with a `Codemode:` line saying the tool is not callable from scripts and is called directly, so the model is told before it writes a script pi refuses.
 
 ### Fixed
+- Foreground and background parallel tasks and chain steps now inherit the call's `model` ahead of the agent's pin. A chain's parallel group can override the call model for its children; a child's own model wins. (#75)
 - A child on an external execution backend whose result is already in its session file is no longer waited on until `maxRuntimeMs` or an interrupt when the operating system drops the file-change event for the last write. The session watcher also re-reads the file every second, so the result is picked up within about 1 s.
 
 ## [8.4.0] - 2026-11-17
