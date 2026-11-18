@@ -1,5 +1,7 @@
 # Register child structured output as model-only and recover rejected script submissions
 
+> **Superseded by:** [doc/specs/2026-11-18-direct-call-hint-model-only-tools.md](./2026-11-18-direct-call-hint-model-only-tools.md) - the Design clause "Keep the description unchanged" and the Out of scope item "rewording the tool description to demand a lone direct call" only
+
 **Ticket:** [#48](https://github.com/jjuraszek/pi-cohort/issues/48)
 **Goal:** A schema-bound child submits structured output only directly; a rejected scripted submission followed by successful direct capture returns a successful parent result without concealing unrelated failures.
 **Amend-grant:** every later spec amendment in this flow (corrected facts, paths, verification lines, and scope, acceptance-criteria, or public-contract edits alike) applies without asking; only a redraw (changed problem statement, component added, removed, or re-bounded) still stops for you, and the grant never stands in for a spec approval.

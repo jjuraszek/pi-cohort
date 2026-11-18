@@ -1,5 +1,7 @@
 # Register `subagent` as model-only so children are dispatched only by a direct tool call
 
+> **Superseded by:** [doc/specs/2026-11-18-direct-call-hint-model-only-tools.md](./2026-11-18-direct-call-hint-model-only-tools.md) - the Design clause "Tool descriptions stay as they are" and the Out of scope item "Tool-description hint telling the model to call directly" only
+
 **Goal:** Both `subagent` registrations (depth-0 parent and child-safe fanout) carry `exposure: "model-only"`, so a codemode script or an `ctx.executeTool` caller can never dispatch a child; the model dispatches by a direct tool call, which keeps pi-cohort's per-child progress channel and transcript record intact. A released pi-cohort carrying this is the upstream contract pi-gauntlet#135 bumps its floor to.
 **Amend-grant:** every later spec amendment in this flow (corrected facts, paths, verification lines, and scope, acceptance-criteria, or public-contract edits alike) applies without asking; only a redraw (changed problem statement, component added, removed, or re-bounded) still stops for you, and the grant never stands in for a spec approval.
 **Engine:** loop

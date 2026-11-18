@@ -431,7 +431,9 @@ MANAGEMENT: action=list/get/create/update/delete (chainName for chains; packaged
 CONTROL: action=status/interrupt/resume (id, message, index); details: pi-cohort skill.
 
 DIAGNOSTICS:
-• { action: "doctor" } - read-only report for runtime paths, discovery, and sessions`,
+• { action: "doctor" } - read-only report for runtime paths, discovery, and sessions
+
+Codemode: not callable from scripts - call \`subagent\` directly, as its own tool call.`,
 		parameters: SubagentParams,
 
 		execute(id, params, signal, onUpdate, ctx) {

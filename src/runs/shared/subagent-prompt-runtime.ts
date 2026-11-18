@@ -219,7 +219,7 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI): void {
 			name: STRUCTURED_OUTPUT_TOOL_NAME,
 			label: "Structured Output",
 			exposure: "model-only",
-			description: "Submit the required final structured output for this subagent step. This terminates the step.",
+			description: "Submit the required final structured output for this subagent step. This terminates the step.\n\nCodemode: not callable from scripts - call `structured_output` directly, as its own tool call.",
 			parameters: parameters as never,
 			async execute(_id: string, params: { value: unknown }) {
 				attempted = true;
