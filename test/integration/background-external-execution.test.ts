@@ -461,6 +461,7 @@ for (const scenario of ["fork", "fresh", "missing", "headerless", "untrusted"] a
 				assert.equal(result.exitCode, 1);
 				assert.equal(result.error, "External execution attempt failed (session_file_untrusted)");
 				assert.equal(fs.existsSync(`${argsPath}.count`), false, "an untrusted session file must not start a child");
+				assert.deepEqual(result.modelAttempts, []);
 			} else {
 				assert.equal(result.exitCode, 0, result.error);
 				assert.equal(requests.length, 1);
@@ -486,7 +487,10 @@ test(`runSingleStep retains the surface after an external ${failure} failure`, u
 	const binDir = path.join(tempDir, "bin");
 	const argsPath = path.join(tempDir, "pi-args.json");
 	fs.mkdirSync(binDir);
-	fs.writeFileSync(path.join(binDir, "pi"), makeFixtureScript("missing-result", argsPath), { mode: 0o755 });
+	const script = makeFixtureScript("success", argsPath)
+		.replace(/  report\("settled"\);\n  report\("result",[^\n]+/, "  socket.end();")
+		.replace("cacheWrite: 0, total: 0", "cacheWrite: 0, total: 0.25");
+	fs.writeFileSync(path.join(binDir, "pi"), script, { mode: 0o755 });
 
 	const requests: ExecutionSurfaceRequest[] = [];
 	const hosts: ReturnType<typeof spawn>[] = [];
@@ -552,6 +556,7 @@ test(`runSingleStep retains the surface after an external ${failure} failure`, u
 		} else {
 			assert.equal(lifecycle.closes, 0);
 			assert.equal(fixtureInvocationCount(argsPath), 1, "must not fall back to native execution");
+			assert.deepEqual(result.modelAttempts.map(({ success, usage }) => ({ success, cost: usage.cost })), [{ success: false, cost: 0.25 }]);
 			assert.equal(fs.existsSync(promptTempDir(argsPath)), false);
 			const childArgs = JSON.parse(fs.readFileSync(argsPath, "utf-8")) as string[];
 			assert.equal(childArgs[childArgs.indexOf("--name") + 1], "worker child- from P");
@@ -572,7 +577,7 @@ test(`runSingleStep retains the surface after an external ${failure} failure`, u
 });
 }
 
-test("runSingleStep sanitizes an external startup failure without falling back to native execution", unixOnly, async () => {
+for (const failure of ["backend launch", "disconnect before host_ready"] as const) test(`runSingleStep records no attempt after external startup failure: ${failure}`, unixOnly, async () => {
 	const tempDir = createTempDir("bg-runner-startup-");
 	const binDir = path.join(tempDir, "bin");
 	const argsPath = path.join(tempDir, "pi-args.json");
@@ -582,9 +587,17 @@ test("runSingleStep sanitizes an external startup failure without falling back t
 
 	const requests: ExecutionSurfaceRequest[] = [];
 	const hosts: ReturnType<typeof spawn>[] = [];
-	const lifecycle: BackendLifecycle = { releases: 0, closes: 0, launchError: startupSecret };
+	const launchFailed = failure === "backend launch";
+	const lifecycle: BackendLifecycle = { releases: 0, closes: 0, launchError: launchFailed ? startupSecret : undefined };
 	const backendName = `fake-bg-runner-startup-${process.pid}`;
-	const dispose = registerExecutionBackend(makeBackend(backendName, binDir, requests, hosts, lifecycle));
+	const backend = makeBackend(backendName, binDir, requests, hosts, lifecycle);
+	const dispose = registerExecutionBackend(launchFailed ? backend : {
+		...backend,
+		launch: request => backend.launch({ ...request, command: process.execPath, args: ["-e", `
+			const { socketPath } = JSON.parse(require("node:fs").readFileSync(process.env.PI_COHORT_CHILD_HOST_CONFIG, "utf8"));
+			const socket = require("node:net").connect(socketPath, () => socket.end());
+		`] }),
+	});
 	const savedPath = process.env.PATH;
 	process.env.PATH = `${binDir}${path.delimiter}${savedPath ?? ""}`;
 
@@ -592,6 +605,7 @@ test("runSingleStep sanitizes an external startup failure without falling back t
 		const result = await runSingleStep({
 			agent: "worker",
 			task: "Exercise external startup failure",
+			modelCandidates: ["first", "second"],
 			inheritProjectContext: false,
 			inheritSkills: false,
 		}, {
@@ -609,13 +623,20 @@ test("runSingleStep sanitizes an external startup failure without falling back t
 		});
 
 		assert.equal(result.exitCode, 1);
-		assert.equal(result.error, "External execution startup failed");
-		assert.ok(!result.error.includes(startupSecret));
-		assert.equal(result.executionSurface, undefined);
 		assert.equal(requests.length, 1);
-		assert.equal(lifecycle.releases, 0);
-		assert.equal(lifecycle.closes, 0);
-		assert.equal(fs.existsSync(`${argsPath}.count`), false, "must not fall back to native execution");
+		assert.equal(fs.existsSync(`${argsPath}.count`), false, "must not launch a child or fall back to native execution");
+		assert.deepEqual(result.modelAttempts ?? [], []);
+		assert.equal(result.attemptedModels, undefined);
+		if (launchFailed) {
+			assert.equal(result.error, "External execution startup failed");
+			assert.ok(!result.error.includes(startupSecret));
+			assert.equal(result.executionSurface, undefined);
+			assert.equal(lifecycle.releases, 0);
+			assert.equal(lifecycle.closes, 0);
+		} else {
+			assert.match(result.error ?? "", /^External execution attempt failed/);
+			assert.doesNotMatch(result.error ?? "", /child host disconnected/);
+		}
 	} finally {
 		process.env.PATH = savedPath;
 		dispose();

@@ -81,8 +81,15 @@ export class ExternalExecutionDiagnosticError extends Error {
 	}
 }
 
+export class ExternalAttemptSetupError extends Error {
+	constructor(cause: unknown) {
+		super(cause instanceof Error ? cause.message : String(cause), { cause });
+	}
+}
+
 export function externalExecutionDiagnosticCode(error: unknown): ExternalExecutionDiagnosticCode | undefined {
-	return error instanceof ExternalExecutionDiagnosticError ? error.code : undefined;
+	const diagnostic = error instanceof ExternalAttemptSetupError ? error.cause : error;
+	return diagnostic instanceof ExternalExecutionDiagnosticError ? diagnostic.code : undefined;
 }
 
 /** An attempt's pi did not report its session started in time; the surface has been asked to close. */
@@ -316,6 +323,8 @@ export async function createExternalExecution(
 		attemptedIds.add(request.attemptId);
 		let control: ExecutionControlChannel | undefined;
 		let watcher: SessionWatcher | undefined;
+		let launchRequested = false;
+		let setupError: ExternalAttemptSetupError | undefined;
 		const abort = abortPromise([request.signal, request.interruptSignal]);
 		let interruptedAt: number | undefined;
 		let disposed = false;
@@ -333,6 +342,7 @@ export async function createExternalExecution(
 			watcher = createWatcher(request.sessionFile, identity, request.onNewSessionMessage);
 			const environment = { ...request.environment, [PI_COHORT_REPORT_CONFIG]: control.configPath };
 			const exitPromise = controller.startAttempt({ attemptId: request.attemptId, command: request.command, args: [...request.args], cwd: request.cwd, environment });
+			launchRequested = true;
 			const deadline = startDeadline(startDeadlineMs);
 			// The watcher can miss a file event, so the deadline trusts only a fresh read.
 			const notStarted = deadline.expired
@@ -510,11 +520,17 @@ export async function createExternalExecution(
 				if (interruptedAt !== undefined || replayed.result!.outcome === "interrupted") return await finalizeInterrupted(replayed);
 			}
 			return mapResult(request, replayed, exit);
+		} catch (error) {
+			if (launchRequested) throw error;
+			setupError = new ExternalAttemptSetupError(error);
+			throw setupError;
 		} finally {
 			abort.close();
 			for (const signal of signals) signal?.removeEventListener("abort", acceptInterruption);
 			try {
 				if (!disposed) { watcher?.close(); await control?.close(); }
+			} catch (error) {
+				if (!setupError) throw error;
 			} finally { active = false; }
 		}
 	};

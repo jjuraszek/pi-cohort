@@ -93,6 +93,7 @@ import { createDetachedExecutionBackendCoordinator, decodeDetachedExecutionBacke
 import type { DetachedExecutionBackendConfig } from "../../execution-backend/types.ts";
 import {
 	createExternalExecution,
+	ExternalAttemptSetupError,
 	externalExecutionDiagnosticCode,
 	ExternalStartDeadlineError,
 	isInterruptedExternalAttemptError,
@@ -922,7 +923,7 @@ async function runSingleStepAttempts(
 							finalResult = { stderr: "", exitCode: 1, messages: [], usage: emptyUsage(), error: message, finalOutput: "" };
 							break;
 						}
-						if (error instanceof PiRuntimeLaunchError) throw error;
+						if (error instanceof PiRuntimeLaunchError || error instanceof ExternalAttemptSetupError) throw error;
 						startDeadlinePassed = error instanceof ExternalStartDeadlineError;
 						const interrupted = isInterruptedExternalAttemptError(error);
 						run = {
