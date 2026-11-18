@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [8.4.1] - 2026-11-18
 
 ### Changed
 - The parent and child-safe `subagent` and the `structured_output` tool descriptions end with a `Codemode:` line saying the tool is not callable from scripts and is called directly, so the model is told before it writes a script pi refuses.
