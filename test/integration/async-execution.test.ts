@@ -18,6 +18,7 @@ import * as path from "node:path";
 import { chainModelScenario, createEventBus, createMockPi, createTempDir, events, makeAgent, makeMinimalCtx, makeParentSessionCtx, removeTempDir, tryImport } from "../support/helpers.ts";
 import type { MockPi } from "../support/helpers.ts";
 import { getArtifactPaths } from "../../src/shared/artifacts.ts";
+import { resolveAsyncResumeTarget } from "../../src/runs/background/async-resume.ts";
 import type { ModelAttempt } from "../../src/shared/types.ts";
 import { formatModelAttemptNote } from "../../src/runs/shared/model-fallback.ts";
 import { DEFAULT_CONTROL_CONFIG } from "../../src/runs/shared/subagent-control.ts";
@@ -2639,6 +2640,9 @@ ${mockScript}`);
 		assert.deepEqual(status.totalTokens, status.steps[0]?.tokens);
 		assert.equal(status.totalCost, 0.25);
 		assert.equal(mockPi.callCount(), 1);
+		const args = readMockPiArgs(mockPi, 0);
+		assert.ok(args.includes("--session"));
+		assert.equal(resolveAsyncResumeTarget({ id }).sessionFile, args[args.indexOf("--session") + 1]);
 	});
 
 	it("background runs fail zero-exit provider errors when no fallback succeeds", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {

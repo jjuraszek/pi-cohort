@@ -846,7 +846,8 @@ async function runSingleStepAttempts(
 	executionSurface?: ExecutionSurfaceResult;
 }> {
 	const stopped = () => ctx.isStopping?.() || stoppingAncestor(ctx.nestedRoute, ctx.id, ctx.childId, ctx.parentPath);
-	const paused = () => ({ agent: step.agent, output: "", exitCode: 0, interrupted: true, sessionFile: step.sessionFile });
+	let finalSessionFile = step.sessionFile;
+	const paused = () => ({ agent: step.agent, output: "", exitCode: 0, interrupted: true, sessionFile: finalSessionFile });
 	if (stopped()) return paused();
 	let childCwd: string;
 	const placeholderRegex = new RegExp(ctx.placeholder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g");
@@ -924,7 +925,6 @@ async function runSingleStepAttempts(
 	const attemptNotes: string[] = [];
 	const eventsPath = path.join(path.dirname(ctx.outputFile), "events.jsonl");
 	let finalResult: RunPiStreamingResult | undefined;
-	let finalSessionFile = step.sessionFile;
 	let finalOutputSnapshot: SingleOutputSnapshot | undefined;
 	let completionGuardTriggeredFinal = false;
 	let executionSurface: ExecutionSurfaceResult | undefined;
