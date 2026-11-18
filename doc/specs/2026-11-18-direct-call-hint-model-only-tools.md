@@ -157,7 +157,7 @@ The baseline window is recounted with this procedure in the same run as the post
 - A child scripts `structured_output`, is refused, then calls it directly: the existing recovery in `detectSubagentError` applies unchanged.
 - Codemode `only`: the three tools stay declared, so the line is shown and stays true.
 - Codemode is not among a session's active tools (for example a child whose tool allowlist leaves it out): the line is a static string and is still shown; it stays true and has no effect. No conditional registration.
-- A later change makes one of these tools script-callable: pi would append its own `Codemode:` line under this one and the two would contradict. Each description check sits beside its exposure check in the same test, so the exposure change fails next to the wording that must change with it.
+- A later change makes one of these tools script-callable: in mode `on` pi would append its own `Codemode:` line under this one and the two would contradict. Each description check sits beside its exposure check in the same test, so the exposure change fails next to the wording that must change with it.
 - A later pi states the rule itself for every model-only tool (the upstream request): each description would carry two `Codemode:` lines and no test here notices. The change that raises the supported pi floor to a version that guarantees pi's own hint removes the three literals and their description checks. No runtime detection.
 - Declaration size: each description grows by one line, about twenty tokens.
 
