@@ -11,7 +11,7 @@ Use orchestration as parent-agent guidance, not as a runtime workflow mode. For 
 clarify -> planner -> worker -> fresh reviewers -> worker
 ```
 
-Use the optional prompt shortcuts in [skills-and-companions.md](skills-and-companions.md#optional-shortcuts) when you want the pattern to be repeatable.
+Use the optional shortcuts in [skills-and-companions.md](skills-and-companions.md#optional-shortcuts) when you want the pattern to be repeatable.
 
 Packaged `planner`, `worker`, and `oracle` default to forked context when a launch omits `context`; pass `context: "fresh"` when you intentionally want a fresh child run.
 

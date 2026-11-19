@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Removed
+- Removed the `/investigate` prompt and its `--out` option. The package ships no prompt templates.
+
 ## [8.4.3] - 2026-11-19
 
 ### Fixed

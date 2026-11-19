@@ -1,7 +1,7 @@
 # Skills and companions
 
 How agent system prompts pick up skills, the bundled orchestration skill, the
-optional prompt shortcuts, and the optional companion package. Back to
+optional shortcuts, and the optional companion package. Back to
 [README](../README.md).
 
 ## Skills
@@ -57,11 +57,7 @@ Review and delivery workflows live in pi-gauntlet; pi-cohort ships delegation pr
 
 ## Optional shortcuts
 
-The package includes a reusable prompt template for recon. You do not need them, but they are handy when you want the same shape every time:
-
-| Prompt | Use it for |
-|---|---|
-| `/investigate <request> [--out path]` | Parallel read-only recon and premise check before planning or brainstorming; writes a brief with cited findings, questions with recommendations, and verified findings from a second read-only wave. |
+Use the packaged handoff skill to continue work in a fresh session (see [Bundled skills](#bundled-skills)).
 
 When a child needs an unapproved decision, it must stop with `BLOCKED: <decision needed>` as the first line, followed by `Done: <complete>` and `Remaining: <left>`. The parent receives an ordinary failed result; sequential chains stop at that step, parallel siblings keep their results, and follow-up is a fresh dispatch after the parent or human decides.
 
@@ -77,7 +73,7 @@ Without `pi-essentials`, `context-builder` degrades to local-only context: it ca
 
 ## Prompt-template integration
 
-`pi-cohort` works standalone through natural language, the `subagent` tool, slash commands, and the packaged prompt shortcuts above. If you use [pi-prompt-template-model](https://github.com/nicobailon/pi-prompt-template-model), you can also wrap subagent delegation in your own reusable prompt templates.
+`pi-cohort` works standalone through natural language, the `subagent` tool, slash commands, and the packaged shortcuts above. If you use [pi-prompt-template-model](https://github.com/nicobailon/pi-prompt-template-model), you can also wrap subagent delegation in your own reusable prompt templates.
 
 Example:
 
