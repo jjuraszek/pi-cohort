@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### Added
-- Added the `investigate` skill for checking a request before planning. The terminal shows findings, clashes with the current design (only when found), what they mean for the request, and decisions needed in at most 180 words. The closing line points to the full cited brief in a temp folder, including its `## Design fit` assessment.
+- Added the [`investigate` skill](README.md#quick-example) for checking a request before planning. The terminal shows findings, clashes with the current design (only when found), what they mean for the request, and decisions needed in at most 180 words. The closing line points to the full cited brief in a temp folder, including its `## Design fit` assessment.
 
 ### Removed
 - Removed the `/investigate` prompt and its `--out` option. The package ships no prompt templates.
