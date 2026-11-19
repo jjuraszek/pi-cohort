@@ -3,9 +3,9 @@
 base: 8d8283362c5098543718a9745f9f0ac15342c7a2
 verification: env -u PI_CODING_AGENT_DIR npm run test:all
 checks: commands
-iterations: 3
+iterations: 4
 allowance: 10
-returned: 2 | home | 93405ab9a445a36175f465d35673dacaa4094ed4
+returned: 6 | home | 1f55f88ca590aadc082e5a7b67931bf462701935
 
 | row | status | attempts | evidence |
 |---|---|---|---|
@@ -14,7 +14,7 @@ returned: 2 | home | 93405ab9a445a36175f465d35673dacaa4094ed4
 | 3 | done | 0 | timeout -k 30 30 env -u PI_CODING_AGENT_DIR node --import ./test/support/isolate-test-env.mjs --test test/unit/prompts-inventory.test.ts; temp folder and dispatch rules passed; 10 passed, 0 failed |
 | 4 | done | 0 | timeout -k 30 30 env -u PI_CODING_AGENT_DIR node --import ./test/support/isolate-test-env.mjs --test test/unit/prompts-inventory.test.ts; eight brief headings match in order; 11 passed, 0 failed |
 | 5 | done | 0 | timeout -k 30 30 env -u PI_CODING_AGENT_DIR node --import ./test/support/isolate-test-env.mjs --test test/unit/prompts-inventory.test.ts; reviewer task and fallback passed independently of template; 12 passed, 0 failed |
-| 6 | open | 0 | |
+| 6 | failed | 1 | timeout -k 30 10 python3 "$(git rev-parse --git-dir)/gauntlet/tmp/check-report-shape.py"; unreachable: fresh worker output requires the subagent tool, unavailable to the loop implementer - parent Pi session with dispatch enabled; scratch/report-eval-dir locates the brief and expected facts |
 | 7 | open | 0 | |
 | 8 | open | 0 | |
 | 9 | done | 0 | timeout -k 30 30 env -u PI_CODING_AGENT_DIR node --import ./test/support/isolate-test-env.mjs --test test/unit/prompts-inventory.test.ts; three headings always present and the clash heading conditional on a clash line; 15 passed, 0 failed |
@@ -32,3 +32,4 @@ row 5 done | The reviewer now ends its assessment with cited clashes or a clean 
 row 9 done | Defined three required report sections and a fourth only for a documented clash. | Use skills/investigate/reference/report.md as the loaded worker's report rules for the synthetic brief.
 row 10 done | Checked that neither skill file spells a skill invocation. | Reuse the consumer-name test in test/unit/prompts-inventory.test.ts to check both shipped files.
 row 11 done | Confirmed neither skill file names the consuming package. | nothing new to build on
+row 6 failed | Prepared the synthetic brief and checked for the loaded report, but this session has no worker dispatch tool. | Reuse the brief and expected facts located by scratch/report-eval-dir; replay the captured loaded.md with check-report-shape.py.
