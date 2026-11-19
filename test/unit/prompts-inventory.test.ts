@@ -40,6 +40,10 @@ function headings(block: string): string[] {
 	return block.replace(/\r\n/g, "\n").match(/^## .+$/gm) ?? [];
 }
 
+function physicalLineCount(source: string): number {
+	return source === "" ? 0 : source.replace(/\r?\n$/, "").split("\n").length;
+}
+
 test("package ships no prompt templates", () => {
 	const manifest = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf-8"));
 	assert.ok(!fs.existsSync(path.join(projectRoot, "prompts")), "prompts/ still exists");
@@ -117,7 +121,7 @@ test("investigate skill links its report reference", () => {
 test("investigate skill files stay under the extraction limit", () => {
 	for (const file of [investigatePath, reportPath]) {
 		const source = fs.readFileSync(file, "utf-8");
-		assert.ok(source.trimEnd().split("\n").length < 500, `${file}: exceeds line limit`);
+		assert.ok(physicalLineCount(source) < 500, `${file}: exceeds line limit`);
 		assert.ok(Buffer.byteLength(source) < 50 * 1024, `${file}: exceeds byte limit`);
 	}
 });
@@ -165,6 +169,8 @@ test("markdown helpers accept LF and CRLF", () => {
 		const block = markdownFences(["```markdown", "## Intent", "```"].join(newline));
 		assert.equal(block.length, 1);
 		assert.deepEqual(headings(block[0]), ["## Intent"]);
+		const atLimit = `text${newline}`.repeat(499) + newline;
+		assert.equal(physicalLineCount(atLimit), 500);
 	}
 });
 
