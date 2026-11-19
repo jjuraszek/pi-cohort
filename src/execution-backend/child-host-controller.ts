@@ -16,6 +16,14 @@ export interface ChildHostController { readonly lease: ExecutionBackendLease; re
 export interface ChildHostControllerOptions { readonly runtime: PiRuntimeIdentity; readonly backend: ExecutionBackend; readonly runId: string; readonly childId: string; readonly cwd: string; readonly title?: string; readonly settings?: ChildSettings; readonly signal: AbortSignal; }
 export interface ChildHostControllerDependencies { readonly fs?: typeof fs; readonly ensureJiti?: (root: string) => string | undefined; readonly childHostCommand?: () => { command: string; args: readonly string[] }; readonly platform?: NodeJS.Platform; readonly createServer?: typeof net.createServer; }
 
+/** The controller knows the start frame was not submitted to the socket. */
+export class ChildHostAttemptDispatchError extends Error {
+	constructor(cause: unknown) {
+		super(cause instanceof Error ? cause.message : String(cause), { cause });
+		this.name = "ChildHostAttemptDispatchError";
+	}
+}
+
 const HOST_ENVIRONMENT_KEYS = ["PATH", "HOME", "TMPDIR", "SystemRoot"] as const;
 function childHostCommand(runtime: PiRuntimeIdentity, ensureJiti: (root: string) => string | undefined): { command: string; args: readonly string[] } {
 	getPiSpawnCommand([], runtime);
@@ -163,16 +171,25 @@ export async function createChildHostController(options: ChildHostControllerOpti
 			get lease() { return lease!; },
 			ready: readyPromise,
 			startAttempt(attempt) {
-				if (socket?.writableEnded || socket?.destroyed) disconnect();
-				if (closed || !socket || !ready) return Promise.reject(disconnectCause ?? disconnected("before ready"));
-				if (pendingShutdown) return Promise.reject(new Error("child host is shutting down"));
-				if (active) return Promise.reject(new Error("child host is busy"));
-				if (!attempt.attemptId) return Promise.reject(new Error("attemptId is required"));
-				if (attemptedIds.has(attempt.attemptId)) return Promise.reject(new Error("child host attemptId has already been used"));
-				attemptedIds.add(attempt.attemptId);
 				return new Promise<ChildHostExit>((resolve, reject) => {
-					active = { attemptId: attempt.attemptId, started: false, resolve, reject };
-					socket!.write(encodeChildHostMessage({ protocolVersion: 1, kind: "start_attempt", runId: options.runId, childId: options.childId, ...attempt }), error => { if (error && active?.attemptId === attempt.attemptId) fail(disconnected("during attempt")); });
+					let pending: typeof active;
+					try {
+						if (socket?.writableEnded || socket?.destroyed) disconnect();
+						if (closed || !socket || !ready) throw disconnectCause ?? disconnected("before ready");
+						if (pendingShutdown) throw new Error("child host is shutting down");
+						if (active) throw new Error("child host is busy");
+						const { attemptId } = attempt;
+						if (!attemptId) throw new Error("attemptId is required");
+						if (attemptedIds.has(attemptId)) throw new Error("child host attemptId has already been used");
+						const frame = encodeChildHostMessage({ protocolVersion: 1, kind: "start_attempt", runId: options.runId, childId: options.childId, ...attempt });
+						pending = active = { attemptId, started: false, resolve, reject };
+						// Once submitted, a transport failure cannot rule out a child that already ran.
+						socket.write(frame, error => { if (error && active === pending) fail(disconnected("during attempt")); });
+						attemptedIds.add(attemptId);
+					} catch (cause) {
+						if (pending && active === pending) active = undefined;
+						reject(new ChildHostAttemptDispatchError(cause));
+					}
 				});
 			},
 			shutdown() {

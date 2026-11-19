@@ -12,6 +12,7 @@ import { createJitiCliResolver, resolveHostModuleAliases } from "../../src/runs/
 import { createMockPi } from "../support/mock-pi.ts";
 import { ASYNC_DIR } from "../../src/shared/types.ts";
 import { runSingleStep } from "../../src/runs/background/subagent-runner.ts";
+import { checkPidLiveness } from "../../src/runs/background/stale-run-reconciler.ts";
 import { PiRuntimeLaunchError } from "../../src/runs/shared/pi-spawn.ts";
 import * as piArgs from "../../src/runs/shared/pi-args.ts";
 import { buildPiArgs, cleanupTempDir } from "../../src/runs/shared/pi-args.ts";
@@ -486,31 +487,51 @@ describe("durable async startup", () => {
 
 describe("spawnRunner", () => {
 	for (const scenario of ["sequential", "repeated-static"] as const) {
-		it(`does not borrow an earlier leaf session: ${scenario}`, async () => {
+		it(`does not borrow an earlier leaf session: ${scenario}`, async t => {
 			const dir = tempDir("leaf-isolation-");
 			const pi = createMockPi();
+			let runnerPid: number | undefined;
+			t.after(async () => {
+				// The result can be ready while the runner still holds its cwd and log open.
+				await waitFor(() => runnerPid === undefined || checkPidLiveness(runnerPid) === "dead", 10000);
+				pi.install(); pi.uninstall();
+				fs.rmSync(dir, { recursive: true, force: true });
+			});
+			const selectedPiMarker = path.join(dir, "selected-pi-loaded");
+			fs.appendFileSync(path.join(pi.runtime.piPackageRoot, "dist", "index.js"), `
+				import { writeFileSync } from "node:fs";
+				writeFileSync(${JSON.stringify(selectedPiMarker)}, import.meta.url);
+			`);
 			fs.writeFileSync(pi.runtime.piEntryPath, `
 				import fs from "node:fs";
 				import path from "node:path";
 				const args = process.argv.slice(2);
 				if (args.at(-1) === "Task: no-session") process.exit(1);
-				const sessionDir = args[args.indexOf("--session-dir") + 1];
-				fs.mkdirSync(sessionDir, { recursive: true });
-				fs.writeFileSync(path.join(sessionDir, "created.jsonl"), "{}\\n");
-				console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" } }));
+				const sessionIndex = args.indexOf("--session");
+				if (sessionIndex < 0) throw new Error("expected an exact --session path");
+				const sessionFile = args[sessionIndex + 1];
+				const header = { type: "session", id: "created", version: 3, cwd: process.cwd() };
+				const message = { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" };
+				const entry = { type: "message", id: "reply", parentId: null, message };
+				fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
+				fs.writeFileSync(sessionFile, [header, entry].map(value => JSON.stringify(value) + "\\n").join(""));
+				console.log(JSON.stringify(header));
+				console.log(JSON.stringify({ type: "message_end", message }));
 			`);
-			after(() => { pi.install(); pi.uninstall(); });
 			const first = { agent: "test", task: "create-session", completionGuard: false, maxSubagentDepth: 0 };
 			const second = { ...first, task: "no-session" };
 			const steps = scenario === "sequential" ? [first, second] : [{ parallel: [first] }, { parallel: [second] }];
 			const resultPath = path.join(dir, "result.json");
 			const launch = spawnRunner({ runtime: pi.runtime, id: scenario, steps, share: false, sessionDir: path.join(dir, "sessions"), placeholder: "{previous}", cwd: dir, asyncDir: dir, resultPath }, scenario, dir, dir);
+			runnerPid = launch.pid;
 			assert.equal(launch.error, undefined);
 			await waitFor(() => fs.existsSync(resultPath), 10000);
 			const result = JSON.parse(fs.readFileSync(resultPath, "utf8"));
 			const status = JSON.parse(fs.readFileSync(path.join(dir, "status.json"), "utf8"));
+			assert.equal(fs.existsSync(selectedPiMarker), false, "a fresh session must not load the Pi SDK for migration");
 			assert.equal(result.results[0].success, true);
 			assert.ok(fs.existsSync(result.results[0].sessionFile));
+			assert.equal(status.steps[0].sessionFile, result.results[0].sessionFile);
 			assert.equal(result.results[1].success, false);
 			assert.equal(result.results[1].sessionFile, undefined);
 			assert.equal(status.steps[1].sessionFile, undefined);

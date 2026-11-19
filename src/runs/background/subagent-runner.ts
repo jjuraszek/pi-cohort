@@ -6,7 +6,9 @@ import * as fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import type { Message } from "@earendil-works/pi-ai";
+import type { FileEntry } from "@earendil-works/pi-coding-agent";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { formatInterruptedCleanup } from "../../shared/formatters.ts";
 import { appendJsonl, getArtifactPaths } from "../../shared/artifacts.ts";
@@ -72,8 +74,6 @@ import {
 	shouldEscalateMutatingFailures,
 	summarizeRecentMutatingFailures,
 } from "../shared/long-running-guard.ts";
-import { parseSessionTokens } from "../../shared/session-tokens.ts";
-import type { TokenUsage } from "../../shared/types.ts";
 import {
 	cleanupWorktrees,
 	removeTrees,
@@ -90,13 +90,16 @@ import { resolveEffectiveThinking } from "../../shared/model-info.ts";
 import { writeInitialProgressFile } from "../../shared/settings.ts";
 import { acceptanceFailureMessage, aggregateAcceptanceReport, evaluateAcceptance, formatAcceptancePrompt, stripAcceptanceReport } from "../shared/acceptance.ts";
 import { selectConfiguredExecutionBackend } from "../../execution-backend/configured-selection.ts";
+import { isUsage } from "../../execution-backend/session-replay.ts";
 import { createDetachedExecutionBackendCoordinator, decodeDetachedExecutionBackendConfig, ExecutionBackendReloadError, type DetachedExecutionBackendCoordinator } from "../../execution-backend/reload.ts";
 import type { DetachedExecutionBackendConfig } from "../../execution-backend/types.ts";
 import {
 	createExternalExecution,
+	ExternalAttemptSetupError,
 	externalExecutionDiagnosticCode,
 	ExternalStartDeadlineError,
 	isInterruptedExternalAttemptError,
+	readPendingAttemptUsage,
 	type ExternalExecution,
 } from "../shared/external-execution.ts";
 import { runExternalBackgroundAttempt } from "./external-attempt.ts";
@@ -167,35 +170,92 @@ interface StepResult {
 
 const ASYNC_INTERRUPT_SIGNAL: NodeJS.Signals = process.platform === "win32" ? "SIGBREAK" : "SIGUSR2";
 
-function findLatestSessionFile(sessionDir: string): string | null {
+// Pi's AgentSession persists these message_end roles; other roles can be saved outside that event path.
+const PERSISTED_MESSAGE_ROLES = new Set(["system", "user", "assistant", "toolResult", "custom"]);
+
+function readStreamingSession(file: string) {
+	let fd: number;
 	try {
-		const files = fs
-			.readdirSync(sessionDir)
-			.filter((f) => f.endsWith(".jsonl"))
-			.map((f) => path.join(sessionDir, f));
-		if (files.length === 0) return null;
-		files.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
-		return files[0] ?? null;
-	} catch {
-		// Session lookup is optional metadata.
-		return null;
+		fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+		throw error;
 	}
+	try {
+		const stat = fs.fstatSync(fd);
+		if (!stat.isFile()) throw new Error("Not a regular session file");
+		const content = fs.readFileSync(fd, "utf8");
+		const entries: FileEntry[] = content ? content.replace(/\n$/, "").split("\n").map(line => JSON.parse(line)) : [];
+		if (entries.length > 0) {
+			const [header, ...body] = entries;
+			if (header?.type !== "session" || typeof header.id !== "string") throw new Error("Invalid session header");
+			const ids = new Set<string>();
+			for (const entry of body) {
+				if (typeof entry?.type !== "string" || entry.type === "session"
+					|| ((header.version ?? 1) >= 2 && (typeof entry.id !== "string" || ids.has(entry.id)))
+					|| (entry.type === "branch_summary" && entry.usage !== undefined && !isUsage(entry.usage))) {
+					throw new Error("Invalid session entry");
+				}
+				ids.add(entry.id);
+			}
+		}
+		return { stat, entries };
+	} finally {
+		fs.closeSync(fd);
+	}
+}
+
+async function matchesStreamingPrefix(before: FileEntry[], after: FileEntry[]): Promise<boolean> {
+	const prefix = after.slice(0, before.length);
+	if (isDeepStrictEqual(before, prefix)) return true;
+	const oldHeader = before[0];
+	const newHeader = prefix[0];
+	if (prefix.length !== before.length || oldHeader?.type !== "session" || newHeader?.type !== "session"
+		|| (oldHeader.version ?? 1) >= (newHeader.version ?? 1)) return false;
+
+	// Loading Pi's SDK populates jiti's compile cache, which Node flushes at runner exit.
+	const { CURRENT_SESSION_VERSION, migrateSessionEntries } = await import("@earendil-works/pi-coding-agent");
+	if (newHeader.version !== CURRENT_SESSION_VERSION) return false;
+
+	// Pi migrates in place. Compare the migrated entries in order, mapping v1's generated IDs to the IDs Pi wrote.
+	const migrated = structuredClone(before);
+	migrateSessionEntries(migrated);
+	if ((oldHeader.version ?? 1) < 2) {
+		const ids = new Map(migrated.slice(1).map((entry, i) => [entry.id, prefix[i + 1].id]));
+		for (const entry of migrated) {
+			if (entry.type === "session") continue;
+			entry.id = ids.get(entry.id)!;
+			if (entry.parentId !== null) entry.parentId = ids.get(entry.parentId)!;
+			if (entry.type === "compaction" && entry.firstKeptEntryId !== undefined) entry.firstKeptEntryId = ids.get(entry.firstKeptEntryId)!;
+		}
+	}
+	return isDeepStrictEqual(migrated, prefix);
 }
 
 function emptyUsage(): Usage {
 	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
 }
 
-function tokenUsageFromAttempts(attempts: ModelAttempt[] | undefined): TokenUsage | null {
-	if (!attempts || attempts.length === 0) return null;
-	let input = 0;
-	let output = 0;
-	for (const attempt of attempts) {
-		input += attempt.usage?.input ?? 0;
-		output += attempt.usage?.output ?? 0;
+function updateCompletedUsage(status: RunnerStatusPayload): void {
+	let totalInput = 0;
+	let totalOutput = 0;
+	let totalCost = 0;
+	for (const step of status.steps) {
+		if (step.status === "pending" || step.status === "running") continue;
+		let input = 0;
+		let output = 0;
+		for (const { usage } of step.modelAttempts ?? []) {
+			if (!usage) continue;
+			input += usage.input;
+			output += usage.output;
+			totalCost += usage.cost;
+		}
+		step.tokens = { input, output, total: input + output };
+		totalInput += input;
+		totalOutput += output;
 	}
-	const total = input + output;
-	return total > 0 ? { input, output, total } : null;
+	status.totalTokens = { input: totalInput, output: totalOutput, total: totalInput + totalOutput };
+	status.totalCost = totalCost;
 }
 
 function appendRecentStepOutput(step: RunnerStatusStep, lines: string[]): void {
@@ -244,8 +304,12 @@ type ChildMessage = Message & {
 
 interface ChildEvent {
 	type?: string;
+	id?: string;
 	aborted?: boolean;
+	errorMessage?: string;
 	message?: ChildMessage;
+	result?: { usage?: ChildUsage };
+	entry?: { type: string; id?: string; usage?: ChildUsage };
 	toolName?: string;
 	args?: Record<string, unknown>;
 }
@@ -275,12 +339,20 @@ function runPiStreaming(
 	structuredRun = false,
 	controlConfig: ResolvedControlConfig = DEFAULT_CONTROL_CONFIG,
 	onPolicyStop?: (signal: () => boolean) => boolean,
+	sessionFile?: string,
 ): Promise<RunPiStreamingResult> {
 	return new Promise((resolve, reject) => {
 		const spawnSpec = getPiSpawnCommand(args, runtime);
 		const outputStream = fs.createWriteStream(outputFile, { flags: "w" });
 		const spawnEnv = { ...process.env, ...(env ?? {}), ...getSubagentDepthEnv(maxSubagentDepth) };
 		pinChildAgentDir(spawnEnv);
+		let sessionPrefix: ReturnType<typeof readStreamingSession>;
+		let prefixError: unknown;
+		try {
+			if (sessionFile) sessionPrefix = readStreamingSession(sessionFile);
+		} catch (error) {
+			prefixError = error;
+		}
 		const child = spawn(spawnSpec.command, spawnSpec.args, {
 			cwd,
 			stdio: ["ignore", "pipe", "pipe"],
@@ -290,8 +362,20 @@ function runPiStreaming(
 		let stderr = "";
 		let stdoutBuf = "";
 		let stderrBuf = "";
+		let streamedSessionId: string | undefined;
+		const observedMessages = new Map<string, number>();
+		let observedCompactions = 0;
+		const observedEntryIds = new Set<string>();
 		const messages: Message[] = [];
 		const usage = emptyUsage();
+		const streamedSummaries = new Set<string>();
+		const addCharge = (charge: ChildUsage) => {
+			usage.input += charge.input ?? charge.inputTokens ?? 0;
+			usage.output += charge.output ?? charge.outputTokens ?? 0;
+			usage.cacheRead += charge.cacheRead ?? 0;
+			usage.cacheWrite += charge.cacheWrite ?? 0;
+			usage.cost += charge.cost?.total ?? 0;
+		};
 		let model: string | undefined;
 		let error: string | undefined;
 		let assistantError: string | undefined;
@@ -338,8 +422,22 @@ function runPiStreaming(
 				return;
 			}
 
+			if (event.type === "session" && typeof event.id === "string") streamedSessionId ??= event.id;
 			appendChildEvent(event);
 			onChildEvent?.(event);
+
+			if (event.type === "compaction_end" && event.result && !event.aborted && !event.errorMessage) {
+				observedCompactions++;
+				if (event.result.usage) addCharge(event.result.usage);
+			}
+			if (event.type === "entry_appended" && event.entry) {
+				const { id, type, usage } = event.entry;
+				if (typeof id === "string") observedEntryIds.add(id);
+				if (usage && type !== "message") {
+					addCharge(usage);
+					if (type === "branch_summary" && id) streamedSummaries.add(id);
+				}
+			}
 
 			if (structuredRun && event.type === "agent_settled") {
 				clearSettlementWait();
@@ -360,17 +458,16 @@ function runPiStreaming(
 				const text = extractTextFromContent(event.message.content);
 				if (text) writeOutputText(text);
 
-				if (event.type !== "message_end" || event.message.role !== "assistant") return;
+				if (event.type !== "message_end") return;
+				const { role } = event.message;
+				if (PERSISTED_MESSAGE_ROLES.has(role)) observedMessages.set(role, (observedMessages.get(role) ?? 0) + 1);
+				if (event.message.role === "toolResult" && isUsage(event.message.usage)) addCharge(event.message.usage);
+				if (event.message.role !== "assistant") return;
 				if (event.message.model) model = event.message.model;
 				if (event.message.errorMessage) assistantError = event.message.errorMessage;
-				const eventUsage = event.message.usage;
-				if (eventUsage) {
+				if (event.message.usage) {
 					usage.turns++;
-					usage.input += eventUsage.input ?? eventUsage.inputTokens ?? 0;
-					usage.output += eventUsage.output ?? eventUsage.outputTokens ?? 0;
-					usage.cacheRead += eventUsage.cacheRead ?? 0;
-					usage.cacheWrite += eventUsage.cacheWrite ?? 0;
-					usage.cost += eventUsage.cost?.total ?? 0;
+					addCharge(event.message.usage);
 				}
 				const stopReason = (event.message as { stopReason?: string }).stopReason;
 				const hasToolCall = Array.isArray(event.message.content)
@@ -496,19 +593,62 @@ function runPiStreaming(
 			childExited = true;
 			clearDrainTimers();
 		});
-		child.on("close", (exitCode, signal) => {
-			if (settled) return;
-			settled = true;
+		async function finishStreaming(exitCode: number | null, signal: NodeJS.Signals | null): Promise<RunPiStreamingResult> {
 			registerInterrupt?.(undefined);
 			clearDrainTimers();
 			clearStdioGuard();
 			if (stdoutBuf.trim()) processStdoutLine(stdoutBuf);
 			if (stderrBuf.trim()) appendChildLine("subagent.child.stderr", stderrBuf);
-			outputStream.end();
+			if (sessionFile) {
+				try {
+					if (prefixError) throw prefixError;
+					const saved = readStreamingSession(sessionFile);
+					const before = sessionPrefix?.entries ?? [];
+					if (sessionPrefix && (!saved || saved.stat.dev !== sessionPrefix.stat.dev || saved.stat.ino !== sessionPrefix.stat.ino
+						|| !(await matchesStreamingPrefix(before, saved.entries)))) {
+						throw new Error("Session file was replaced or its existing prefix changed");
+					}
+					if (saved && !saved.entries.length) throw new Error("Missing session header");
+					if (saved && streamedSessionId !== undefined && saved.entries[0].id !== streamedSessionId) {
+						throw new Error("Session file was replaced: its header does not match the streamed session ID");
+					}
+					// A fresh session keeps setup entries in memory until its first user or assistant message.
+					if (saved || observedCompactions || observedMessages.has("user") || observedMessages.has("assistant")) {
+						const ownEntries = saved?.entries.slice(before.length || 1) ?? [];
+						const savedMessages = new Map<string, number>();
+						let savedCompactions = 0;
+						const missingEntryIds = new Set(observedEntryIds);
+						for (const entry of ownEntries) {
+							// Writes reported by entry_appended cannot witness a separate message_end or compaction_end write.
+							if (entry.type !== "session" && missingEntryIds.delete(entry.id)) continue;
+							if (entry.type === "compaction") savedCompactions++;
+							const role = entry.type === "custom_message" ? "custom" : entry.type === "message" ? entry.message?.role : undefined;
+							if (role) savedMessages.set(role, (savedMessages.get(role) ?? 0) + 1);
+						}
+						const shortfalls = [];
+						for (const [role, observed] of observedMessages) {
+							const count = savedMessages.get(role) ?? 0;
+							if (count < observed) shortfalls.push(`${role} (observed ${observed}, saved ${count})`);
+						}
+						if (savedCompactions < observedCompactions) {
+							shortfalls.push(`compaction (observed ${observedCompactions}, saved ${savedCompactions})`);
+						}
+						if (missingEntryIds.size) shortfalls.push(`entry_appended (missing IDs: ${[...missingEntryIds].join(", ")})`);
+						if (shortfalls.length) {
+							throw new Error(`${saved ? "Session file was truncated" : "Missing session file"}: ${shortfalls.join(", ")}`);
+						}
+						for (const entry of ownEntries) {
+							if (entry.type === "branch_summary" && entry.usage && !streamedSummaries.has(entry.id)) addCharge(entry.usage);
+						}
+					}
+				} catch (error) {
+					appendChildEvent({ type: "subagent.child.accounting", sessionFile, message: error instanceof Error ? error.message : String(error) });
+				}
+			}
 			const finalOutput = getFinalOutput(messages) || rawStdoutLines.join("\n").trim();
 			const finalError = error ?? assistantError;
 			const forcedDrainAfterFinalSuccess = forcedTerminationSignal && cleanTerminalAssistantStopReceived && !finalError;
-			resolve({
+			return {
 				stderr,
 				exitCode: interrupted || forcedDrainAfterFinalSuccess ? 0 : forcedTerminationSignal || signal ? (exitCode ?? 1) : exitCode,
 				messages,
@@ -518,7 +658,12 @@ function runPiStreaming(
 				finalOutput,
 				interrupted,
 				observedMutationAttempt,
-			});
+			};
+		}
+		child.on("close", (exitCode, signal) => {
+			if (settled) return;
+			settled = true;
+			finishStreaming(exitCode, signal).finally(() => outputStream.end()).then(resolve, reject);
 		});
 
 		child.on("error", (spawnError) => {
@@ -707,7 +852,8 @@ async function runSingleStepAttempts(
 	executionSurface?: ExecutionSurfaceResult;
 }> {
 	const stopped = () => ctx.isStopping?.() || stoppingAncestor(ctx.nestedRoute, ctx.id, ctx.childId, ctx.parentPath);
-	const paused = () => ({ agent: step.agent, output: "", exitCode: 0, interrupted: true, sessionFile: step.sessionFile });
+	let finalSessionFile = step.sessionFile;
+	const paused = () => ({ agent: step.agent, output: "", exitCode: 0, interrupted: true, sessionFile: finalSessionFile });
 	if (stopped()) return paused();
 	let childCwd: string;
 	const placeholderRegex = new RegExp(ctx.placeholder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g");
@@ -785,7 +931,6 @@ async function runSingleStepAttempts(
 	const attemptNotes: string[] = [];
 	const eventsPath = path.join(path.dirname(ctx.outputFile), "events.jsonl");
 	let finalResult: RunPiStreamingResult | undefined;
-	let finalSessionFile = step.sessionFile;
 	let finalOutputSnapshot: SingleOutputSnapshot | undefined;
 	let completionGuardTriggeredFinal = false;
 	let executionSurface: ExecutionSurfaceResult | undefined;
@@ -797,11 +942,12 @@ async function runSingleStepAttempts(
 		const selection = backendSelection.selection;
 		// One AbortController per leaf for the external owner lifecycle.
 		const ownerController = new AbortController();
+		const childId = `${step.agent}-${ctx.flatIndex}`;
 		try {
 			externalOwner = await createExternalExecution({
 				runtime: ctx.runtime,
 				runId: ctx.id,
-				childId: `${step.agent}-${ctx.flatIndex}`,
+				childId,
 				backend: selection.backend,
 				cwd: childCwd,
 				title: step.agent,
@@ -840,6 +986,7 @@ async function runSingleStepAttempts(
 				if (!step.sessionFile) fs.mkdirSync(ctx.sessionDir!, { recursive: true });
 				const attemptSessionFile = step.sessionFile ?? path.join(ctx.sessionDir!, `session-${ctx.flatIndex}-attempt-${index}.jsonl`);
 				finalSessionFile = attemptSessionFile;
+				const attemptId = `${ctx.id}-${ctx.flatIndex}-attempt-${index}`;
 				let piArgs: ReturnType<typeof buildPiArgs> | undefined;
 				let run: import("./external-attempt.ts").ExternalBackgroundAttemptResult;
 				let startDeadlinePassed = false;
@@ -887,7 +1034,7 @@ async function runSingleStepAttempts(
 						run = await runExternalBackgroundAttempt({
 							runtime: ctx.runtime,
 							owner: externalOwner,
-							attemptId: `${ctx.id}-${ctx.flatIndex}-attempt-${index}`,
+							attemptId,
 							args,
 							environment: mergedEnv,
 							cwd: childCwd,
@@ -896,7 +1043,12 @@ async function runSingleStepAttempts(
 							onChildEvent: ctx.onChildEvent,
 						});
 					} catch (error) {
-						if (error instanceof PiRuntimeLaunchError) throw error;
+						if (!piArgs) {
+							const message = error instanceof Error ? error.message : String(error);
+							finalResult = { stderr: "", exitCode: 1, messages: [], usage: emptyUsage(), error: message, finalOutput: "" };
+							break;
+						}
+						if (error instanceof PiRuntimeLaunchError || error instanceof ExternalAttemptSetupError) throw error;
 						startDeadlinePassed = error instanceof ExternalStartDeadlineError;
 						const interrupted = isInterruptedExternalAttemptError(error);
 						run = {
@@ -904,10 +1056,8 @@ async function runSingleStepAttempts(
 							exitCode: interrupted ? 0 : 1,
 							interrupted,
 							messages: [],
-							usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
-							error: interrupted || startDeadlinePassed ? (error as Error).message : piArgs
-								? safeExternalFailure("attempt", error)
-								: error instanceof Error ? error.message : String(error),
+							usage: await readPendingAttemptUsage(attemptSessionFile, { runId: ctx.id, childId, attemptId }) ?? emptyUsage(),
+							error: interrupted || startDeadlinePassed ? (error as Error).message : safeExternalFailure("attempt", error),
 							finalOutput: "",
 							executionHandle: externalOwner.handle,
 						};
@@ -996,7 +1146,11 @@ async function runSingleStepAttempts(
 		}
 	} else {
 	for (let index = 0; index < candidates.length; index++) {
-		if (stopped()) return paused();
+		if (stopped()) return {
+			...paused(),
+			attemptedModels: attemptedModels.length > 0 ? attemptedModels : undefined,
+			modelAttempts: modelAttempts.length > 0 ? modelAttempts : undefined,
+		};
 		const candidate = candidates[index];
 		ctx.onAttemptStart?.({ model: candidate, thinking: resolveEffectiveThinking(candidate, step.thinking) });
 		const outputSnapshot = captureSingleOutputSnapshot(step.outputPath);
@@ -1007,6 +1161,9 @@ async function runSingleStepAttempts(
 				// Missing/stale structured-output files are handled after the child exits.
 			}
 		}
+		const attemptSessionFile = step.sessionFile ?? (sessionEnabled && sessionDir
+			? path.join(sessionDir, `session-${ctx.flatIndex}-attempt-${index}-${randomUUID()}.jsonl`)
+			: undefined);
 		let piArgs: ReturnType<typeof buildPiArgs> | undefined;
 		let run: RunPiStreamingResult;
 		try {
@@ -1015,7 +1172,7 @@ async function runSingleStepAttempts(
 				task,
 				sessionEnabled,
 				sessionDir,
-				sessionFile: step.sessionFile,
+				sessionFile: attemptSessionFile,
 				model: candidate,
 				inheritProjectContext: step.inheritProjectContext,
 				inheritSkills: step.inheritSkills,
@@ -1067,7 +1224,9 @@ async function runSingleStepAttempts(
 					}
 					return sent;
 				},
+				attemptSessionFile,
 			);
+			finalSessionFile = step.sessionFile ?? (attemptSessionFile && fs.existsSync(attemptSessionFile) ? attemptSessionFile : undefined);
 		} catch (error) {
 			if (piArgs && !(error instanceof PiRuntimeLaunchError)) throw error;
 			const message = error instanceof Error ? error.message : String(error);
@@ -1306,7 +1465,7 @@ async function runSingleStepAttempts(
 		output: outputForSummary,
 		exitCode: effectiveFinalExitCode,
 		error: effectiveFinalError,
-		sessionFile: finalSessionFile ?? (sessionEnabled && sessionDir ? findLatestSessionFile(sessionDir) ?? undefined : undefined),
+		sessionFile: finalSessionFile,
 		model: finalResult?.model,
 		attemptedModels: attemptedModels.length > 0 ? attemptedModels : undefined,
 		modelAttempts,
@@ -1483,8 +1642,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 	let stopError: string | undefined;
 	let currentActivityState: ActivityState | undefined;
 	let activityTimer: NodeJS.Timeout | undefined;
-	let previousCumulativeTokens: TokenUsage = { input: 0, output: 0, total: 0 };
-	let previousCumulativeCost = 0;
 
 	const parallelGroups: Array<{ start: number; count: number; stepIndex: number }> = [];
 	const queuedSteps: RunnerStatusStep[] = fs.existsSync(statusPath) ? JSON.parse(fs.readFileSync(statusPath, "utf8")).steps ?? [] : [];
@@ -2294,6 +2451,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				success: failures.length === 0,
 			}));
 			if (failures.length > 0) markDynamicGraphGroup(stepIndex, "failed", failures[0]?.error ?? "Dynamic fanout child failed.");
+			updateCompletedUsage(statusPayload);
 			statusPayload.lastUpdate = Date.now();
 			writeStatusPayload();
 			if (stopRecord || failures.length > 0 || statusPayload.error) break;
@@ -2523,23 +2681,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 
 				flatIndex += group.parallel.length;
 
-				for (let t = 0; t < group.parallel.length; t++) {
-					const fi = groupStartFlatIndex + t;
-					const sessionTokens = config.sessionDir
-						? parseSessionTokens(path.join(config.sessionDir, `parallel-${fi}`))
-						: null;
-					const taskTokens = sessionTokens ?? tokenUsageFromAttempts(parallelResults[t]?.modelAttempts);
-					if (!taskTokens) continue;
-					statusPayload.steps[fi].tokens = taskTokens;
-					previousCumulativeTokens = {
-						input: previousCumulativeTokens.input + taskTokens.input,
-						output: previousCumulativeTokens.output + taskTokens.output,
-						total: previousCumulativeTokens.total + taskTokens.total,
-					};
-					previousCumulativeCost += sessionTokens?.cost ?? 0;
-				}
-				statusPayload.totalTokens = { ...previousCumulativeTokens };
-				statusPayload.totalCost = previousCumulativeCost;
+				updateCompletedUsage(statusPayload);
 				statusPayload.lastUpdate = Date.now();
 				writeStatusPayload();
 
@@ -2695,17 +2837,6 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			}
 			statusPayload.outputs = outputs;
 
-			const sessionTokens = config.sessionDir ? parseSessionTokens(path.join(config.sessionDir, `parallel-${flatIndex}`)) : null;
-			const stepTokens = sessionTokens ?? tokenUsageFromAttempts(singleResult.modelAttempts);
-			if (stepTokens) {
-				previousCumulativeTokens = {
-					input: previousCumulativeTokens.input + stepTokens.input,
-					output: previousCumulativeTokens.output + stepTokens.output,
-					total: previousCumulativeTokens.total + stepTokens.total,
-				};
-				previousCumulativeCost += sessionTokens?.cost ?? 0;
-			}
-
 			const stepEndTime = Date.now();
 			if (singleResult.interrupted) interrupted = true;
 			statusPayload.steps[flatIndex].status = singleResult.interrupted ? "paused" : singleResult.exitCode === 0 ? "complete" : "failed";
@@ -2722,11 +2853,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 			statusPayload.steps[flatIndex].structuredOutputPath = singleResult.structuredOutputPath;
 			statusPayload.steps[flatIndex].structuredOutputSchemaPath = singleResult.structuredOutputSchemaPath;
 			statusPayload.steps[flatIndex].acceptance = singleResult.acceptance;
-			if (stepTokens) {
-				statusPayload.steps[flatIndex].tokens = stepTokens;
-				statusPayload.totalTokens = { ...previousCumulativeTokens };
-				statusPayload.totalCost = previousCumulativeCost;
-			}
+			updateCompletedUsage(statusPayload);
 			statusPayload.lastUpdate = stepEndTime;
 			writeStatusPayload();
 
@@ -2738,7 +2865,7 @@ async function runSubagent(config: SubagentRunConfig): Promise<void> {
 				agent: seqStep.agent,
 				exitCode: singleResult.exitCode,
 				durationMs: stepEndTime - stepStartTime,
-				tokens: stepTokens,
+				tokens: statusPayload.steps[flatIndex].tokens,
 			}));
 			if (singleResult.completionGuardTriggered) {
 				const event = buildControlEvent({

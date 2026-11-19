@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
-import { createChildHostController as createChildHostControllerImpl } from "../../src/execution-backend/child-host-controller.ts";
+import { ChildHostAttemptDispatchError, createChildHostController as createChildHostControllerImpl } from "../../src/execution-backend/child-host-controller.ts";
 import { createMockPi } from "../support/mock-pi.ts";
 const mockPi = createMockPi();
 const createChildHostController = (options, deps?) => createChildHostControllerImpl({ ...options, runtime: mockPi.runtime }, deps);
@@ -87,10 +87,18 @@ describe("execution child host", unixOnly, () => {
 				assert.equal(fake.releaseCalls(), 1);
 			} else {
 				const controller = await create();
-				await controller.ready;
-				if (scenario.operation === "attempt") await assert.rejects(controller.startAttempt({ attemptId: "attempt", command: process.execPath, args: [], cwd: fixture, environment: {} }), scenario.error);
-				else await assert.rejects(controller.shutdown(), scenario.error);
-				controller.dispose();
+				try {
+					await controller.ready;
+					if (scenario.operation === "attempt") {
+						await assert.rejects(controller.startAttempt({ attemptId: "attempt", command: process.execPath, args: [], cwd: fixture, environment: {} }), error => {
+							assert.match(String(error), scenario.error);
+							assert.ok(!(error instanceof ChildHostAttemptDispatchError));
+							return true;
+						});
+					} else await assert.rejects(controller.shutdown(), scenario.error);
+				} finally {
+					controller.dispose();
+				}
 			}
 			await fake.reap(); assertArtifactsRemoved(fake.requests[0]!.environment.PI_COHORT_CHILD_HOST_CONFIG!); fs.rmSync(fixture, { recursive: true, force: true });
 		});
@@ -99,12 +107,24 @@ describe("execution child host", unixOnly, () => {
 	it("reports an idle disconnect on the next operation", async () => {
 		const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "child-host-idle-disconnect-")); const fake = fakeBackend();
 		const controller = await createChildHostController({ backend: fake.backend, runId: "run", childId: "child", cwd: fixture, signal: AbortSignal.timeout(5_000) }, { childHostCommand: hostCommand("idle-disconnect") });
-		await controller.ready;
-		fake.hosts[0]!.kill("SIGUSR1"); await fake.reap();
-		let cause: unknown;
-		await assert.rejects(controller.startAttempt({ attemptId: "attempt", command: process.execPath, args: [], cwd: fixture, environment: {} }), error => { cause = error; return /disconnected after ready/.test(String(error)); });
-		await assert.rejects(controller.shutdown(), error => { assert.equal(error, cause); return true; });
-		controller.dispose(); assertArtifactsRemoved(fake.requests[0]!.environment.PI_COHORT_CHILD_HOST_CONFIG!); fs.rmSync(fixture, { recursive: true, force: true });
+		try {
+			await controller.ready;
+			fake.hosts[0]!.kill("SIGUSR1"); await fake.reap();
+			let cause: unknown;
+			await assert.rejects(controller.startAttempt({ attemptId: "attempt", command: process.execPath, args: [], cwd: fixture, environment: {} }), error => {
+				assert.ok(error instanceof ChildHostAttemptDispatchError);
+				assert.match(error.message, /disconnected after ready/);
+				cause = error.cause;
+				assert.ok(cause instanceof Error);
+				assert.match(cause.message, /disconnected after ready/);
+				return true;
+			});
+			await assert.rejects(controller.shutdown(), error => { assert.equal(error, cause); return true; });
+		} finally {
+			controller.dispose();
+			fs.rmSync(fixture, { recursive: true, force: true });
+		}
+		assertArtifactsRemoved(fake.requests[0]!.environment.PI_COHORT_CHILD_HOST_CONFIG!);
 	});
 
 	it("exposes an actionable lease while the host is blocked before ready", async () => {

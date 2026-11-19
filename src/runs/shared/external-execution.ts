@@ -2,8 +2,9 @@ import * as fs from "node:fs";
 import type { ChildSettings } from "./child-settings.ts";
 import type { PiRuntimeIdentity } from "./pi-spawn.ts";
 import { DEFAULT_CONTROL_CONFIG } from "./subagent-control.ts";
-import type { Message } from "@earendil-works/pi-ai";
+import type { Message, Usage } from "@earendil-works/pi-ai";
 import {
+	ChildHostAttemptDispatchError,
 	createChildHostController,
 	type ChildHostController,
 	type ChildHostControllerOptions,
@@ -14,7 +15,7 @@ import {
 	type ExecutionControlChannel,
 } from "../../execution-backend/control-channel.ts";
 import { PI_COHORT_REPORT_CONFIG, createExclusiveSessionFile, type ExecutionReportIdentity } from "../../execution-backend/reporting-protocol.ts";
-import { replayExecutionSession, type ReplayedSession } from "../../execution-backend/session-replay.ts";
+import { isUsage, replayExecutionSession, type ReplayedSession } from "../../execution-backend/session-replay.ts";
 import { createSessionWatcher, type OnNewSessionMessage, type SessionWatcher } from "../../execution-backend/session-watcher.ts";
 import type { ExecutionBackend, ExecutionSurfaceHandle } from "../../execution-backend/types.ts";
 
@@ -81,8 +82,15 @@ export class ExternalExecutionDiagnosticError extends Error {
 	}
 }
 
+export class ExternalAttemptSetupError extends Error {
+	constructor(cause: unknown) {
+		super(cause instanceof Error ? cause.message : String(cause), { cause });
+	}
+}
+
 export function externalExecutionDiagnosticCode(error: unknown): ExternalExecutionDiagnosticCode | undefined {
-	return error instanceof ExternalExecutionDiagnosticError ? error.code : undefined;
+	const diagnostic = error instanceof ExternalAttemptSetupError ? error.cause : error;
+	return diagnostic instanceof ExternalExecutionDiagnosticError ? diagnostic.code : undefined;
 }
 
 /** An attempt's pi did not report its session started in time; the surface has been asked to close. */
@@ -132,11 +140,15 @@ function defaultWatchDependencies(): WatchDependencies {
 	};
 }
 
+function assertTrustedSessionFile(sessionFile: string): void {
+	const details = fs.lstatSync(sessionFile);
+	if (!details.isFile() || details.isSymbolicLink()) throw new ExternalExecutionDiagnosticError("session_file_untrusted", "execution session path must be a regular non-symlink file");
+	if (process.platform !== "win32" && (details.mode & 0o077) !== 0) throw new ExternalExecutionDiagnosticError("session_file_untrusted", "execution session file must be owner-only");
+}
+
 function ensureTrustedSessionFile(sessionFile: string): void {
 	try {
-		const details = fs.lstatSync(sessionFile);
-		if (!details.isFile() || details.isSymbolicLink()) throw new ExternalExecutionDiagnosticError("session_file_untrusted", "execution session path must be a regular non-symlink file");
-		if (process.platform !== "win32" && (details.mode & 0o077) !== 0) throw new ExternalExecutionDiagnosticError("session_file_untrusted", "execution session file must be owner-only");
+		assertTrustedSessionFile(sessionFile);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 		createExclusiveSessionFile(sessionFile);
@@ -171,25 +183,38 @@ function startDeadline(timeoutMs: number): { readonly expired: Promise<void>; ca
 	return { expired, cancel: () => clearTimeout(timer) };
 }
 
-function usageFrom(messages: readonly Message[]): { usage: ExternalAttemptUsage; model?: string } {
-	let input = 0;
-	let output = 0;
-	let cacheRead = 0;
-	let cacheWrite = 0;
-	let cost = 0;
-	let turns = 0;
+function usageFrom(messages: ReplayedSession["messages"], charges: readonly Usage[]): { usage: ExternalAttemptUsage; model?: string } {
+	const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
+	const addCharge = (charge: Usage) => {
+		usage.input += charge.input;
+		usage.output += charge.output;
+		usage.cacheRead += charge.cacheRead;
+		usage.cacheWrite += charge.cacheWrite;
+		usage.cost += charge.cost.total;
+	};
 	let model: string | undefined;
 	for (const message of messages) {
-		if (message.role !== "assistant") continue;
-		turns++;
-		input += message.usage?.input ?? 0;
-		output += message.usage?.output ?? 0;
-		cacheRead += message.usage?.cacheRead ?? 0;
-		cacheWrite += message.usage?.cacheWrite ?? 0;
-		cost += message.usage?.cost?.total ?? 0;
-		model ??= message.model;
+		if (message.role === "assistant") {
+			usage.turns++;
+			addCharge(message.usage);
+			model ??= message.model;
+		} else if (message.role === "toolResult" && isUsage(message.usage)) {
+			addCharge(message.usage);
+		}
 	}
-	return { usage: { input, output, cacheRead, cacheWrite, cost, turns }, model };
+	for (const charge of charges) addCharge(charge);
+	return { usage, model };
+}
+
+export async function readPendingAttemptUsage(sessionFile: string, identity: ExecutionReportIdentity): Promise<ExternalAttemptUsage | undefined> {
+	try {
+		assertTrustedSessionFile(sessionFile);
+		const replay = replayExecutionSession(await fs.promises.readFile(sessionFile, "utf8"), identity);
+		return usageFrom(replay.pendingMessages, replay.pendingCharges).usage;
+	} catch {
+		// Usage is unavailable; the caller keeps the original attempt failure.
+		return undefined;
+	}
 }
 
 function proveControl(replayed: ReplayedSession, action: "abort" | "shutdown"): void {
@@ -203,7 +228,7 @@ function mapResult(request: ExternalAttemptRequest, replayed: ReplayedSession, e
 	if (!replayed.result) throw new ExternalExecutionDiagnosticError("result_missing");
 	if (validateExit && replayed.result.outcome === "success" && (exit.status !== 0 || exit.signal !== null)) throw new Error("successful durable result conflicts with child exit");
 	const messages = replayed.messages.filter((message): message is Message => message.role === "user" || message.role === "assistant" || message.role === "toolResult");
-	const aggregate = usageFrom(messages);
+	const aggregate = usageFrom(messages, replayed.charges);
 	return {
 		attemptId: request.attemptId,
 		sessionFile: request.sessionFile,
@@ -299,6 +324,8 @@ export async function createExternalExecution(
 		attemptedIds.add(request.attemptId);
 		let control: ExecutionControlChannel | undefined;
 		let watcher: SessionWatcher | undefined;
+		let launchRequested = false;
+		let setupError: ExternalAttemptSetupError | undefined;
 		const abort = abortPromise([request.signal, request.interruptSignal]);
 		let interruptedAt: number | undefined;
 		let disposed = false;
@@ -316,6 +343,7 @@ export async function createExternalExecution(
 			watcher = createWatcher(request.sessionFile, identity, request.onNewSessionMessage);
 			const environment = { ...request.environment, [PI_COHORT_REPORT_CONFIG]: control.configPath };
 			const exitPromise = controller.startAttempt({ attemptId: request.attemptId, command: request.command, args: [...request.args], cwd: request.cwd, environment });
+			launchRequested = true;
 			const deadline = startDeadline(startDeadlineMs);
 			// The watcher can miss a file event, so the deadline trusts only a fresh read.
 			const notStarted = deadline.expired
@@ -442,6 +470,10 @@ export async function createExternalExecution(
 				exitPromise.then(exit => ({ kind: "exit" as const, exit })),
 				abort.promise.then(() => ({ kind: "abort" as const })),
 			]); } catch (error) {
+				if (error instanceof ChildHostAttemptDispatchError) {
+					launchRequested = false;
+					throw error.cause;
+				}
 				if (interruptedAt !== undefined) return await finalizeInterrupted(undefined, error);
 				throw error;
 			} finally { deadline.cancel(); }
@@ -493,11 +525,17 @@ export async function createExternalExecution(
 				if (interruptedAt !== undefined || replayed.result!.outcome === "interrupted") return await finalizeInterrupted(replayed);
 			}
 			return mapResult(request, replayed, exit);
+		} catch (error) {
+			if (launchRequested) throw error;
+			setupError = new ExternalAttemptSetupError(error);
+			throw setupError;
 		} finally {
 			abort.close();
 			for (const signal of signals) signal?.removeEventListener("abort", acceptInterruption);
 			try {
 				if (!disposed) { watcher?.close(); await control?.close(); }
+			} catch (error) {
+				if (!setupError) throw error;
 			} finally { active = false; }
 		}
 	};

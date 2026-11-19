@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { capturePiRuntime, type PiRuntimeIdentity } from "../../src/runs/shared/pi-spawn.ts";
 
+type MockSessionSummary = Pick<import("@earendil-works/pi-coding-agent").BranchSummaryEntry, "id" | "summary" | "fromId" | "usage">;
+
 interface MockPiResponse {
 	taskIncludes?: string;
 	output?: string;
@@ -15,6 +17,7 @@ interface MockPiResponse {
 	ignoreSigterm?: boolean;
 	exitOnSigtermWithOpenStdout?: { pidFile: string };
 	jsonl?: unknown[];
+	sessionSummaries?: MockSessionSummary[];
 	structuredOutput?: unknown;
 	steps?: Array<{
 		delay?: number;
@@ -79,6 +82,8 @@ export function createMockPi(): MockPi {
 	const entryPath = path.join(packageRoot, "dist", "cli.mjs");
 	ensureDir(path.dirname(entryPath));
 	fs.copyFileSync(SCRIPT_PATH, entryPath);
+	fs.writeFileSync(path.join(packageRoot, "dist", "index.js"),
+		`export { CURRENT_SESSION_VERSION, migrateSessionEntries } from ${JSON.stringify(import.meta.resolve("@earendil-works/pi-coding-agent"))};\n`);
 	fs.writeFileSync(path.join(packageRoot, "package.json"), JSON.stringify({
 		name: "@earendil-works/pi-coding-agent", type: "module", bin: { pi: "dist/cli.mjs" },
 	}));

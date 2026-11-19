@@ -1,23 +1,5 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
-import { parseSessionTokens } from "../../src/shared/session-tokens.ts";
-
-test("parseSessionTokens sums cost.total across assistant entries", () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gt-cost-"));
-    const file = path.join(dir, "s.jsonl");
-    fs.writeFileSync(file, [
-        JSON.stringify({ message: { usage: { input: 10, output: 5, cost: { total: 0.01 } } } }),
-        JSON.stringify({ message: { usage: { input: 20, output: 7, cost: { total: 0.02 } } } }),
-        JSON.stringify({ message: { usage: { input: 1, output: 1 } } }),
-    ].join("\n"));
-    const result = parseSessionTokens(dir) as (ReturnType<typeof parseSessionTokens> & { cost: number });
-    assert.equal(result!.total, 44);
-    assert.ok(Math.abs(result!.cost - 0.03) < 1e-9);
-});
-
 import { recompute, recordMainCost, recordSyncCost, recordAsyncCost, emptyGrandTotal, formatGrandTotal, sumNestedCost, recordExternalCost } from "../../src/extension/grand-total.ts";
 
 test("recompute sums all three sources", () => {

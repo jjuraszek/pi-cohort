@@ -1,24 +1,27 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionMessageEntry } from "@earendil-works/pi-coding-agent";
-import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Message, Usage } from "@earendil-works/pi-ai";
 import { EXECUTION_REPORT_TYPE, type ExecutionReport, type ExecutionReportIdentity, validateExecutionReport } from "./reporting-protocol.ts";
 
 export interface ReplayedSession {
 	readonly reports: readonly ExecutionReport[];
 	readonly controls: readonly (ExecutionReport & { readonly kind: "control" })[];
-	/** Messages reconstructed from the terminal branch (only present when `result` is set). */
+	/** Owned messages on the terminal branch (only present when `result` is set). */
 	readonly messages: readonly SessionMessageEntry["message"][];
+	/** Non-message usage on the same owned terminal branch as messages. */
+	readonly charges: readonly Usage[];
 	/**
-	 * All parsed message entries observed so far, in document order.
-	 * Available even before the terminal result arrives.
+	 * Messages appended after this attempt's ready report, in document order.
+	 * Empty until ready; available before the terminal result arrives.
 	 * Used for incremental observation/forwarding of session activity.
 	 */
 	readonly pendingMessages: readonly SessionMessageEntry["message"][];
+	readonly pendingCharges: readonly Usage[];
 	readonly result?: ExecutionReport & { readonly kind: "result" };
 	readonly pendingResult: boolean;
 	readonly incompleteTrailingLine: boolean;
 }
-interface SessionEntry { readonly type: string; readonly id?: string; readonly parentId?: string | null; readonly message?: AgentMessage; readonly customType?: string; readonly data?: unknown }
+interface SessionEntry { readonly type: string; readonly id?: string; readonly parentId?: string | null; readonly message?: AgentMessage; readonly usage?: unknown; readonly customType?: string; readonly data?: unknown }
 interface ReportedEntry { readonly entry: SessionEntry; readonly report: ExecutionReport }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -27,7 +30,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function isContent(value: unknown): boolean {
 	return Array.isArray(value) && value.every((part) => isRecord(part) && typeof part.type === "string");
 }
-function isUsage(value: unknown): boolean {
+export function isUsage(value: unknown): value is Usage {
 	return isRecord(value) && ["input", "output", "cacheRead", "cacheWrite", "totalTokens"].every((key) => typeof value[key] === "number")
 		&& isRecord(value.cost) && ["input", "output", "cacheRead", "cacheWrite", "total"].every((key) => typeof value.cost[key] === "number");
 }
@@ -95,16 +98,19 @@ export function replayExecutionSession(content: string, identity: ExecutionRepor
 		if (byId.has(entry.id)) throw new Error("duplicate session entry identifier");
 		byId.set(entry.id, entry);
 	}
-	const reportedEntries: ReportedEntry[] = [];
+	const candidates: ReportedEntry[] = [];
 	for (const entry of entries) {
 		if (entry.type !== "custom" || entry.customType !== EXECUTION_REPORT_TYPE || entryDataHasOtherAttempt(entry, identity)) continue;
-		const report = validateExecutionReport(entry.data);
-		if (!isIdentityMatch(report, identity)) {
-			if (hasClaimedStream(report, identity)) throw new Error("execution report correlation mismatch");
-			continue;
-		}
-		reportedEntries.push({ entry, report });
+		candidates.push({ entry, report: validateExecutionReport(entry.data) });
 	}
+	const readyEntry = candidates.find(({ report }) => report.kind === "ready" && isIdentityMatch(report, identity))?.entry;
+	const pending = readyEntry ? entries.slice(entries.indexOf(readyEntry) + 1) : [];
+	const ownedEntries = new Set(pending);
+	const reportedEntries = candidates.filter(({ entry, report }) => {
+		if (isIdentityMatch(report, identity)) return true;
+		if (ownedEntries.has(entry) && hasClaimedStream(report, identity)) throw new Error("execution report correlation mismatch");
+		return false;
+	});
 	let expected = 1;
 	let ready = false;
 	let settled = false;
@@ -127,16 +133,24 @@ export function replayExecutionSession(content: string, identity: ExecutionRepor
 		result = report;
 		resultEntry = entry;
 	}
-	const messages = result && resultEntry ? reconstructBranch(byId, resultEntry) : [];
-	const pendingMessages = entries
-		.filter((e): e is SessionEntry & { message: NonNullable<SessionEntry["message"]> } => e.type === "message" && e.message !== undefined)
-		.map((e) => e.message);
+	const branch = result && resultEntry ? reconstructBranch(byId, resultEntry).filter(entry => ownedEntries.has(entry)) : [];
+	const messages = messagesFrom(branch);
+	const pendingMessages = messagesFrom(pending);
+	const pendingCharges = chargesFrom(pending);
 	const reports = reportedEntries.map(({ report }) => report);
 	const controls = reports.filter((report): report is ExecutionReport & { kind: "control" } => report.kind === "control");
-	return { reports, controls, messages, pendingMessages, result, pendingResult: settled && !result, incompleteTrailingLine: trailing.length > 0 };
+	return { reports, controls, messages, charges: chargesFrom(branch), pendingMessages, pendingCharges, result, pendingResult: settled && !result, incompleteTrailingLine: trailing.length > 0 };
 }
 
-function reconstructBranch(byId: ReadonlyMap<string, SessionEntry>, result: SessionEntry): readonly SessionMessageEntry["message"][] {
+function chargesFrom(entries: readonly SessionEntry[]): Usage[] {
+	return entries.flatMap(entry => entry.type !== "message" && isUsage(entry.usage) ? [entry.usage] : []);
+}
+
+function messagesFrom(entries: readonly SessionEntry[]): readonly SessionMessageEntry["message"][] {
+	return entries.filter((entry): entry is SessionEntry & { message: AgentMessage } => entry.type === "message" && entry.message !== undefined).map(entry => entry.message);
+}
+
+function reconstructBranch(byId: ReadonlyMap<string, SessionEntry>, result: SessionEntry): readonly SessionEntry[] {
 	const path: SessionEntry[] = [];
 	const seen = new Set<string>();
 	let entry = result;
@@ -151,6 +165,5 @@ function reconstructBranch(byId: ReadonlyMap<string, SessionEntry>, result: Sess
 		path.push(parent);
 		entry = parent;
 	}
-	path.reverse();
-	return path.filter((entry): entry is SessionEntry & { message: AgentMessage } => entry.type === "message" && entry.message !== undefined).map((entry) => entry.message);
+	return path.reverse();
 }

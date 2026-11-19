@@ -7,8 +7,9 @@ import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, test } from "node:test";
 import { createMockPi } from "../support/mock-pi.ts";
+import { forkWithParentEdit } from "../support/fork-with-parent-edit.ts";
 import type { RunnerStep } from "../../src/runs/shared/parallel-utils.ts";
-import { RUN_STATE_ROOT_DIR, type NestedRouteInfo } from "../../src/shared/types.ts";
+import { RUN_STATE_ROOT_DIR, type NestedRouteInfo, type ModelAttempt, type TokenUsage } from "../../src/shared/types.ts";
 import { createNestedRoute, findNestedRun, projectNestedEvents } from "../../src/runs/shared/nested-events.ts";
 import { resolveSubagentRunId } from "../../src/runs/background/run-id-resolver.ts";
 import { requestAsyncStop } from "../../src/runs/shared/stop-control.ts";
@@ -38,10 +39,14 @@ interface PersistedStatus {
 	runId: string;
 	state: string;
 	stopping?: true;
+	totalTokens?: TokenUsage;
+	totalCost?: number;
 	steps: Array<{
 		id: string;
 		agent: string;
 		status: string;
+		tokens?: TokenUsage;
+		modelAttempts?: ModelAttempt[];
 		acceptance?: { status?: string };
 		attemptedModels?: string[];
 	}>;
@@ -213,8 +218,8 @@ async function waitFor(predicate: () => boolean, fixture: RunFixture, label: str
 	}
 }
 
-async function waitForResult(fixture: RunFixture): Promise<PersistedResult> {
-	await waitFor(() => fs.existsSync(fixture.resultPath), fixture, "persisted result");
+async function waitForResult(fixture: RunFixture, timeoutMs?: number): Promise<PersistedResult> {
+	await waitFor(() => fs.existsSync(fixture.resultPath), fixture, "persisted result", timeoutMs);
 	await waitFor(() => fixture.child.exitCode !== null || fixture.child.signalCode !== null, fixture, "runner exit");
 	return fixture.result();
 }
@@ -255,6 +260,33 @@ describe("detached external orchestration through serialized runner config", () 
 			assert.equal(fixture.trace().filter(event => event.type === "attempt-start").length, 2);
 		});
 	});
+
+	for (const scenario of ["fork", "fresh", "interrupted fork"]) {
+		test(`saved ${scenario} usage counts only the child's turn and compaction`, { skip: unixTransport }, async () => {
+			const interrupted = scenario === "interrupted fork";
+			let sessionFile: string | undefined;
+			if (scenario !== "fresh") {
+				const directory = fs.mkdtempSync(path.join(os.tmpdir(), "detached-fork-"));
+				roots.push(directory);
+				sessionFile = forkWithParentEdit(directory, true).sessionFile;
+			}
+			const fixture = launchRun("priced", [step("worker", interrupted ? "PRICED-TURN-NO-RESULT" : "PRICED-TURN", { sessionFile })]);
+			if (interrupted) {
+				await waitFor(() => fixture.trace().some(event => event.type === "ready"), fixture, "paid turn");
+				requestAsyncStop(fixture.asyncDir, fixture.status().runId);
+			}
+			const result = await waitForResult(fixture, interrupted ? 75_000 : undefined);
+			assert.equal(result.state, interrupted ? "paused" : "complete");
+			const status = fixture.status();
+			assert.deepEqual(status.steps[0].modelAttempts?.map(attempt => attempt.usage), [
+				{ input: 9, output: 4, cacheRead: 2, cacheWrite: 3, cost: 0.75, turns: 1 },
+			]);
+			const tokens = { input: 9, output: 4, total: 13 };
+			assert.deepEqual(status.steps[0].tokens, tokens);
+			assert.deepEqual(status.totalTokens, tokens);
+			assert.equal(status.totalCost, 0.75);
+		});
+	}
 
 	test("static parallel honors each leaf cwd when selecting native and external backends", { skip: unixTransport }, async () => {
 		const cwdRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pi-cohort-detached-leaf-settings-"));

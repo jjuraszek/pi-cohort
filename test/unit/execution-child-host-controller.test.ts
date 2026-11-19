@@ -178,12 +178,42 @@ describe("execution child host controller attempts", () => {
 						setImmediate(() => socket.emit("error", Object.assign(new Error("This socket has been ended by the other party"), { code: "EPIPE" })));
 						return false;
 					};
-					await assert.rejects(operation === "shutdown" ? controller.shutdown() : controller.startAttempt({ attemptId: "attempt", command: "echo", args: [], cwd: os.tmpdir(), environment: {} }), /child host disconnected/);
+					await assert.rejects(operation === "shutdown" ? controller.shutdown() : controller.startAttempt({ attemptId: "attempt", command: "echo", args: [], cwd: os.tmpdir(), environment: {} }), {
+						message: /child host disconnected/,
+						name: operation === "startAttempt" && state !== "write-after-FIN" ? "ChildHostAttemptDispatchError" : "Error",
+					});
 					assert.equal(writes, state === "write-after-FIN" ? 1 : 0);
 					await assert.rejects(controller.shutdown(), /child host disconnected/);
 				} finally { controller.dispose(); }
 			});
 		}
+	}
+
+	for (const failure of ["encoding", "synchronous write"] as const) {
+		it(`leaves the attempt available after a pre-dispatch ${failure} failure`, { timeout: 1_000 }, async () => {
+			const { server, dependencies } = fakeHostDependencies();
+			const controller = await createChildHostController(
+				{ runtime, backend: { ...backend, async launch() { return emptyLease(); } }, runId: "run", childId: "child", cwd: os.tmpdir(), signal: new AbortController().signal },
+				{ childHostCommand: () => ({ command: "echo", args: [] }), ...dependencies },
+			);
+			try {
+				const socket = connectFakeHost(server);
+				await controller.ready;
+				const attempt = { attemptId: "attempt", command: "echo", args: [], cwd: os.tmpdir(), environment: {} };
+				const invalid = { ...attempt, get environment(): Record<string, string> { throw new Error("encoding failed"); } };
+				const write = socket.write;
+				socket.write = () => { throw new Error("synchronous write failed"); };
+				await assert.rejects(controller.startAttempt(failure === "encoding" ? invalid : attempt), {
+					name: "ChildHostAttemptDispatchError", message: `${failure} failed`,
+				});
+				socket.write = write;
+				const pending = controller.startAttempt(attempt);
+				const correlation = { protocolVersion: CHILD_HOST_PROTOCOL_VERSION, runId: "run", childId: "child", attemptId: attempt.attemptId };
+				socket.emit("data", encodeChildHostMessage({ ...correlation, kind: "attempt_started" }));
+				socket.emit("data", encodeChildHostMessage({ ...correlation, kind: "attempt_exited", status: 0, signal: null }));
+				assert.deepEqual(await pending, { status: 0, signal: null });
+			} finally { controller.dispose(); }
+		});
 	}
 
 	it("maps a host spawn-error frame to the selected runtime error and permits cleanup", { timeout: 1_000 }, async () => {

@@ -97,17 +97,18 @@ async function waitAtFixtureBarrier() {
 }
 
 // Session JSONL helpers.
+const previousEntry = fs.readFileSync(sessionFile, "utf8").trimEnd().split("\n").at(-1);
 let sequence = 0;
-let parentId = null;
+let parentId = previousEntry ? JSON.parse(previousEntry).id : null;
 let reportSequence = 0;
 
 function appendEntry(entry) {
-	const id = `entry-${++sequence}`;
+	const id = `${attemptId}-entry-${++sequence}`;
 	fs.appendFileSync(sessionFile, JSON.stringify({ id, parentId, ...entry }) + "\n");
 	parentId = id;
 }
 
-function appendMessage(text, failed = false) {
+function appendMessage(text, failed = false, cost = 0) {
 	appendEntry({
 		type: "message",
 		message: {
@@ -116,7 +117,7 @@ function appendMessage(text, failed = false) {
 			api: "fixture",
 			provider: "fixture",
 			model: model ?? "fixture",
-			usage: { input: 2, output: 3, cacheRead: 0, cacheWrite: 0, totalTokens: 5, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+			usage: { input: 2, output: 3, cacheRead: 0, cacheWrite: 0, totalTokens: 5, cost: { input: cost, output: 0, cacheRead: 0, cacheWrite: 0, total: cost } },
 			stopReason: failed ? "error" : "stop",
 			timestamp: Date.now(),
 		},
@@ -161,6 +162,21 @@ class ControlDecoder {
 
 // Task logic - determine what to do and return handler.
 function buildTaskHandler(socket, onAbort) {
+	if (task.startsWith("PRICED-TURN")) {
+		return async () => {
+			appendReport("ready");
+			appendMessage("child answer", false, 0.25);
+			appendEntry({ type: "compaction", summary: "child summary", firstKeptEntryId: parentId, tokensBefore: 5,
+				usage: { input: 7, output: 1, cacheRead: 2, cacheWrite: 3, totalTokens: 13, cost: { input: 0.5, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.5 } } });
+			if (task === "PRICED-TURN-NO-RESULT") {
+				writeTrace("ready", { runId, childId, attemptId });
+				await new Promise(resolve => onAbort(resolve));
+				process.exit(0);
+			}
+			appendReport("settled");
+			appendReport("result", { outcome: "success", finalOutput: "child answer", stopReason: "stop" });
+		};
+	}
 	// Handle WAIT-FOR-INTERRUPT: send ready, then wait for abort.
 	if (task === "WAIT-FOR-INTERRUPT") {
 		return async () => {

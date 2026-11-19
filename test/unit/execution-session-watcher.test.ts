@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { describe, it } from "node:test";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { createForkContextResolver } from "../../src/shared/fork-context.ts";
 import { createSessionWatcher } from "../../src/execution-backend/session-watcher.ts";
 import { EXECUTION_REPORT_TYPE } from "../../src/execution-backend/reporting-protocol.ts";
 
@@ -243,24 +248,54 @@ describe("execution session watcher", () => {
 		await assert.rejects(watcher.terminal, /session watcher closed/);
 	});
 
-	it("calls onNewMessage for each newly observed session message, deduplicated across reads", async () => {
-		const assistantMsg = makeAssistantMessage();
-		const msgLine = makeMessageLine("m1", assistantMsg);
-		// Session with just ready and a message (no result yet).
-		const fake = createFakeFileSystem(readyLine(1) + msgLine);
-		const observed: unknown[] = [];
-		const watcher = createSessionWatcher("/session.jsonl", identity, fake.dependencies, (msg) => observed.push(msg));
-		// Trigger reads without new entries (coalesce/dedup check).
-		fake.fire();
-		fake.fire();
-		// Add settled + result to complete the session (sequences must be consecutive).
-		fake.setContent(readyLine(1) + msgLine + settledLine(2) + resultLine(3));
-		fake.fire();
-		await watcher.terminal;
-		watcher.close();
-		// Message should appear exactly once despite multiple reads.
-		assert.equal(observed.length, 1);
-		assert.deepEqual(observed[0], assistantMsg);
+	for (const context of ["fresh", "fork"] as const) it(`forwards only the ${context} child's messages after ready, once across repeated reads`, async () => {
+		const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "session-watcher-ownership-")));
+		let watcher: ReturnType<typeof createSessionWatcher> | undefined;
+		try {
+			const childDirectory = path.join(directory, "child");
+			let child: SessionManager;
+			if (context === "fork") {
+				const parent = SessionManager.create(directory, path.join(directory, "parent"));
+				parent.appendMessage({ role: "user", content: "parent task", timestamp: 1 });
+				parent.appendMessage(makeAssistantMessage({ usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0.5, output: 0.5, cacheRead: 0, cacheWrite: 0, total: 1 } } }));
+				const resolver = createForkContextResolver(parent, "fork", { sessionDirForIndex: () => childDirectory });
+				const forkFile = resolver.sessionFileForIndex(0, directory);
+				assert.ok(forkFile);
+				child = SessionManager.open(forkFile);
+			} else {
+				child = SessionManager.create(directory, childDirectory);
+			}
+			const sessionFile = child.getSessionFile();
+			assert.ok(sessionFile);
+			const fake = createFakeFileSystem();
+			const observed: unknown[] = [];
+			watcher = createSessionWatcher(sessionFile, identity, {
+				watch: fake.dependencies.watch,
+				async readFile(file) { return fs.readFileSync(file, "utf8"); },
+			}, message => observed.push(message));
+			await new Promise<void>(resolve => setImmediate(resolve));
+			assert.deepEqual(observed, [], "no inherited message is delivered before ready");
+			child.appendCustomEntry(EXECUTION_REPORT_TYPE, JSON.parse(readyLine(1)).data);
+			const user = { role: "user" as const, content: "child task", timestamp: 3 };
+			const assistant = makeAssistantMessage({ content: [{ type: "text", text: "child answer" }] });
+			child.appendMessage(user);
+			child.appendMessage(assistant);
+			fake.fire();
+			await new Promise<void>(resolve => setImmediate(resolve));
+			assert.deepEqual(observed, [user, assistant], "the live feed contains only the child's own messages");
+			fake.fire();
+			fake.fire();
+			await new Promise<void>(resolve => setImmediate(resolve));
+			assert.deepEqual(observed, [user, assistant], "re-reads do not duplicate messages");
+			child.appendCustomEntry(EXECUTION_REPORT_TYPE, JSON.parse(settledLine(2)).data);
+			child.appendCustomEntry(EXECUTION_REPORT_TYPE, JSON.parse(resultLine(3)).data);
+			fake.fire();
+			assert.deepEqual((await watcher.terminal).messages, [user, assistant]);
+			assert.deepEqual(observed, [user, assistant]);
+		} finally {
+			watcher?.close();
+			fs.rmSync(directory, { recursive: true, force: true });
+		}
 	});
 
 	it("forwards each message in order and does not replay old entries after a new read", async () => {
