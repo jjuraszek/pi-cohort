@@ -3,9 +3,9 @@
 base: 8d8283362c5098543718a9745f9f0ac15342c7a2
 verification: env -u PI_CODING_AGENT_DIR npm run test:all
 checks: commands
-iterations: 4
+iterations: 5
 allowance: 10
-returned: 6 | home | 1f55f88ca590aadc082e5a7b67931bf462701935
+returned: 6 | home | 1d6d724f379d693e51084df1eed0a2a1256d763d
 
 | row | status | attempts | evidence |
 |---|---|---|---|
@@ -14,9 +14,9 @@ returned: 6 | home | 1f55f88ca590aadc082e5a7b67931bf462701935
 | 3 | done | 0 | timeout -k 30 30 env -u PI_CODING_AGENT_DIR node --import ./test/support/isolate-test-env.mjs --test test/unit/prompts-inventory.test.ts; temp folder and dispatch rules passed; 10 passed, 0 failed |
 | 4 | done | 0 | timeout -k 30 30 env -u PI_CODING_AGENT_DIR node --import ./test/support/isolate-test-env.mjs --test test/unit/prompts-inventory.test.ts; eight brief headings match in order; 11 passed, 0 failed |
 | 5 | done | 0 | timeout -k 30 30 env -u PI_CODING_AGENT_DIR node --import ./test/support/isolate-test-env.mjs --test test/unit/prompts-inventory.test.ts; reviewer task and fallback passed independently of template; 12 passed, 0 failed |
-| 6 | failed | 1 | timeout -k 30 10 python3 "$(git rev-parse --git-dir)/gauntlet/tmp/check-report-shape.py"; unreachable: fresh worker output requires the subagent tool, unavailable to the loop implementer - parent Pi session with dispatch enabled; scratch/report-eval-dir locates the brief and expected facts |
-| 7 | open | 0 | |
-| 8 | open | 0 | |
+| 6 | done | 2 | timeout -k 30 10 python3 "$(git rev-parse --git-dir)/gauntlet/tmp/check-report-shape.py"; replayed the loaded worker's report from the loaded-versus-baseline check; four headings in order and the supplied brief path on the last line |
+| 7 | done | 0 | timeout -k 30 10 python3 "$(git rev-parse --git-dir)/gauntlet/tmp/check-report-body.py" words; wc -w counted 161 words including headings and excluding the closing line |
+| 8 | done | 0 | timeout -k 30 10 python3 "$(git rev-parse --git-dir)/gauntlet/tmp/check-report-body.py" citations; none of the brief's 5 file paths or 5 line citations appeared before the closing line |
 | 9 | done | 0 | timeout -k 30 30 env -u PI_CODING_AGENT_DIR node --import ./test/support/isolate-test-env.mjs --test test/unit/prompts-inventory.test.ts; three headings always present and the clash heading conditional on a clash line; 15 passed, 0 failed |
 | 10 | done | 0 | timeout -k 30 30 env -u PI_CODING_AGENT_DIR node --import ./test/support/isolate-test-env.mjs --test test/unit/prompts-inventory.test.ts; neither skill file contains an invocation prefix; 16 passed, 0 failed |
 | 11 | done | 0 | timeout -k 30 30 env -u PI_CODING_AGENT_DIR node --import ./test/support/isolate-test-env.mjs --test test/unit/prompts-inventory.test.ts; neither skill file contains gauntlet; 16 passed, 0 failed |
@@ -33,3 +33,6 @@ row 9 done | Defined three required report sections and a fourth only for a docu
 row 10 done | Checked that neither skill file spells a skill invocation. | Reuse the consumer-name test in test/unit/prompts-inventory.test.ts to check both shipped files.
 row 11 done | Confirmed neither skill file names the consuming package. | nothing new to build on
 row 6 failed | Prepared the synthetic brief and checked for the loaded report, but this session has no worker dispatch tool. | Reuse the brief and expected facts located by scratch/report-eval-dir; replay the captured loaded.md with check-report-shape.py.
+row 6 done | Confirmed the loaded worker printed all four headings in order and ended with the supplied brief path. | Reuse loaded.md in the folder named by scratch/report-eval-dir to check the word count and citations without another dispatch.
+row 7 done | Counted 161 words including headings and excluding the closing line, within the 180-word limit. | Run scratch/check-report-body.py with words to repeat the count on the captured report.
+row 8 done | Confirmed that none of the brief's five file paths or five line citations appeared before the closing line. | Run scratch/check-report-body.py with citations to compare the report body with the synthetic brief.
