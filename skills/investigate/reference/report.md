@@ -5,7 +5,7 @@ Print the report itself, without a preamble or code fence. Use the headings belo
 | Heading | Include | What to say |
 |---|---|---|
 | `## What I found` | Always | Lead with the findings that change what the reader does. Give each a concrete value or before/after from the brief. State a corrected assumption as the fact. For a failed child or a call that did not run, name what went unchecked. When design fit is `not assessed`, say that whether the request fits the current design is unknown. |
-| `## Where it clashes with the current design` | Only when `## Design fit` contains a `- clash:` line | Take the most consequential clash: contrast what the request asks for with the decision already in place. Give the count of other clashes; leave their details in the brief. |
+| `## Where it clashes with the current design` | Only when `## Design fit` contains a `- clash:` line | Take the most consequential clash: contrast what the request asks for with the decision already in place. Give the count of other clashes only when `## Design fit` contains at least two `- clash:` lines; leave their details in the brief. |
 | `## What it means for your request` | Always | Say whether the request can go ahead as asked, needs to change or cannot be judged yet. Give the reason. |
 | `## What you need to decide` | Always | List up to three open questions from the brief. Give each its recommended answer and a because-clause. When more remain, add their count as the last list item. With no open questions, use one sentence saying no decision is needed and what happens next. |
 

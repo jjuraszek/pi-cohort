@@ -91,13 +91,14 @@ test("investigate reviewer task asks for the design-fit verdict", () => {
 
 test("investigate report reference defines the sections, the cap, and the closing line", () => {
 	const report = fs.readFileSync(reportPath, "utf-8");
-	const sections = [...report.matchAll(/^\| `(## [^`]+)` \| ([^|]+?) \|/gm)];
+	const sections = [...report.matchAll(/^\| `(## [^`]+)` \| ([^|]+?) \| ([^|]+?) \|/gm)];
 	assert.deepEqual(sections.map(([, title]) => title), [
 		"## What I found", "## Where it clashes with the current design",
 		"## What it means for your request", "## What you need to decide",
 	]);
 	assert.deepEqual(sections.map(([, , when]) => when === "Always"), [true, false, true, true]);
 	assert.match(sections[1][2], /only when.*`## Design fit`.*`- clash:`/i);
+	assert.match(sections[1][3], /count of other clashes only when `## Design fit` contains at least two `- clash:` lines/);
 	assert.match(report, /at most 180 words/i);
 	assert.match(report, /Full investigation: /);
 });
