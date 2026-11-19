@@ -33,7 +33,6 @@
     "src/**/*.ts",
     "agents/",
     "skills/**/*",
-    "prompts/**/*",
     "README.md",
     "CHANGELOG.md"
   ],
@@ -50,9 +49,6 @@
     ],
     "skills": [
       "./skills"
-    ],
-    "prompts": [
-      "./prompts"
     ],
     "image": "https://raw.githubusercontent.com/jjuraszek/pi-cohort/main/pi-cohort.png"
   },

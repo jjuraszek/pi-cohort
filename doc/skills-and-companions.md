@@ -1,7 +1,7 @@
 # Skills and companions
 
 How agent system prompts pick up skills, the bundled orchestration skill, the
-optional prompt shortcuts, and the optional companion package. Back to
+optional shortcuts, and the optional companion package. Back to
 [README](../README.md).
 
 ## Skills
@@ -40,7 +40,9 @@ Missing skills do not fail execution. The result summary shows a warning.
 
 ## Bundled skills
 
-The package bundles two skills, both available to the parent agent when the extension is installed.
+The package bundles three skills, all available to the parent agent when the extension is installed.
+
+`investigate` checks a request's assumptions against the codebase before planning. Pi can load it when the territory is unknown; see [Optional shortcuts](#optional-shortcuts) to invoke it directly.
 
 `handoff` (`/skill:handoff [--out <path> | --key <stem>]`) writes a fixed-template brief for continuing in a fresh session: intent, repo/worktree state, decisions, open questions, skills loaded - nothing else. It ends with `Handoff written: <abs path>`. By default the brief lands in `<tmpdir>/pi-handoff/<primary>--<leaf>.md`, a path a resume flow derives from its own cwd; `--key` picks another file name in that directory and `--out` any path. A skill in another package that wants extra sections reads `skills/handoff/SKILL.md`, follows it, and appends its own `##` sections after `## Skills loaded`. Contract: [doc/handoff-template.md](handoff-template.md).
 
@@ -57,11 +59,11 @@ Review and delivery workflows live in pi-gauntlet; pi-cohort ships delegation pr
 
 ## Optional shortcuts
 
-The package includes a reusable prompt template for recon. You do not need them, but they are handy when you want the same shape every time:
+Use the packaged investigation skill before planning or brainstorming:
 
-| Prompt | Use it for |
+| Command | Use it for |
 |---|---|
-| `/investigate <request> [--out path]` | Parallel read-only recon and premise check before planning or brainstorming; writes a brief with cited findings, questions with recommendations, and verified findings from a second read-only wave. |
+| `/skill:investigate <request>` | Investigate in parallel without editing the repository. Check the request's assumptions and fit with the current design. The short plain-words report ends with the path to the full cited brief in a temp folder. |
 
 When a child needs an unapproved decision, it must stop with `BLOCKED: <decision needed>` as the first line, followed by `Done: <complete>` and `Remaining: <left>`. The parent receives an ordinary failed result; sequential chains stop at that step, parallel siblings keep their results, and follow-up is a fresh dispatch after the parent or human decides.
 
@@ -77,7 +79,7 @@ Without `pi-essentials`, `context-builder` degrades to local-only context: it ca
 
 ## Prompt-template integration
 
-`pi-cohort` works standalone through natural language, the `subagent` tool, slash commands, and the packaged prompt shortcuts above. If you use [pi-prompt-template-model](https://github.com/nicobailon/pi-prompt-template-model), you can also wrap subagent delegation in your own reusable prompt templates.
+`pi-cohort` works standalone through natural language, the `subagent` tool, slash commands, and the packaged shortcuts above. If you use [pi-prompt-template-model](https://github.com/nicobailon/pi-prompt-template-model), you can also wrap subagent delegation in your own reusable prompt templates.
 
 Example:
 

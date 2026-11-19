@@ -5,8 +5,9 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-const promptsDir = path.join(projectRoot, "prompts");
 const skillPath = path.join(projectRoot, "skills", "handoff", "SKILL.md");
+const investigatePath = path.join(projectRoot, "skills", "investigate", "SKILL.md");
+const reportPath = path.join(path.dirname(investigatePath), "reference", "report.md");
 const templatePath = path.join(projectRoot, "doc", "handoff-template.md");
 const workflowVerbs = /\b(produces|runs|dispatches)\b/;
 const briefHeadings = ["## Intent", "## Repo state", "## Decisions", "## Open questions", "## Skills loaded"];
@@ -39,15 +40,96 @@ function headings(block: string): string[] {
 	return block.replace(/\r\n/g, "\n").match(/^## .+$/gm) ?? [];
 }
 
-test("packaged prompts are exactly investigate", () => {
-	assert.deepEqual(fs.readdirSync(promptsDir).sort(), ["investigate.md"]);
+function physicalLineCount(source: string): number {
+	return source === "" ? 0 : source.replace(/\r?\n$/, "").split("\n").length;
+}
+
+test("package ships no prompt templates", () => {
+	const manifest = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf-8"));
+	assert.ok(!fs.existsSync(path.join(projectRoot, "prompts")), "prompts/ still exists");
+	assert.ok(!Object.hasOwn(manifest.pi, "prompts"), "pi.prompts still registers templates");
+	assert.ok(!manifest.files.includes("prompts/**/*"), "files still includes prompts/**/*");
 });
 
-test("prompt descriptions are triggers and prompts take the argument", () => {
-	for (const file of fs.readdirSync(promptsDir)) {
-		const filePath = path.join(promptsDir, file);
-		assertTriggerDescription(file, frontmatter(filePath).description);
-		assert.ok(fs.readFileSync(filePath, "utf-8").includes("$@"), `${file}: missing $@ argument placeholder`);
+test("investigate skill has trigger frontmatter and stays model-invocable", () => {
+	const fields = frontmatter(investigatePath);
+	assert.equal(fields.name, "investigate");
+	assertTriggerDescription(investigatePath, fields.description);
+	assert.ok(!Object.hasOwn(fields, "disable-model-invocation"));
+});
+
+test("investigate skill keeps every investigation file in one temp folder", () => {
+	const skill = fs.readFileSync(investigatePath, "utf-8");
+	for (const token of ["mktemp -d", "$DIR/brief.md", "artifacts: false", "sessionDir"]) {
+		assert.ok(skill.includes(token), `investigate: missing ${token}`);
+	}
+	for (const token of ["--out", "$@"]) assert.ok(!skill.includes(token), `investigate: unexpected ${token}`);
+});
+
+test("investigate skill carries the dispatch rules", () => {
+	const skill = fs.readFileSync(investigatePath, "utf-8");
+	for (const token of ['async: false', 'context: "fresh"', 'reads: false', 'forceTopLevelAsync', 'failed:']) {
+		assert.ok(skill.includes(token), `investigate: missing ${token}`);
+	}
+});
+
+test("investigate brief template headings are fixed", () => {
+	const fences = markdownFences(fs.readFileSync(investigatePath, "utf-8"));
+	assert.equal(fences.length, 1);
+	assert.deepEqual(headings(fences[0]), [
+		"## Request", "## Findings", "## External context", "## Premise check", "## Design fit",
+		"## Open questions", "## Verification tasks", "## Next steps",
+	]);
+});
+
+test("investigate reviewer task asks for the design-fit verdict", () => {
+	const skill = fs.readFileSync(investigatePath, "utf-8");
+	const procedure = skill.replace(/```markdown\r?\n[\s\S]*?```/g, "");
+	const task = procedure.match(/^\| `reviewer` \|.*$/m)?.[0];
+	assert.ok(task, "missing reviewer task");
+	for (const token of ["Design fit:", "- clash:", "(<path>:<line>)", "no conflict found - checked <what was read>"]) {
+		assert.ok(task.includes(token), `reviewer task: missing ${token}`);
+	}
+	assert.ok(procedure.includes("not assessed -"), "missing fallback outside the brief template");
+});
+
+test("investigate report reference defines the sections, the cap, and the closing line", () => {
+	const report = fs.readFileSync(reportPath, "utf-8");
+	const sections = [...report.matchAll(/^\| `(## [^`]+)` \| ([^|]+?) \| ([^|]+?) \|/gm)];
+	assert.deepEqual(sections.map(([, title]) => title), [
+		"## What I found", "## Where it clashes with the current design",
+		"## What it means for your request", "## What you need to decide",
+	]);
+	assert.deepEqual(sections.map(([, , when]) => when === "Always"), [true, false, true, true]);
+	assert.match(sections[1][2], /only when.*`## Design fit`.*`- clash:`/i);
+	assert.match(sections[1][3], /count of other clashes only when `## Design fit` contains at least two `- clash:` lines/);
+	assert.match(report, /at most 180 words/i);
+	assert.match(report, /Full investigation: /);
+});
+
+test("investigate skill links its report reference", () => {
+	const skill = fs.readFileSync(investigatePath, "utf-8");
+	assert.match(skill, /\]\(reference\/report\.md\)/);
+	assert.ok(fs.statSync(reportPath).isFile());
+	const reportStep = skill.split(/^## 6\. Report\s*$/m)[1] ?? "";
+	assert.match(reportStep, /directory named in the `investigate` skill block or the parent of the `SKILL\.md` file you read to load this skill, never from the working directory/,
+		"resolve the report reference for both invocation and self-load, never from the working directory");
+	assert.match(reportStep, /If neither source is known, treat that as a reference read error\. On a reference read error, print the error and end with `Full investigation:/,
+		"preserve the brief path when neither directory source is known or the reference read fails");
+});
+
+test("investigate skill files stay under the extraction limit", () => {
+	for (const file of [investigatePath, reportPath]) {
+		const source = fs.readFileSync(file, "utf-8");
+		assert.ok(physicalLineCount(source) < 500, `${file}: exceeds line limit`);
+		assert.ok(Buffer.byteLength(source) < 50 * 1024, `${file}: exceeds byte limit`);
+	}
+});
+
+test("investigate skill files name no consumer", () => {
+	for (const file of [investigatePath, reportPath]) {
+		const source = fs.readFileSync(file, "utf-8");
+		for (const token of ["/skill:", "gauntlet"]) assert.ok(!source.includes(token), `${file}: unexpected ${token}`);
 	}
 });
 
@@ -87,6 +169,8 @@ test("markdown helpers accept LF and CRLF", () => {
 		const block = markdownFences(["```markdown", "## Intent", "```"].join(newline));
 		assert.equal(block.length, 1);
 		assert.deepEqual(headings(block[0]), ["## Intent"]);
+		const atLimit = `text${newline}`.repeat(499) + newline;
+		assert.equal(physicalLineCount(atLimit), 500);
 	}
 });
 

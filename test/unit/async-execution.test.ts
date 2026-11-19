@@ -495,7 +495,7 @@ describe("spawnRunner", () => {
 				// The result can be ready while the runner still holds its cwd and log open.
 				await waitFor(() => runnerPid === undefined || checkPidLiveness(runnerPid) === "dead", 10000);
 				pi.install(); pi.uninstall();
-				fs.rmSync(dir, { recursive: true, force: true });
+				fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 			});
 			const selectedPiMarker = path.join(dir, "selected-pi-loaded");
 			fs.appendFileSync(path.join(pi.runtime.piPackageRoot, "dist", "index.js"), `
