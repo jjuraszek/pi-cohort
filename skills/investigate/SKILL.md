@@ -35,7 +35,7 @@ Keep every investigation file under `$DIR`: child outputs, child session storage
 
 ## 3. Gather the evidence (wave 1)
 
-Detect refs in the request: `http(s)://` URLs, `owner/repo#N`, bare `#N` when `git remote get-url origin` is a GitHub URL, and ticket IDs matching `[A-Z][A-Z0-9]+-\d+`. Make one parallel call with the following tasks; include `context-builder` only when you detected refs. Give every task the request and the read-only prefix from step 2.
+Detect refs in the request: `http(s)://` URLs, `owner/repo#N`, bare `#N` when `git remote get-url origin` is a GitHub URL, and ticket IDs matching `[A-Z][A-Z0-9]+-\d+`. Make one parallel call with the following tasks; include `context-builder` only when you detected refs. Give every task the request and the read-only prefix from step 2. Append `Refs:` followed by the detected refs, one per line, to the `context-builder` task.
 
 | Agent | Output | Task text |
 |---|---|---|
