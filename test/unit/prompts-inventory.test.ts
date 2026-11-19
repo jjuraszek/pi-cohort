@@ -5,7 +5,6 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-const promptsDir = path.join(projectRoot, "prompts");
 const skillPath = path.join(projectRoot, "skills", "handoff", "SKILL.md");
 const templatePath = path.join(projectRoot, "doc", "handoff-template.md");
 const workflowVerbs = /\b(produces|runs|dispatches)\b/;
@@ -39,16 +38,11 @@ function headings(block: string): string[] {
 	return block.replace(/\r\n/g, "\n").match(/^## .+$/gm) ?? [];
 }
 
-test("packaged prompts are exactly investigate", () => {
-	assert.deepEqual(fs.readdirSync(promptsDir).sort(), ["investigate.md"]);
-});
-
-test("prompt descriptions are triggers and prompts take the argument", () => {
-	for (const file of fs.readdirSync(promptsDir)) {
-		const filePath = path.join(promptsDir, file);
-		assertTriggerDescription(file, frontmatter(filePath).description);
-		assert.ok(fs.readFileSync(filePath, "utf-8").includes("$@"), `${file}: missing $@ argument placeholder`);
-	}
+test("package ships no prompt templates", () => {
+	const manifest = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf-8"));
+	assert.ok(!fs.existsSync(path.join(projectRoot, "prompts")), "prompts/ still exists");
+	assert.ok(!Object.hasOwn(manifest.pi, "prompts"), "pi.prompts still registers templates");
+	assert.ok(!manifest.files.includes("prompts/**/*"), "files still includes prompts/**/*");
 });
 
 test("handoff skill has trigger frontmatter named handoff", () => {

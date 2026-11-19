@@ -3,13 +3,13 @@
 base: 8d8283362c5098543718a9745f9f0ac15342c7a2
 verification: env -u PI_CODING_AGENT_DIR npm run test:all
 checks: commands
-iterations: 0
+iterations: 1
 allowance: 10
-returned: none
+returned: seed | home | 08949f89a16d772b03eaad5d175d60668480a811
 
 | row | status | attempts | evidence |
 |---|---|---|---|
-| 1 | open | 0 | |
+| 1 | open | 0 | timeout -k 30 30 env -u PI_CODING_AGENT_DIR node --import ./test/support/isolate-test-env.mjs --test test/unit/prompts-inventory.test.ts; prompts/ still exists; 6 passed, 1 failed |
 | 2 | open | 0 | |
 | 3 | open | 0 | |
 | 4 | open | 0 | |
@@ -22,3 +22,5 @@ returned: none
 | 11 | open | 0 | |
 
 ## Decisions
+
+row 0 done | seeded 1 rows, closed 0 on baseline | row 1
