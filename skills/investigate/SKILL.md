@@ -77,4 +77,4 @@ Write `$DIR/brief.md` and read it back. On a write or read-back failure, print t
 
 ## 6. Report
 
-Read [the report rules](reference/report.md) now from the directory named in the `investigate` skill block, never from the working directory, and print only the report they define, never the brief itself. Treat a missing directory in that block as a reference read error. On a reference read error, print the error and end with `Full investigation: <absolute path to the brief just read back>`.
+Read [the report rules](reference/report.md) now from the directory named in the `investigate` skill block or the parent of the `SKILL.md` file you read to load this skill, never from the working directory, and print only the report they define, never the brief itself. If neither source is known, treat that as a reference read error. On a reference read error, print the error and end with `Full investigation: <absolute path to the brief just read back>`.

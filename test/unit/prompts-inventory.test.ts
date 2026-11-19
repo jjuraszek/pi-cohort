@@ -107,10 +107,10 @@ test("investigate skill links its report reference", () => {
 	assert.match(skill, /\]\(reference\/report\.md\)/);
 	assert.ok(fs.statSync(reportPath).isFile());
 	const reportStep = skill.split(/^## 6\. Report\s*$/m)[1] ?? "";
-	assert.match(reportStep, /directory named in the `investigate` skill block, never from the working directory/,
-		"resolve the report reference from the skill block, not the working directory");
-	assert.match(reportStep, /missing directory in that block as a reference read error\. On a reference read error, print the error and end with `Full investigation:/,
-		"preserve the brief path when the skill block provides no directory");
+	assert.match(reportStep, /directory named in the `investigate` skill block or the parent of the `SKILL\.md` file you read to load this skill, never from the working directory/,
+		"resolve the report reference for both invocation and self-load, never from the working directory");
+	assert.match(reportStep, /If neither source is known, treat that as a reference read error\. On a reference read error, print the error and end with `Full investigation:/,
+		"preserve the brief path when neither directory source is known or the reference read fails");
 });
 
 test("investigate skill files stay under the extraction limit", () => {
