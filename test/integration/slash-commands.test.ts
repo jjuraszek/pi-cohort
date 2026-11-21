@@ -1045,6 +1045,56 @@ describe("run and interrupt-child slash commands", () => {
 		} finally { bridge.dispose(); }
 	});
 
+	it("/interrupt-child <id> stops a running child when an idle handler registered first", { timeout: 10_000 }, async (t) => {
+		await withTempProject("pi-slash-idle-stop-", async (root) => {
+			const state = createState(root);
+			const h = setup(state);
+			const mock = createMockPi();
+			mock.install();
+			t.after(() => mock.uninstall());
+			mock.onCall({ delay: 60_000, output: "Finished without an interrupt" });
+			const ctx = makeMinimalCtx(root);
+			const executor = createSubagentExecutor({
+				captureRuntime: mock.captureRuntime, pi: { events: h.events, getSessionName: () => undefined }, state,
+				resolveConfig: () => ({ control: { enabled: false } }), tempArtifactsDir: root, getSubagentSessionRoot: () => root,
+				expandTilde: value => value, discoverAgents: () => ({ agents: [makeAgent("scout", { completionGuard: false })] }),
+			});
+			let requestId: string;
+			h.events.on(SLASH_SUBAGENT_REQUEST_EVENT, data => { requestId = (data as { requestId: string }).requestId; });
+			const replies: SlashSubagentResponse[] = [];
+			const servingReply = new Promise<void>(resolve => {
+				h.events.on(SLASH_SUBAGENT_RESPONSE_EVENT, data => {
+					const reply = data as SlashSubagentResponse;
+					if (reply.requestId !== requestId) return;
+					replies.push(reply);
+					if (!reply.isError) resolve();
+				});
+			});
+			t.after(registerIdleHandler(h.events).dispose);
+			t.after(registerSlashSubagentBridge({ events: h.events, getContext: () => ctx, execute: executor.execute }).dispose);
+			const controller = new AbortController();
+			const pending = executor.execute("blocked-call", { agent: "scout", task: "Wait for interrupt", async: false }, controller.signal, undefined, ctx);
+			try {
+				const deadline = Date.now() + 5_000;
+				while (!mock.callCount() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+				assert.equal(mock.callCount(), 1);
+				await h.command.handler("", h.ctx);
+				const prefix = /^(\S+) scout$/m.exec(h.notifications.pop()!.message)?.[1];
+				assert.ok(prefix, "the list includes the running scout's stop id");
+				await h.command.handler(prefix, h.ctx);
+				await servingReply;
+				assert.equal(replies.length, 1);
+				const { details } = await pending;
+				const child = details.results.find(result => result.id.startsWith(prefix));
+				assert.equal(child?.interrupted, true);
+				assert.deepEqual(h.notifications, [{ message: `Interrupt requested for child ${child.id} of foreground run ${details.runId}.`, type: "info" }]);
+			} finally {
+				controller.abort();
+				await pending;
+			}
+		});
+	});
+
 	for (const explicit of [false, true]) {
 		it(`/interrupt-child stops one child of a blocked foreground run (${explicit ? "prefix" : "full id"})`, async () => {
 			await withTempProject("pi-slash-interrupt-", async (root) => {
