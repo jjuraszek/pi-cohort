@@ -78,19 +78,7 @@ export function registerSlashSubagentBridge(options: SlashBridgeOptions): {
 		const { requestId, params } = request as SlashSubagentRequest;
 
 		const ctx = options.getContext();
-		if (!ctx) {
-			const response: SlashSubagentResponse = {
-				requestId,
-				result: {
-					content: [{ type: "text", text: "No active extension context for slash subagent execution." }],
-					details: { mode: "single" as const, results: [] },
-				},
-				isError: true,
-				errorText: "No active extension context.",
-			};
-			options.events.emit(SLASH_SUBAGENT_RESPONSE_EVENT, response);
-			return;
-		}
+		if (!ctx) return;
 
 		const controller = new AbortController();
 		controllers.set(requestId, controller);
