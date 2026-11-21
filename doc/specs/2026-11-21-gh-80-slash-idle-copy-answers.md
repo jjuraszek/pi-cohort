@@ -71,7 +71,7 @@ Design decisions recorded from the questionary:
 Ticket #80, "Acceptance Criteria", rows verbatim:
 
 - [ ] With pi 1.6.0 started without `--approve` in a trusted project, and pi-cohort listed in both the user settings and the project's settings, `/interrupt-child abc` gets exactly one response to its request and shows one error notice, "Stop id 'abc' is too short; type at least 4 characters of the id at the start of the row.", and no "No active extension context" notice.
-  in-scope
+  deviates: unreachable in this checkout - missing source-base stop trace and this worker cannot launch a real scout; proof at top-level pi 1.6.0 two-copy RPC setup
 - [ ] In the same setup, `/run scout say hi` shows the result card that a setup with pi-cohort in the user settings only shows for the same command - the child run's own output, generated wording aside - and neither the card nor a notice reads "No active extension context".
   in-scope
 - [ ] In the same setup, with a child running, `/interrupt-child <the id at the start of that child's row>` stops the child and shows the stop result that a setup with one copy shows, and no "No active extension context" notice.
@@ -176,6 +176,8 @@ All new tests are in `test/integration/slash-commands.test.ts`.
 The materiality bar is `reference/documentation-impact.md`. `doc/commands.md` (Direct commands) was a candidate and is dropped: it never documented the no-session wording, so nothing in it goes stale.
 
 ## Out of scope
+
+- With pi 1.6.0 started without `--approve` in a trusted proje - unreachable in this checkout - missing source-base stop trace and this worker cannot launch a real scout. Keep the short-id regression and fix; the integration check does not prove the live setup.
 
 - The prompt-template delegation handler's no-context reply (`src/slash/prompt-template-bridge.ts`).
 - The idle copy's result file watcher, async and control notice listeners, and `cost:external` listener.
