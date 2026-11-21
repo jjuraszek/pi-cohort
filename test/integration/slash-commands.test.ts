@@ -9,7 +9,7 @@ import { ASYNC_DIR } from "../../src/shared/types.ts";
 import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
 import { updateBackgroundStopInventory } from "../../src/runs/background/run-id-resolver.ts";
 import { readNestedControlRequests, writeNestedControlResult, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
-import { registerSlashSubagentBridge } from "../../src/slash/slash-bridge.ts";
+import { registerSlashSubagentBridge, type SlashSubagentResponse } from "../../src/slash/slash-bridge.ts";
 import { createMockPi, events as childEvents, makeAgent, makeMinimalCtx } from "../support/helpers.ts";
 
 const SLASH_RESULT_TYPE = "subagent-slash-result";
@@ -954,6 +954,48 @@ describe("interrupt-child slash command", () => {
 		assert.deepEqual(h.notifications.at(-1), { message: "action result", type: "info" });
 		assert.equal(h.statuses.at(-1), undefined);
 		h.assertNoSteer();
+	});
+
+	function registerIdleHandler(events: EventBus) {
+		return registerSlashSubagentBridge({ events, getContext: () => null, execute: async () => assert.fail("idle executor ran") });
+	}
+
+	it("/interrupt-child abc gets only the working handler's answer when an idle handler registered first", { timeout: 5000 }, async (t) => {
+		const state = createState(process.cwd());
+		const h = setup(state);
+		const expected = "Stop id 'abc' is too short; type at least 4 characters of the id at the start of the row.";
+		let requestId: string;
+		h.events.on(SLASH_SUBAGENT_REQUEST_EVENT, data => { requestId = (data as { requestId: string }).requestId; });
+		const replies: SlashSubagentResponse[] = [];
+		const servingReply = new Promise<void>(resolve => {
+			h.events.on(SLASH_SUBAGENT_RESPONSE_EVENT, data => {
+				const reply = data as SlashSubagentResponse;
+				if (reply.requestId !== requestId) return;
+				replies.push(reply);
+				if (reply.errorText === expected) resolve();
+			});
+		});
+		t.after(registerIdleHandler(h.events).dispose);
+		const ctx = makeMinimalCtx(state.baseCwd);
+		const executor = createSubagentExecutor({
+			pi: { events: h.events, getSessionName: () => undefined }, state,
+			resolveConfig: () => ({}), tempArtifactsDir: os.tmpdir(), getSubagentSessionRoot: () => os.tmpdir(),
+			expandTilde: value => value, discoverAgents: () => ({ agents: [] }),
+		});
+		t.after(registerSlashSubagentBridge({ events: h.events, getContext: () => ctx, execute: executor.execute }).dispose);
+		await h.command.handler("abc", h.ctx);
+		await servingReply;
+		assert.equal(replies.length, 1);
+		assert.deepEqual(h.notifications, [{ message: expected, type: "error" }]);
+	});
+
+	it("/interrupt-child reports no handler when the only handler has no session", async (t) => {
+		const h = setup();
+		t.after(registerIdleHandler(h.events).dispose);
+		await h.command.handler("abc", h.ctx);
+		assert.deepEqual(h.notifications, [{
+			message: "No slash subagent bridge responded. Ensure the subagent extension is loaded correctly.", type: "error",
+		}]);
 	});
 
 	it("/interrupt-child reports bridge errors without steering or rewriting the session", async () => {
