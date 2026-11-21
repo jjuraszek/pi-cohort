@@ -25,3 +25,4 @@ amended | 3 item(s) | Short-id live proof observed
 row 1 done | After the stop control reproduced the double reply, /interrupt-child abc on the fixed two-copy host returned one response and showed only the short-id error. | Reuse post-control-short.out in the worker scratch directory to check the response and notice without starting pi.
 row 2 done | With one copy and with two, /run scout say hi showed the scout's own output on the final card without a no-context error on the card or in any notice. | nothing new to build on
 row 3 done | On the two-copy host, /interrupt-child cee082 showed one stop acknowledgment, no context error, and the terminal result for that scout recorded interrupted: true. | nothing new to build on
+amended | 1 item(s) | Row 2 checker limits accepted
