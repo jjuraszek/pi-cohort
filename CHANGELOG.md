@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [8.5.1] - 2026-11-21
 
 ### Fixed
 - When pi loads pi-cohort from both user and project settings, only the copy serving the session answers slash commands. `/interrupt-child abc` now shows the short-id error instead of "No active extension context." (#80)
