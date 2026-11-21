@@ -864,8 +864,8 @@ Gather context
 });
 
 
-describe("interrupt-child slash command", () => {
-	function setup(state = createState(process.cwd())) {
+describe("run and interrupt-child slash commands", () => {
+	function setup(state = createState(process.cwd()), commandName = "interrupt-child") {
 		const commands = new Map<string, RegisteredSlashCommand>();
 		const events = createEventBus();
 		const sent: unknown[] = [];
@@ -885,9 +885,9 @@ describe("interrupt-child slash command", () => {
 			sessionManager: { getSessionFile: () => "session.jsonl", _rewriteFile: () => { rewrites++; } },
 		});
 		registerSlashCommands!(pi, state);
-		const command = commands.get("interrupt-child");
-		assert.ok(command, "register /interrupt-child");
-		return { command, events, ctx, notifications, statuses, assertNoSteer() {
+		const command = commands.get(commandName);
+		assert.ok(command, `register /${commandName}`);
+		return { command, events, ctx, notifications, statuses, sent, assertNoSteer() {
 			assert.deepEqual(sent, []);
 			assert.equal(rewrites, 0);
 		} };
@@ -959,6 +959,36 @@ describe("interrupt-child slash command", () => {
 	function registerIdleHandler(events: EventBus) {
 		return registerSlashSubagentBridge({ events, getContext: () => null, execute: async () => assert.fail("idle executor ran") });
 	}
+
+	it("/run shows the working handler's result when an idle handler registered first", { timeout: 5000 }, async (t) => {
+		const h = setup(createState(process.cwd()), "run");
+		const result: SlashSubagentResponse["result"] = {
+			content: [{ type: "text", text: "Hi from scout" }], details: { mode: "single", results: [] },
+		};
+		const replies: SlashSubagentResponse[] = [];
+		const servingReply = new Promise<void>(resolve => {
+			h.events.on(SLASH_SUBAGENT_RESPONSE_EVENT, data => {
+				const reply = data as SlashSubagentResponse;
+				replies.push(reply);
+				if (!reply.isError) resolve();
+			});
+		});
+		t.after(registerIdleHandler(h.events).dispose);
+		t.after(registerSlashSubagentBridge({ events: h.events, getContext: () => h.ctx, execute: async () => result }).dispose);
+
+		await h.command.handler("scout say hi", h.ctx);
+		await servingReply;
+		assert.equal(h.sent.length, 2);
+		const [running, card] = h.sent as Array<{ customType: string; display: boolean; content: string; details: { requestId: string; result: unknown } }>;
+		const requestId = running.details.requestId;
+		assert.equal(replies.filter(reply => reply.requestId === requestId).length, 1);
+		assert.equal(card.customType, SLASH_RESULT_TYPE);
+		assert.equal(card.display, true);
+		assert.deepEqual(card.details, { requestId, result });
+		assert.match(card.content, /Hi from scout/);
+		assert.doesNotMatch(card.content, /No active extension context/);
+		assert.deepEqual(h.notifications, []);
+	});
 
 	it("/interrupt-child abc gets only the working handler's answer when an idle handler registered first", { timeout: 5000 }, async (t) => {
 		const state = createState(process.cwd());
