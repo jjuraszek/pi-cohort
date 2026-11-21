@@ -71,11 +71,11 @@ Design decisions recorded from the questionary:
 Ticket #80, "Acceptance Criteria", rows verbatim:
 
 - [ ] With pi 1.6.0 started without `--approve` in a trusted project, and pi-cohort listed in both the user settings and the project's settings, `/interrupt-child abc` gets exactly one response to its request and shows one error notice, "Stop id 'abc' is too short; type at least 4 characters of the id at the start of the row.", and no "No active extension context" notice.
-  deviates: unreachable in this checkout - missing source-base stop trace and this worker cannot launch a real scout; proof at top-level pi 1.6.0 two-copy RPC setup
+  in-scope
 - [ ] In the same setup, `/run scout say hi` shows the result card that a setup with pi-cohort in the user settings only shows for the same command - the child run's own output, generated wording aside - and neither the card nor a notice reads "No active extension context".
-  deviates: unreachable in this checkout - missing source-base stop control and live one- and two-copy scout traces; proof at top-level pi 1.6.0 RPC host with model access
+  in-scope
 - [ ] In the same setup, with a child running, `/interrupt-child <the id at the start of that child's row>` stops the child and shows the stop result that a setup with one copy shows, and no "No active extension context" notice.
-  deviates: unreachable in this checkout - missing source-base and fixed-build live stop traces; proof at top-level two-copy pi 1.6.0 RPC host with model access
+  in-scope
 
 ## Legs
 
@@ -145,6 +145,7 @@ Each row names pi 1.6.0 and a real two-copy start. The test suite installs pi 1.
   - Row 3, the stop sequence: `/run scout Run the bash command "sleep 120", then reply "done".` While that `/run` is outstanding the driver sends `/interrupt-child` with no argument every 2 seconds for up to 60 seconds and reads the rows in the notice. It takes the id from the running `scout` child row, not from the foreground run's row, which is listed first; the row fails if no `scout` child id appears within the bound. Then `/interrupt-child <that id>`: exactly one `subagent:slash:response` for the stop request id; the child-specific info notice "Interrupt requested for child <id> of foreground run <run id>."; no notice containing "No active extension context"; and `interrupted: true` for that same child in the `/run` request's terminal result.
 - Each `/run` is one paid child run on the operator's default model: two for row 2 and one stop sequence each on the source-base and the fixed build. Approving this spec authorizes every action named in this subsection for the whole flow, across seed, rows, repairs and finish, without per-step permission prompts. An action not named here needs separate explicit authorization.
 - The run's logs stay under the system temp folder and are the evidence for the three ticket rows as observed in this setup.
+- Observed on 2026-11-21 by the session driving this flow, not by an implementing worker: a worker's checkout has no model access for a live child. The driver added `--offline` to the launch, which skips pi's package and update network checks and leaves model calls alone. Control on `5ab3ef7`: the `/interrupt-child <id>` request got the no-context error, then "Interrupt requested for child <id> of foreground run <run id>.", the notice shown was the no-context error, and the child's terminal result carried `interrupted: true`. On this branch's build every predicate of rows 1, 2 and 3 above held: one response per request, the "too short" error notice for row 1, a non-error card carrying the child's output in both the two-copy and the one-copy run for row 2, one stop acknowledgment plus `interrupted: true` for row 3, and no "No active extension context" in any notice, card or response.
 
 ## Errors and edge cases
 
@@ -176,10 +177,6 @@ All new tests are in `test/integration/slash-commands.test.ts`.
 The materiality bar is `reference/documentation-impact.md`. `doc/commands.md` (Direct commands) was a candidate and is dropped: it never documented the no-session wording, so nothing in it goes stale.
 
 ## Out of scope
-
-- In the same setup, with a child running, `/interrupt-child < - unreachable in this checkout - missing source-base and fixed-build live stop traces.
-- In the same setup, `/run scout say hi` shows the result card - unreachable in this checkout - missing source-base stop control and live one- and two-copy scout traces.
-- With pi 1.6.0 started without `--approve` in a trusted proje - unreachable in this checkout - missing source-base stop trace and this worker cannot launch a real scout. Keep the short-id regression and fix; the integration check does not prove the live setup.
 
 - The prompt-template delegation handler's no-context reply (`src/slash/prompt-template-bridge.ts`).
 - The idle copy's result file watcher, async and control notice listeners, and `cost:external` listener.
