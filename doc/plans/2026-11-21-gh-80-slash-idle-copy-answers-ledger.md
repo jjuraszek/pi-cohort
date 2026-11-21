@@ -11,7 +11,7 @@ returned: 3 | home | a14f5ec7810d447cc7c50a6d5a1594ffc4389a84
 |---|---|---|---|
 | 1 | cut | 1 | deviates: unreachable in this checkout - missing source-base stop trace and this worker cannot launch a real scout; proof at top-level pi 1.6.0 two-copy RPC setup |
 | 2 | cut | 1 | deviates: unreachable in this checkout - missing source-base stop control and live one- and two-copy scout traces; proof at top-level pi 1.6.0 RPC host with model access |
-| 3 | failed | 1 | timeout -k 30 60 node --import ./test/support/isolate-test-env.mjs --import ./test/support/register-loader.mjs --test test/integration/slash-commands.test.ts; unreachable: missing source-base and fixed-build live stop traces - top-level two-copy pi 1.6.0 RPC host with model access; 29 integration tests passed; the listed mock scout got one stop acknowledgment and its terminal result reported interrupted: true |
+| 3 | cut | 1 | deviates: unreachable in this checkout - missing source-base and fixed-build live stop traces; proof at top-level two-copy pi 1.6.0 RPC host with model access |
 
 ## Decisions
 row 0 done | seeded 1 rows, closed 0 on baseline | row 1
@@ -20,3 +20,4 @@ amended | cut row 1 | Short-id live proof
 row 2 failed | The integration test saw one reply to /run scout say hi, a card with the scout's output, and no notice. | Keep the test; after the source-base stop control, compare the final cards and notices from one-copy and two-copy runs on a top-level pi 1.6.0 RPC host.
 amended | cut row 2 | Launch card live proof
 row 3 failed | The integration test stopped the listed mock scout, saw one stop acknowledgment and confirmed interrupted: true for that child. | Keep the test; capture the source-base double reply, then the fixed build's single stop notice and interrupted child result on a top-level two-copy pi 1.6.0 RPC host.
+amended | cut row 3 | Running child live proof
