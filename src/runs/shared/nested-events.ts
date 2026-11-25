@@ -682,10 +682,13 @@ export function readNestedRegistry(route: NestedRoute): NestedRegistry {
 
 export function projectNestedEvents(route: NestedRoute, options: NestedProjectionOptions = {}): NestedRegistry {
 	validateRouteShape(route);
-	let registry = readNestedRegistry(route);
+	const saved = readNestedRegistry(route);
 	const writable = !options.readOnlyLegacy || !isLegacyNestedRoute(route);
 	// Older checkpoints may have forgotten starts while marking their completions as applied.
-	if (writable && !registry.terminalRunUpdates) registry = { rootRunId: route.rootRunId, updatedAt: 0, children: [], processedEvents: [], terminalRunUpdates: Object.create(null) };
+	const rebuild = writable && !saved.terminalRunUpdates;
+	let registry: NestedRegistry = rebuild
+		? { rootRunId: route.rootRunId, updatedAt: 0, children: [], processedEvents: [], terminalRunUpdates: Object.create(null) }
+		: saved;
 	const seen = new Set(registry.processedEvents);
 	let changed = false;
 	const unknownRun = (id: string) => registry.terminalRunUpdates?.[id] === undefined && !findNestedRun(registry.children, id);
@@ -706,6 +709,8 @@ export function projectNestedEvents(route: NestedRoute, options: NestedProjectio
 			if (!stat.isFile() || stat.size > MAX_EVENT_BYTES) continue;
 			content = fs.readFileSync(eventPath, "utf-8");
 		} catch {
+			// A partial replay can lose child state that the checkpoint already contains.
+			if (rebuild && saved.processedEvents.length) return saved;
 			continue;
 		}
 		let deferred = false;

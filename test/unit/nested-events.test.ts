@@ -436,8 +436,18 @@ describe("nested event parsing and projection", () => {
 		// 8.5.1 could save a finished child as running while remembering only the last 1000 files.
 		fs.writeFileSync(registryFile, JSON.stringify({ ...second, terminalRunUpdates: undefined,
 			processedEvents: second.processedEvents.slice(-1000), children: [{ ...second.children[0], state: "running" }, ...second.children.slice(1)] }));
+		const saved = readNestedRegistry(route);
+		const eventFile = path.join(route.eventSink, saved.processedEvents.at(-1)!);
+		fs.renameSync(eventFile, `${eventFile}.held`);
+		fs.symlinkSync(`${eventFile}.missing`, eventFile, "file");
+		fs.utimesSync(registryFile, 1, 1);
+		const interrupted = projectNestedEvents(route);
+		assert.equal(fs.statSync(registryFile).mtimeMs, 1000);
+		assert.deepEqual(interrupted, saved);
+		fs.renameSync(`${eventFile}.held`, eventFile);
+
 		const rebuilt = projectNestedEvents(route);
-		assert.deepEqual(rebuilt.children, second.children);
+		assert.deepEqual(rebuilt, second);
 		assert.equal(hasLiveNestedDescendants(rebuilt.children), false);
 		fs.utimesSync(registryFile, 1, 1);
 		projectNestedEvents(route);
