@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- After a subagent call produces more than 1000 nested status events, the parent pi session no longer pins a CPU core re-reading those events every 250 ms. Finished nested runs no longer reappear as running.
+
 ## [8.5.1] - 2026-11-21
 
 ### Fixed

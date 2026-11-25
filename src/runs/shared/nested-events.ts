@@ -120,6 +120,7 @@ export interface NestedRegistry {
 	children: NestedRunSummary[];
 	processedEvents: string[];
 	terminalChildUpdates?: Record<string, number>;
+	terminalRunUpdates?: Record<string, number>;
 }
 
 export function isSafeNestedId(value: unknown): value is string {
@@ -404,12 +405,12 @@ function terminal(state: NestedRunState): boolean {
 	return state === "complete" || state === "failed" || state === "paused";
 }
 
-function mergeSummary(existing: NestedRunSummary | undefined, event: NestedRunEventRecord): NestedRunSummary {
-	const incomingState = event.type === "subagent.nested.completed" && event.child.state === "running" ? "complete" : event.child.state;
-	const incoming = { ...event.child, state: incomingState, lastUpdate: event.child.lastUpdate ?? event.ts };
+type UpdatedSummary = NestedRunSummary & { lastUpdate: number };
+
+function mergeSummary(existing: NestedRunSummary | undefined, incoming: UpdatedSummary): NestedRunSummary {
 	if (!existing) return incoming;
 	const existingUpdate = existing.lastUpdate ?? 0;
-	const incomingUpdate = incoming.lastUpdate ?? event.ts;
+	const incomingUpdate = incoming.lastUpdate;
 	if (incomingUpdate < existingUpdate) return existing;
 	if (terminal(existing.state) && !terminal(incoming.state)) return existing;
 	if (terminal(existing.state) && terminal(incoming.state) && incomingUpdate === existingUpdate) return existing;
@@ -433,18 +434,18 @@ function mergeSummary(existing: NestedRunSummary | undefined, event: NestedRunEv
 	};
 }
 
-function attachChild(children: NestedRunSummary[], event: NestedRunEventRecord): NestedRunSummary[] {
+function attachChild(children: NestedRunSummary[], { parentRunId, ts }: NestedRunEventRecord, incoming: UpdatedSummary): NestedRunSummary[] {
 	let updated = false;
 	const walk = (items: NestedRunSummary[]): NestedRunSummary[] => items.map((item) => {
-		if (item.id === event.parentRunId) {
+		if (item.id === parentRunId) {
 			const existingChildren = item.children ?? [];
-			const childIndex = existingChildren.findIndex((child) => child.id === event.child.id);
-			const nextChild = mergeSummary(childIndex >= 0 ? existingChildren[childIndex] : undefined, event);
+			const childIndex = existingChildren.findIndex((child) => child.id === incoming.id);
+			const nextChild = mergeSummary(existingChildren[childIndex], incoming);
 			const nextChildren = childIndex >= 0
 				? existingChildren.map((child, index) => index === childIndex ? nextChild : child)
 				: [...existingChildren, nextChild];
 			updated = true;
-			return { ...item, children: retainLive(nextChildren, MAX_CHILDREN, (child) => hasLiveNestedDescendants([child])), lastUpdate: Math.max(item.lastUpdate ?? 0, event.ts) };
+			return { ...item, children: retainLive(nextChildren, MAX_CHILDREN, (child) => hasLiveNestedDescendants([child])), lastUpdate: Math.max(item.lastUpdate ?? 0, ts) };
 		}
 		if (!item.children?.length) return item;
 		const nextChildren = walk(item.children);
@@ -452,8 +453,8 @@ function attachChild(children: NestedRunSummary[], event: NestedRunEventRecord):
 	});
 	const next = walk(children);
 	if (updated) return next;
-	const childIndex = next.findIndex((child) => child.id === event.child.id);
-	const nextChild = mergeSummary(childIndex >= 0 ? next[childIndex] : undefined, event);
+	const childIndex = next.findIndex((child) => child.id === incoming.id);
+	const nextChild = mergeSummary(next[childIndex], incoming);
 	return childIndex >= 0
 		? next.map((child, index) => index === childIndex ? nextChild : child)
 		: retainLive([...next, nextChild], MAX_CHILDREN, (child) => hasLiveNestedDescendants([child]));
@@ -476,10 +477,16 @@ export function applyNestedEvent(registry: NestedRegistry, event: NestedEventRec
 		run.steps = retainLive([...(run.steps ?? []).filter((entry) => entry.id !== step.id), { ...step, lastUpdate: ts }].sort((a, b) => (a.index ?? 0) - (b.index ?? 0)), MAX_STEPS, liveStep);
 		return { ...registry, updatedAt: Math.max(registry.updatedAt, ts) };
 	}
+	const state = event.type === "subagent.nested.completed" && event.child.state === "running" ? "complete" : event.child.state;
+	const incoming = { ...event.child, state, lastUpdate: event.child.lastUpdate ?? event.ts };
+	const settledAt = registry.terminalRunUpdates?.[incoming.id];
+	if (terminal(state)) {
+		(registry.terminalRunUpdates ??= Object.create(null))[incoming.id] = Math.max(settledAt ?? incoming.lastUpdate, incoming.lastUpdate);
+	} else if (settledAt !== undefined && settledAt >= incoming.lastUpdate) return registry;
 	return {
 		...registry,
 		updatedAt: Math.max(registry.updatedAt, event.ts),
-		children: attachChild(registry.children, event),
+		children: attachChild(registry.children, event, incoming),
 	};
 }
 
@@ -647,7 +654,15 @@ export function readNestedRegistry(route: NestedRoute): NestedRegistry {
 	validateRouteShape(route);
 	try {
 		const parsed = JSON.parse(fs.readFileSync(registryPath(route), "utf-8")) as NestedRegistry;
+		let terminalRunUpdates: Record<string, number> | undefined;
+		if (parsed.terminalRunUpdates && typeof parsed.terminalRunUpdates === "object" && !Array.isArray(parsed.terminalRunUpdates)) {
+			terminalRunUpdates = Object.create(null) as Record<string, number>;
+			for (const [id, ts] of Object.entries(parsed.terminalRunUpdates)) {
+				if (isSafeNestedId(id) && clampNumber(ts) !== undefined) terminalRunUpdates[id] = ts;
+			}
+		}
 		return {
+			...(terminalRunUpdates ? { terminalRunUpdates } : {}),
 			rootRunId: route.rootRunId,
 			updatedAt: typeof parsed.updatedAt === "number" ? parsed.updatedAt : 0,
 			children: Array.isArray(parsed.children) ? parsed.children.map((child) => sanitizeInternalSummary(child)).filter((child): child is NestedRunSummary => Boolean(child)) : [],
@@ -668,8 +683,12 @@ export function readNestedRegistry(route: NestedRoute): NestedRegistry {
 export function projectNestedEvents(route: NestedRoute, options: NestedProjectionOptions = {}): NestedRegistry {
 	validateRouteShape(route);
 	let registry = readNestedRegistry(route);
+	const writable = !options.readOnlyLegacy || !isLegacyNestedRoute(route);
+	// Older checkpoints may have forgotten starts while marking their completions as applied.
+	let changed = writable && !registry.terminalRunUpdates;
+	if (changed) registry = { rootRunId: route.rootRunId, updatedAt: 0, children: [], processedEvents: [], terminalRunUpdates: Object.create(null) };
 	const seen = new Set(registry.processedEvents);
-	let changed = false;
+	const unknownRun = (id: string) => registry.terminalRunUpdates?.[id] === undefined && !findNestedRun(registry.children, id);
 	const pendingChildren: Array<{ entry: string; event: NestedChildEventRecord }> = [];
 	let entries: string[] = [];
 	try {
@@ -691,7 +710,7 @@ export function projectNestedEvents(route: NestedRoute, options: NestedProjectio
 		}
 		let deferred = false;
 		for (const event of parseNestedEventRecords(content, route)) {
-			if (event.type === "subagent.nested.child" && !findNestedRun(registry.children, event.runId)) {
+			if (event.type === "subagent.nested.child" && unknownRun(event.runId)) {
 				deferred = true;
 				pendingChildren.push({ entry, event });
 				continue;
@@ -704,9 +723,9 @@ export function projectNestedEvents(route: NestedRoute, options: NestedProjectio
 		changed = true;
 	}
 	for (const { entry, event } of pendingChildren) {
-		if (!findNestedRun(registry.children, event.runId)) continue;
+		if (unknownRun(event.runId)) continue;
 		registry = applyNestedEvent(registry, event);
-		if (pendingChildren.every((pending) => pending.entry !== entry || findNestedRun(registry.children, pending.event.runId))) seen.add(entry);
+		if (pendingChildren.every((pending) => pending.entry !== entry || !unknownRun(pending.event.runId))) seen.add(entry);
 		changed = true;
 	}
 	if (changed) {
@@ -714,7 +733,7 @@ export function projectNestedEvents(route: NestedRoute, options: NestedProjectio
 		// Parent projection is the only writer to this sidecar registry. Child and
 		// runner processes only create immutable event files, so parent status.json
 		// remains owned by the existing runner writer and is never rewritten here.
-		if (!options.readOnlyLegacy || !isLegacyNestedRoute(route)) writeAtomicJson(registryPath(route), registry);
+		if (writable) writeAtomicJson(registryPath(route), registry);
 	}
 	return registry;
 }

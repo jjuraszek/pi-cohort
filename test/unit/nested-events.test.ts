@@ -429,6 +429,39 @@ describe("nested event parsing and projection", () => {
 		const second = projectNestedEvents(route);
 		assert.equal(hasLiveNestedDescendants(second.children), false);
 		assert.equal(fs.statSync(registryFile).mtimeMs, 1000);
+
+		// 8.5.1 could save a finished child as running while remembering only the last 1000 files.
+		fs.writeFileSync(registryFile, JSON.stringify({ ...second, terminalRunUpdates: undefined,
+			processedEvents: second.processedEvents.slice(-1000), children: [{ ...second.children[0], state: "running" }, ...second.children.slice(1)] }));
+		const rebuilt = projectNestedEvents(route);
+		assert.deepEqual(rebuilt.children, second.children);
+		assert.equal(hasLiveNestedDescendants(rebuilt.children), false);
+		fs.utimesSync(registryFile, 1, 1);
+		projectNestedEvents(route);
+		assert.equal(fs.statSync(registryFile).mtimeMs, 1000);
+	});
+
+	it("consumes late starts and steps for a finished run outside the display list", () => {
+		const route = trackRoute();
+		for (let i = 0; i < 17; i++) {
+			writeNestedEvent(route, { type: "subagent.nested.completed", ts: 20 + i, parentRunId: route.rootRunId,
+				child: { ...child(`run-${i}`, "running", 20 + i), steps: [] } });
+		}
+		const id = "run-16";
+		assert.equal(findNestedRun(projectNestedEvents(route).children, id), undefined);
+		writeNestedEvent(route, { type: "subagent.nested.started", ts: 10, parentRunId: route.rootRunId, child: { ...child(id, "running", 10), steps: [] } });
+		writeNestedEvent(route, { type: "subagent.nested.child", ts: 11, runId: id, id: "step", agent: "worker", index: 0, status: "running" });
+		const settled = projectNestedEvents(route);
+		assert.equal(hasLiveNestedDescendants(settled.children), false);
+		assert.equal(findNestedRun(settled.children, id), undefined);
+		assert.deepEqual(settled.processedEvents.toSorted(), fs.readdirSync(route.eventSink).sort());
+		const registryFile = path.join(path.dirname(route.eventSink), "registry.json");
+		fs.utimesSync(registryFile, 1, 1);
+		projectNestedEvents(route);
+		assert.equal(fs.statSync(registryFile).mtimeMs, 1000);
+
+		writeNestedEvent(route, { type: "subagent.nested.started", ts: 40, parentRunId: route.rootRunId, child: child(id, "running", 40) });
+		assert.equal(findNestedRun(projectNestedEvents(route).children, id)?.state, "running");
 	});
 
 	it("projects pending legacy events in memory while keeping active projection mutating by default", () => {
