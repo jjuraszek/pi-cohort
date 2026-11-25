@@ -36,8 +36,6 @@ const LEGACY_NESTED_EVENTS_DIR = path.join(TEMP_ROOT_DIR, "nested-subagent-event
 const ROUTE_FILE = "route.json";
 const REGISTRY_FILE = "registry.json";
 const LEGACY_PROCESSED_EVENT_LIMIT = 1000;
-// Only full windows with deferred files need a proof across polls. Registries are atomically replaced.
-const verifiedWindows = new Map<string, string>();
 const MAX_EVENT_BYTES = 64 * 1024;
 const MAX_STEPS = 12;
 const MAX_CHILDREN = 16;
@@ -673,7 +671,7 @@ export function readNestedRegistry(route: NestedRoute): NestedRegistry {
 	}
 }
 
-function projectEntries(route: NestedRoute, entries: string[], registry: NestedRegistry, unread?: Set<string>): NestedRegistry {
+function projectEntries(route: NestedRoute, entries: string[], registry: NestedRegistry): NestedRegistry {
 	const seen = new Set(registry.processedEvents);
 	let changed = false;
 	const pendingChildren: Array<{ entry: string; event: NestedChildEventRecord }> = [];
@@ -688,7 +686,6 @@ function projectEntries(route: NestedRoute, entries: string[], registry: NestedR
 		} catch {
 			continue;
 		}
-		unread?.delete(entry);
 		let deferred = false;
 		for (const event of parseNestedEventRecords(content, route)) {
 			if (event.type === "subagent.nested.child" && !findNestedRun(registry.children, event.runId)) {
@@ -712,11 +709,6 @@ function projectEntries(route: NestedRoute, entries: string[], registry: NestedR
 	return changed ? { ...registry, processedEvents: [...seen] } : registry;
 }
 
-function checkpointIdentity(file: string): string {
-	const { ino, mtimeMs, size } = fs.statSync(file);
-	return `${ino}:${mtimeMs}:${size}`;
-}
-
 export function projectNestedEvents(route: NestedRoute, options: NestedProjectionOptions = {}): NestedRegistry {
 	const checkpoint = readNestedRegistry(route);
 	let entries: string[] = [];
@@ -728,31 +720,16 @@ export function projectNestedEvents(route: NestedRoute, options: NestedProjectio
 	const seen = new Set(checkpoint.processedEvents);
 	const unseen = entries.filter((entry) => !seen.has(entry));
 	if (!unseen.length) return checkpoint;
-	const file = registryPath(route);
-	let registry: NestedRegistry;
-	// Missing names can all be deferred steps for a run evicted by legacy replay.
-	if (checkpoint.processedEvents.length === LEGACY_PROCESSED_EVENT_LIMIT && verifiedWindows.get(file) !== checkpointIdentity(file)) {
-		const unread = new Set([...seen, ...unseen]);
-		const rebuilt = projectEntries(route, entries, emptyRegistry(route), unread);
-		if (unread.size) {
-			console.warn(`Keeping nested checkpoint: could not read event ${unread.values().next().value}`);
-			return projectEntries(route, unseen, checkpoint);
-		}
-		registry = isDeepStrictEqual(rebuilt, checkpoint) ? checkpoint : rebuilt;
-	} else {
-		registry = projectEntries(route, unseen, checkpoint);
-	}
-	if (!options.readOnlyLegacy || !isLegacyNestedRoute(route)) {
-		// Parent projection is the only writer to this sidecar registry. Child and
-		// runner processes only create immutable event files, so parent status.json
-		// remains owned by the existing runner writer and is never rewritten here.
-		if (registry !== checkpoint) writeAtomicJson(file, registry);
-		if (registry.processedEvents.length === LEGACY_PROCESSED_EVENT_LIMIT && entries.length > LEGACY_PROCESSED_EVENT_LIMIT) {
-			verifiedWindows.set(file, checkpointIdentity(file));
-		} else {
-			verifiedWindows.delete(file);
-		}
-	}
+	// A full legacy window may have forgotten starts and replayed them after their completions.
+	const rebuild = checkpoint.processedEvents.length === LEGACY_PROCESSED_EVENT_LIMIT;
+	const registry = rebuild
+		? projectEntries(route, entries, emptyRegistry(route))
+		: projectEntries(route, unseen, checkpoint);
+	if (registry === checkpoint || (rebuild && isDeepStrictEqual(registry, checkpoint))) return checkpoint;
+	// Parent projection is the only writer to this sidecar registry. Child and
+	// runner processes only create immutable event files, so parent status.json
+	// remains owned by the existing runner writer and is never rewritten here.
+	if (!options.readOnlyLegacy || !isLegacyNestedRoute(route)) writeAtomicJson(registryPath(route), registry);
 	return registry;
 }
 

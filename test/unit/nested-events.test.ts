@@ -412,7 +412,7 @@ describe("nested event route validation", () => {
 });
 
 describe("nested event parsing and projection", () => {
-	it("keeps children settled without replaying 1050 applied events while an orphan waits for its owner", () => {
+	it("keeps children settled across 1050 events on fresh and truncated checkpoints", () => {
 		const route = trackRoute();
 		let ts = 0;
 		const run = (id: string, state: "running" | "complete") => writeNestedEvent(route, {
@@ -431,43 +431,31 @@ describe("nested event parsing and projection", () => {
 		for (let i = 0; i < 16; i++) run(`sibling-${i}`, "complete");
 		run("resurrected", "complete");
 		while (ts < 1000) run(`other-${ts}`, "complete");
-		writeNestedEvent(route, { type: "subagent.nested.child", ts: 1051, runId: "future", id: "waiting", index: 0, agent: "leaf", status: "completed" });
+		const oversized = path.join(route.eventSink, "oversized.json");
+		fs.writeFileSync(oversized, Buffer.alloc(70 * 1024));
 		const registryFile = path.join(path.dirname(route.eventSink), "registry.json");
-		const full = projectNestedEvents(route);
-		assert.equal(full.processedEvents.length, 1000);
-		const fullInode = fs.statSync(registryFile).ino;
-		const reads = testMock.method(fs, "readFileSync");
-		syncBuiltinESMExports();
-		try {
-			assert.deepEqual(projectNestedEvents({ ...route }), full);
-			assert.equal(fs.statSync(registryFile).ino, fullInode);
-			assert.equal(reads.mock.calls.filter(({ arguments: [file] }) => path.dirname(String(file)) === route.eventSink).length, 1);
-		} finally {
-			reads.mock.restore();
-			syncBuiltinESMExports();
-		}
-		while (ts < 1050) run(`other-${ts}`, "complete");
-		const settled = projectNestedEvents(route);
-		assert.equal(settled.processedEvents.length, 1050);
-		assert.equal(hasLiveNestedDescendants(settled.children), false);
 		const assertIdle = () => {
 			fs.utimesSync(registryFile, 1, 1);
 			assert.equal(hasLiveNestedDescendants(projectNestedEvents(route).children), false);
 			assert.equal(fs.statSync(registryFile).mtimeMs, 1000);
 		};
+		assert.equal(projectNestedEvents(route).processedEvents.length, 1000);
+		assertIdle();
+
+		fs.unlinkSync(registryFile);
+		while (ts < 1050) run(`other-${ts}`, "complete");
+		const settled = projectNestedEvents(route);
+		assert.equal(settled.processedEvents.length, 1050);
+		assert.equal(hasLiveNestedDescendants(settled.children), false);
 		assertIdle();
 		const names = settled.processedEvents;
 		const truncated = { ...settled, processedEvents: names.slice(-1000) };
 		fs.writeFileSync(registryFile, JSON.stringify(truncated));
-		const completion = path.join(route.eventSink, names[completionsBegin]);
-		fs.renameSync(completion, `${completion}.tmp`);
-		fs.symlinkSync(`${completion}.missing`, completion);
-		assert.equal(findNestedRun(projectNestedEvents(route).children, "sibling-0")?.state, "complete");
-		assert.deepEqual(readNestedRegistry(route), truncated);
-		fs.unlinkSync(completion);
-		fs.renameSync(`${completion}.tmp`, completion);
-		assert.deepEqual(projectNestedEvents(route), settled);
+		const recovered = projectNestedEvents(route);
+		assert.equal(hasLiveNestedDescendants(recovered.children), false);
+		assert.deepEqual(recovered, settled);
 		assertIdle();
+		fs.unlinkSync(oversized);
 
 		// A second old poll re-applied the omitted starts. Only the evicted owner's steps now fall outside its window.
 		let rotated = structuredClone(truncated);
@@ -481,8 +469,6 @@ describe("nested event parsing and projection", () => {
 		fs.writeFileSync(registryFile, JSON.stringify(rotated));
 		assert.deepEqual(projectNestedEvents(route), settled);
 		assertIdle();
-		run("future", "running");
-		assert.equal(findNestedRun(projectNestedEvents(route).children, "future")?.steps?.[0]?.id, "waiting");
 	});
 
 	it("projects pending legacy events in memory while keeping active projection mutating by default", () => {
