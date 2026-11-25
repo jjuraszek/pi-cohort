@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
@@ -35,6 +36,8 @@ const LEGACY_NESTED_EVENTS_DIR = path.join(TEMP_ROOT_DIR, "nested-subagent-event
 const ROUTE_FILE = "route.json";
 const REGISTRY_FILE = "registry.json";
 const LEGACY_PROCESSED_EVENT_LIMIT = 1000;
+// Only full windows with deferred files need a proof across polls. Registries are atomically replaced.
+const verifiedWindows = new Map<string, string>();
 const MAX_EVENT_BYTES = 64 * 1024;
 const MAX_STEPS = 12;
 const MAX_CHILDREN = 16;
@@ -670,22 +673,22 @@ export function readNestedRegistry(route: NestedRoute): NestedRegistry {
 	}
 }
 
-function projectEntries(route: NestedRoute, entries: string[], registry: NestedRegistry): NestedRegistry {
+function projectEntries(route: NestedRoute, entries: string[], registry: NestedRegistry, unread?: Set<string>): NestedRegistry {
 	const seen = new Set(registry.processedEvents);
 	let changed = false;
 	const pendingChildren: Array<{ entry: string; event: NestedChildEventRecord }> = [];
 	for (const entry of entries) {
-		if (seen.has(entry)) continue;
 		const eventPath = path.join(route.eventSink, entry);
-		if (!containedPath(route.eventSink, eventPath)) continue;
 		let content: string;
 		try {
+			if (!containedPath(route.eventSink, eventPath)) continue;
 			const stat = fs.statSync(eventPath);
 			if (!stat.isFile() || stat.size > MAX_EVENT_BYTES) continue;
 			content = fs.readFileSync(eventPath, "utf-8");
 		} catch {
 			continue;
 		}
+		unread?.delete(entry);
 		let deferred = false;
 		for (const event of parseNestedEventRecords(content, route)) {
 			if (event.type === "subagent.nested.child" && !findNestedRun(registry.children, event.runId)) {
@@ -709,6 +712,11 @@ function projectEntries(route: NestedRoute, entries: string[], registry: NestedR
 	return changed ? { ...registry, processedEvents: [...seen] } : registry;
 }
 
+function checkpointIdentity(file: string): string {
+	const { ino, mtimeMs, size } = fs.statSync(file);
+	return `${ino}:${mtimeMs}:${size}`;
+}
+
 export function projectNestedEvents(route: NestedRoute, options: NestedProjectionOptions = {}): NestedRegistry {
 	const checkpoint = readNestedRegistry(route);
 	let entries: string[] = [];
@@ -717,17 +725,33 @@ export function projectNestedEvents(route: NestedRoute, options: NestedProjectio
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 	}
-	let registry = projectEntries(route, entries, checkpoint);
-	// A full legacy window may omit starts whose completions it still lists. Rebuild
-	// when the window grows, not on every poll with an unprocessable orphan file.
-	if (checkpoint.processedEvents.length === LEGACY_PROCESSED_EVENT_LIMIT && registry.processedEvents.length > LEGACY_PROCESSED_EVENT_LIMIT) {
-		registry = projectEntries(route, entries, emptyRegistry(route));
+	const seen = new Set(checkpoint.processedEvents);
+	const unseen = entries.filter((entry) => !seen.has(entry));
+	if (!unseen.length) return checkpoint;
+	const file = registryPath(route);
+	let registry: NestedRegistry;
+	// Missing names can all be deferred steps for a run evicted by legacy replay.
+	if (checkpoint.processedEvents.length === LEGACY_PROCESSED_EVENT_LIMIT && verifiedWindows.get(file) !== checkpointIdentity(file)) {
+		const unread = new Set([...seen, ...unseen]);
+		const rebuilt = projectEntries(route, entries, emptyRegistry(route), unread);
+		if (unread.size) {
+			console.warn(`Keeping nested checkpoint: could not read event ${unread.values().next().value}`);
+			return projectEntries(route, unseen, checkpoint);
+		}
+		registry = isDeepStrictEqual(rebuilt, checkpoint) ? checkpoint : rebuilt;
+	} else {
+		registry = projectEntries(route, unseen, checkpoint);
 	}
-	if (registry !== checkpoint) {
+	if (!options.readOnlyLegacy || !isLegacyNestedRoute(route)) {
 		// Parent projection is the only writer to this sidecar registry. Child and
 		// runner processes only create immutable event files, so parent status.json
 		// remains owned by the existing runner writer and is never rewritten here.
-		if (!options.readOnlyLegacy || !isLegacyNestedRoute(route)) writeAtomicJson(registryPath(route), registry);
+		if (registry !== checkpoint) writeAtomicJson(file, registry);
+		if (registry.processedEvents.length === LEGACY_PROCESSED_EVENT_LIMIT && entries.length > LEGACY_PROCESSED_EVENT_LIMIT) {
+			verifiedWindows.set(file, checkpointIdentity(file));
+		} else {
+			verifiedWindows.delete(file);
+		}
 	}
 	return registry;
 }
