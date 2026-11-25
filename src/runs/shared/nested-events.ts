@@ -405,20 +405,6 @@ function terminal(state: NestedRunState): boolean {
 	return state === "complete" || state === "failed" || state === "paused";
 }
 
-function preserveOrigins(summary: NestedRunSummary, knownSummaries: NestedRunSummary[]): NestedRunSummary {
-	const known = findNestedRun(knownSummaries, summary.id);
-	const preserve = (child: NestedRunSummary) => preserveOrigins(child, knownSummaries);
-	return {
-		...summary,
-		...(known?.runtime && known.sessionRoot ? { runtime: known.runtime, sessionRoot: known.sessionRoot } : {}),
-		...(summary.children ? { children: summary.children.map(preserve) } : {}),
-		...(summary.steps ? { steps: summary.steps.map((step) => ({
-			...step,
-			...(step.children ? { children: step.children.map(preserve) } : {}),
-		})) } : {}),
-	};
-}
-
 type UpdatedSummary = NestedRunSummary & { lastUpdate: number };
 
 function mergeSummary(existing: NestedRunSummary | undefined, incoming: UpdatedSummary): NestedRunSummary {
@@ -428,9 +414,21 @@ function mergeSummary(existing: NestedRunSummary | undefined, incoming: UpdatedS
 	if (incomingUpdate < existingUpdate) return existing;
 	if (terminal(existing.state) && !terminal(incoming.state)) return existing;
 	if (terminal(existing.state) && terminal(incoming.state) && incomingUpdate === existingUpdate) return existing;
+	const preserveOrigins = (summary: NestedRunSummary): NestedRunSummary => {
+		const known = findNestedRun([existing], summary.id);
+		return {
+			...summary,
+			...(known?.runtime && known.sessionRoot ? { runtime: known.runtime, sessionRoot: known.sessionRoot } : {}),
+			...(summary.children ? { children: summary.children.map(preserveOrigins) } : {}),
+			...(summary.steps ? { steps: summary.steps.map((step) => ({
+				...step,
+				...(step.children ? { children: step.children.map(preserveOrigins) } : {}),
+			})) } : {}),
+		};
+	};
 	return {
 		...existing,
-		...preserveOrigins(incoming, [existing]),
+		...preserveOrigins(incoming),
 		state: incoming.state,
 		lastUpdate: Math.max(existingUpdate, incomingUpdate),
 	};
@@ -438,11 +436,13 @@ function mergeSummary(existing: NestedRunSummary | undefined, incoming: UpdatedS
 
 function attachChild(children: NestedRunSummary[], { parentRunId, ts }: NestedRunEventRecord, incoming: UpdatedSummary): NestedRunSummary[] {
 	let updated = false;
+	// A run read before its parent sits at the root until an event finds the parent.
+	const orphan = children.find((item) => item.id === incoming.id);
 	const walk = (items: NestedRunSummary[]): NestedRunSummary[] => items.map((item) => {
 		if (item.id === parentRunId) {
 			const existingChildren = item.children ?? [];
 			const childIndex = existingChildren.findIndex((child) => child.id === incoming.id);
-			const nextChild = mergeSummary(existingChildren[childIndex], incoming);
+			const nextChild = mergeSummary(existingChildren[childIndex] ?? orphan, incoming);
 			const nextChildren = childIndex >= 0
 				? existingChildren.map((child, index) => index === childIndex ? nextChild : child)
 				: [...existingChildren, nextChild];
@@ -454,7 +454,7 @@ function attachChild(children: NestedRunSummary[], { parentRunId, ts }: NestedRu
 		return nextChildren === item.children ? item : { ...item, children: nextChildren };
 	});
 	const next = walk(children);
-	if (updated) return next;
+	if (updated) return orphan ? next.filter((item) => item.id !== incoming.id) : next;
 	const childIndex = next.findIndex((child) => child.id === incoming.id);
 	const nextChild = mergeSummary(next[childIndex], incoming);
 	return childIndex >= 0
@@ -484,7 +484,15 @@ export function applyNestedEvent(registry: NestedRegistry, event: NestedEventRec
 	const settledAt = registry.terminalRunUpdates?.[incoming.id];
 	if (terminal(state)) {
 		(registry.terminalRunUpdates ??= Object.create(null))[incoming.id] = Math.max(settledAt ?? incoming.lastUpdate, incoming.lastUpdate);
-	} else if (settledAt !== undefined && settledAt >= incoming.lastUpdate) return registry;
+	} else if (settledAt !== undefined && settledAt >= incoming.lastUpdate) {
+		// A start read after its run settled is merged as if it had been read first.
+		const settled = findNestedRun(registry.children, incoming.id);
+		if (settled) {
+			const { children, steps, ...start } = incoming;
+			Object.assign(settled, mergeSummary(start, { ...settled, lastUpdate: Math.max(settled.lastUpdate ?? 0, settledAt) }));
+		}
+		return registry;
+	}
 	return {
 		...registry,
 		updatedAt: Math.max(registry.updatedAt, event.ts),
@@ -693,7 +701,9 @@ export function projectNestedEvents(route: NestedRoute, options: NestedProjectio
 		: saved;
 	const seen = new Set(registry.processedEvents);
 	let changed = false;
-	const unknownRun = (id: string) => registry.terminalRunUpdates?.[id] === undefined && !findNestedRun(registry.children, id);
+	// A step for an absent run waits for its start unless the run settled at or after the step.
+	const awaitsRun = (event: NestedChildEventRecord) => !findNestedRun(registry.children, event.runId)
+		&& !((registry.terminalRunUpdates?.[event.runId] ?? -Infinity) >= event.ts);
 	const pendingChildren: Array<{ entry: string; event: NestedChildEventRecord }> = [];
 	let entries: string[] = [];
 	try {
@@ -730,16 +740,12 @@ export function projectNestedEvents(route: NestedRoute, options: NestedProjectio
 		changed = true;
 	}
 	for (const { entry, event } of pendingChildren) {
-		if (unknownRun(event.runId)) continue;
+		if (awaitsRun(event)) continue;
 		registry = applyNestedEvent(registry, event);
-		if (pendingChildren.every((pending) => pending.entry !== entry || !unknownRun(pending.event.runId))) seen.add(entry);
+		if (pendingChildren.every((pending) => pending.entry !== entry || !awaitsRun(pending.event))) seen.add(entry);
 		changed = true;
 	}
 	if (changed) {
-		if (rebuild && saved.children.length) {
-			// Filename order can differ from the order in which earlier polls saw the same events.
-			registry.children = registry.children.map((child) => preserveOrigins(child, saved.children));
-		}
 		registry = { ...registry, processedEvents: [...seen] };
 		// Parent projection is the only writer to this sidecar registry. Child and
 		// runner processes only create immutable event files, so parent status.json

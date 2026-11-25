@@ -484,6 +484,11 @@ describe("nested event parsing and projection", () => {
 
 		writeNestedEvent(route, { type: "subagent.nested.started", ts: 40, parentRunId: route.rootRunId, child: child(id, "running", 40) });
 		nameEventsByType(route.eventSink, 40); // child sorts before started
+		const startFile = path.join(route.eventSink, "0000000000040-subagent.nested.started.json");
+		fs.renameSync(startFile, `${startFile}.held`);
+		fs.symlinkSync(`${startFile}.missing`, startFile, "file");
+		projectNestedEvents(route);
+		fs.renameSync(`${startFile}.held`, startFile);
 		const restarted = findNestedRun(projectNestedEvents(route).children, id);
 		assert.equal(restarted?.state, "running");
 		assert.equal(restarted.steps?.[0]?.id, `${id}-leaf`);
@@ -693,14 +698,48 @@ describe("nested event parsing and projection", () => {
 });
 
 describe("durable nested origins", () => {
-	it("keeps the saved origin when a checkpoint rebuild reads the completion before the start", () => {
+	it("keeps a finished child under its parent when a checkpoint rebuild reads the child's start first", () => {
+		const route = trackRoute();
+		const parent = { ...child("P", "running", 10), steps: [] };
+		const nested = { ...child("C", "running", 10, parent.id), depth: 2, path: [...parent.path, { runId: parent.id, stepIndex: 1 }], steps: [] };
+		for (const run of [parent, nested]) {
+			writeNestedEvent(route, { type: "subagent.nested.started", ts: 10, parentRunId: run.parentRunId, child: run });
+			projectNestedEvents(route);
+		}
+		writeNestedEvent(route, { type: "subagent.nested.completed", ts: 11, parentRunId: parent.id, child: { ...nested, state: "complete", lastUpdate: 11 } });
+		writeNestedEvent(route, { type: "subagent.nested.completed", ts: 12, parentRunId: route.rootRunId, child: { ...parent, state: "complete", lastUpdate: 12 } });
+		const saved = projectNestedEvents(route);
+		assert.equal(saved.children[0].id, parent.id);
+		assert.equal(saved.children[0].state, "complete");
+		assert.equal(saved.children[0].children?.[0].id, nested.id);
+		assert.equal(saved.children[0].children[0].state, "complete");
+
+		const prefix = "0000000000010-";
+		for (const name of saved.processedEvents.filter((entry) => entry.startsWith(prefix))) {
+			const file = path.join(route.eventSink, name);
+			const { child } = JSON.parse(fs.readFileSync(file, "utf8"));
+			fs.renameSync(file, path.join(route.eventSink, `${prefix}${child.id}.json`)); // C sorts before P
+		}
+		const registryFile = path.join(path.dirname(route.eventSink), "registry.json");
+		fs.writeFileSync(registryFile, JSON.stringify({ ...saved, terminalRunUpdates: undefined, processedEvents: fs.readdirSync(route.eventSink) }));
+		const rebuilt = projectNestedEvents(route);
+		assert.equal(hasLiveNestedDescendants(rebuilt.children), false);
+		assert.deepEqual(rebuilt.children, saved.children);
+		fs.utimesSync(registryFile, 1, 1);
+		projectNestedEvents(route);
+		assert.equal(fs.statSync(registryFile).mtimeMs, 1000);
+	});
+
+	it("keeps the origin and start fields when a checkpoint rebuild reads the completion before the start", () => {
 		const route = trackRoute();
 		const runtime = { nodeExecPath: process.execPath, piEntryPath: path.resolve("pi.js"), piPackageRoot: path.resolve("package") };
 		const sessionRoot = path.resolve("sessions/origin");
 		const run = { ...child("origin", "queued", 100), steps: [] };
 		writeNestedEvent(route, { type: "subagent.nested.started", ts: 100, parentRunId: route.rootRunId, child: { ...run, runtime, sessionRoot } });
 		projectNestedEvents(route);
-		writeNestedEvent(route, { type: "subagent.nested.completed", ts: 100, parentRunId: route.rootRunId, child: { ...run, state: "paused" } });
+		const { id, parentRunId, parentStepIndex, depth, path: runPath, mode, lastUpdate } = run;
+		writeNestedEvent(route, { type: "subagent.nested.completed", ts: 100, parentRunId,
+			child: { id, parentRunId, parentStepIndex, depth, path: runPath, mode, state: "paused", lastUpdate } });
 		const saved = projectNestedEvents(route);
 		assert.equal(saved.children[0].state, "paused");
 		assert.deepEqual(saved.children[0].runtime, runtime);
