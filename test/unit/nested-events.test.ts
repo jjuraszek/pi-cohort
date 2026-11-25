@@ -412,6 +412,25 @@ describe("nested event route validation", () => {
 });
 
 describe("nested event parsing and projection", () => {
+	it("leaves the registry untouched and children settled on a second pass over 1050 event files", () => {
+		const route = trackRoute();
+		const types = ["subagent.nested.started", "subagent.nested.updated", "subagent.nested.completed"] as const;
+		for (let i = 0; i < 350; i++) {
+			for (const [offset, type] of types.entries()) {
+				const ts = i * types.length + offset + 1;
+				const state = type === "subagent.nested.completed" ? "complete" : "running";
+				writeNestedEvent(route, { type, ts, parentRunId: route.rootRunId, child: { ...child(`run-${i}`, state, ts), steps: [] } });
+			}
+		}
+		assert.equal(hasLiveNestedDescendants(projectNestedEvents(route).children), false);
+		const registryFile = path.join(path.dirname(route.eventSink), "registry.json");
+		fs.utimesSync(registryFile, 1, 1);
+
+		const second = projectNestedEvents(route);
+		assert.equal(hasLiveNestedDescendants(second.children), false);
+		assert.equal(fs.statSync(registryFile).mtimeMs, 1000);
+	});
+
 	it("projects pending legacy events in memory while keeping active projection mutating by default", () => {
 		const created = trackRoute("readonly-root");
 		const legacyRoot = path.join(TEMP_ROOT_DIR, "nested-subagent-events", path.basename(path.dirname(created.eventSink)));
