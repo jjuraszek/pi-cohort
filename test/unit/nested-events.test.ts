@@ -412,63 +412,23 @@ describe("nested event route validation", () => {
 });
 
 describe("nested event parsing and projection", () => {
-	it("keeps children settled across 1050 events on fresh and truncated checkpoints", () => {
+	it("leaves the registry untouched and children settled on a second pass over 1050 event files", () => {
 		const route = trackRoute();
-		let ts = 0;
-		const run = (id: string, state: "running" | "complete") => writeNestedEvent(route, {
-			type: state === "running" ? "subagent.nested.started" : "subagent.nested.completed",
-			ts: ++ts, parentRunId: route.rootRunId, child: { ...child(id, state, ts), steps: [] },
-		});
-		for (let i = 0; i < 16; i++) run(`sibling-${i}`, "running");
-		run("step-owner", "running");
-		run("step-owner", "complete");
-		run("resurrected", "running");
-		const stepsBegin = ts;
-		for (let i = 0; i < 50; i++) writeNestedEvent(route, {
-			type: "subagent.nested.child", ts: ++ts, runId: "step-owner", id: `step-${i}`, index: i, agent: "leaf", status: "completed",
-		});
-		const completionsBegin = ts;
-		for (let i = 0; i < 16; i++) run(`sibling-${i}`, "complete");
-		run("resurrected", "complete");
-		while (ts < 1000) run(`other-${ts}`, "complete");
-		const oversized = path.join(route.eventSink, "oversized.json");
-		fs.writeFileSync(oversized, Buffer.alloc(70 * 1024));
-		const registryFile = path.join(path.dirname(route.eventSink), "registry.json");
-		const assertIdle = () => {
-			fs.utimesSync(registryFile, 1, 1);
-			assert.equal(hasLiveNestedDescendants(projectNestedEvents(route).children), false);
-			assert.equal(fs.statSync(registryFile).mtimeMs, 1000);
-		};
-		assert.equal(projectNestedEvents(route).processedEvents.length, 1000);
-		assertIdle();
-
-		fs.unlinkSync(registryFile);
-		while (ts < 1050) run(`other-${ts}`, "complete");
-		const settled = projectNestedEvents(route);
-		assert.equal(settled.processedEvents.length, 1050);
-		assert.equal(hasLiveNestedDescendants(settled.children), false);
-		assertIdle();
-		const names = settled.processedEvents;
-		const truncated = { ...settled, processedEvents: names.slice(-1000) };
-		fs.writeFileSync(registryFile, JSON.stringify(truncated));
-		const recovered = projectNestedEvents(route);
-		assert.equal(hasLiveNestedDescendants(recovered.children), false);
-		assert.deepEqual(recovered, settled);
-		assertIdle();
-		fs.unlinkSync(oversized);
-
-		// A second old poll re-applied the omitted starts. Only the evicted owner's steps now fall outside its window.
-		let rotated = structuredClone(truncated);
-		for (const name of names.slice(0, stepsBegin)) {
-			const [event] = parseNestedEventRecords(fs.readFileSync(path.join(route.eventSink, name), "utf8"), route);
-			rotated = applyNestedEvent(rotated, event);
+		const types = ["subagent.nested.started", "subagent.nested.updated", "subagent.nested.completed"] as const;
+		for (let i = 0; i < 350; i++) {
+			for (const [offset, type] of types.entries()) {
+				const ts = i * types.length + offset + 1;
+				const state = type === "subagent.nested.completed" ? "complete" : "running";
+				writeNestedEvent(route, { type, ts, parentRunId: route.rootRunId, child: { ...child(`run-${i}`, state, ts), steps: [] } });
+			}
 		}
-		assert.equal(findNestedRun(rotated.children, "resurrected")?.state, "running");
-		assert.equal(findNestedRun(rotated.children, "step-owner"), undefined);
-		rotated.processedEvents = [...names.slice(completionsBegin), ...names.slice(0, stepsBegin)];
-		fs.writeFileSync(registryFile, JSON.stringify(rotated));
-		assert.deepEqual(projectNestedEvents(route), settled);
-		assertIdle();
+		assert.equal(hasLiveNestedDescendants(projectNestedEvents(route).children), false);
+		const registryFile = path.join(path.dirname(route.eventSink), "registry.json");
+		fs.utimesSync(registryFile, 1, 1);
+
+		const second = projectNestedEvents(route);
+		assert.equal(hasLiveNestedDescendants(second.children), false);
+		assert.equal(fs.statSync(registryFile).mtimeMs, 1000);
 	});
 
 	it("projects pending legacy events in memory while keeping active projection mutating by default", () => {

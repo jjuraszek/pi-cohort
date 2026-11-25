@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { isDeepStrictEqual } from "node:util";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
@@ -35,7 +34,6 @@ export const NESTED_EVENTS_DIR = path.join(RUN_STATE_ROOT_DIR, "nested-subagent-
 const LEGACY_NESTED_EVENTS_DIR = path.join(TEMP_ROOT_DIR, "nested-subagent-events");
 const ROUTE_FILE = "route.json";
 const REGISTRY_FILE = "registry.json";
-const LEGACY_PROCESSED_EVENT_LIMIT = 1000;
 const MAX_EVENT_BYTES = 64 * 1024;
 const MAX_STEPS = 12;
 const MAX_CHILDREN = 16;
@@ -645,10 +643,6 @@ export function findNestedRunById(id: string): { rootRunId: string; run: NestedR
 	return match ? { rootRunId: match.rootRunId, run: match.run } : undefined;
 }
 
-function emptyRegistry(route: NestedRoute): NestedRegistry {
-	return { rootRunId: route.rootRunId, updatedAt: 0, children: [], processedEvents: [] };
-}
-
 export function readNestedRegistry(route: NestedRoute): NestedRegistry {
 	validateRouteShape(route);
 	try {
@@ -667,19 +661,28 @@ export function readNestedRegistry(route: NestedRoute): NestedRegistry {
 		};
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-		return emptyRegistry(route);
+		return { rootRunId: route.rootRunId, updatedAt: 0, children: [], processedEvents: [] };
 	}
 }
 
-function projectEntries(route: NestedRoute, entries: string[], registry: NestedRegistry): NestedRegistry {
+export function projectNestedEvents(route: NestedRoute, options: NestedProjectionOptions = {}): NestedRegistry {
+	validateRouteShape(route);
+	let registry = readNestedRegistry(route);
 	const seen = new Set(registry.processedEvents);
 	let changed = false;
 	const pendingChildren: Array<{ entry: string; event: NestedChildEventRecord }> = [];
+	let entries: string[] = [];
+	try {
+		entries = fs.readdirSync(route.eventSink).filter((entry) => entry.endsWith(".json") || entry.endsWith(".jsonl")).sort();
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
 	for (const entry of entries) {
+		if (seen.has(entry)) continue;
 		const eventPath = path.join(route.eventSink, entry);
+		if (!containedPath(route.eventSink, eventPath)) continue;
 		let content: string;
 		try {
-			if (!containedPath(route.eventSink, eventPath)) continue;
 			const stat = fs.statSync(eventPath);
 			if (!stat.isFile() || stat.size > MAX_EVENT_BYTES) continue;
 			content = fs.readFileSync(eventPath, "utf-8");
@@ -706,30 +709,13 @@ function projectEntries(route: NestedRoute, entries: string[], registry: NestedR
 		if (pendingChildren.every((pending) => pending.entry !== entry || findNestedRun(registry.children, pending.event.runId))) seen.add(entry);
 		changed = true;
 	}
-	return changed ? { ...registry, processedEvents: [...seen] } : registry;
-}
-
-export function projectNestedEvents(route: NestedRoute, options: NestedProjectionOptions = {}): NestedRegistry {
-	const checkpoint = readNestedRegistry(route);
-	let entries: string[] = [];
-	try {
-		entries = fs.readdirSync(route.eventSink).filter((entry) => entry.endsWith(".json") || entry.endsWith(".jsonl")).sort();
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	if (changed) {
+		registry = { ...registry, processedEvents: [...seen] };
+		// Parent projection is the only writer to this sidecar registry. Child and
+		// runner processes only create immutable event files, so parent status.json
+		// remains owned by the existing runner writer and is never rewritten here.
+		if (!options.readOnlyLegacy || !isLegacyNestedRoute(route)) writeAtomicJson(registryPath(route), registry);
 	}
-	const seen = new Set(checkpoint.processedEvents);
-	const unseen = entries.filter((entry) => !seen.has(entry));
-	if (!unseen.length) return checkpoint;
-	// A full legacy window may have forgotten starts and replayed them after their completions.
-	const rebuild = checkpoint.processedEvents.length === LEGACY_PROCESSED_EVENT_LIMIT;
-	const registry = rebuild
-		? projectEntries(route, entries, emptyRegistry(route))
-		: projectEntries(route, unseen, checkpoint);
-	if (registry === checkpoint || (rebuild && isDeepStrictEqual(registry, checkpoint))) return checkpoint;
-	// Parent projection is the only writer to this sidecar registry. Child and
-	// runner processes only create immutable event files, so parent status.json
-	// remains owned by the existing runner writer and is never rewritten here.
-	if (!options.readOnlyLegacy || !isLegacyNestedRoute(route)) writeAtomicJson(registryPath(route), registry);
 	return registry;
 }
 
