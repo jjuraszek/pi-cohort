@@ -74,6 +74,15 @@ function trackRoute(rootRunId = "root-run") {
 	return route;
 }
 
+function nameEventsByType(eventSink: string, ts: number) {
+	const prefix = `${String(ts).padStart(13, "0")}-`;
+	for (const name of fs.readdirSync(eventSink).filter((entry) => entry.startsWith(prefix))) {
+		const file = path.join(eventSink, name);
+		const { type } = JSON.parse(fs.readFileSync(file, "utf8"));
+		fs.renameSync(file, path.join(eventSink, `${prefix}${type}.json`));
+	}
+}
+
 function child(id: string, state: "queued" | "running" | "complete" | "failed" | "paused", ts: number, parentRunId = "root-run") {
 	return {
 		id,
@@ -412,6 +421,113 @@ describe("nested event route validation", () => {
 });
 
 describe("nested event parsing and projection", () => {
+	it("leaves the registry untouched and children settled on a second pass over 1050 event files", () => {
+		const route = trackRoute();
+		const registryFile = path.join(path.dirname(route.eventSink), "registry.json");
+		projectNestedEvents(route);
+		assert.equal(fs.existsSync(registryFile), false);
+
+		const types = ["subagent.nested.started", "subagent.nested.updated", "subagent.nested.completed"] as const;
+		for (let i = 0; i < 350; i++) {
+			for (const [offset, type] of types.entries()) {
+				const ts = i * types.length + offset + 1;
+				const state = type === "subagent.nested.completed" ? "complete" : "running";
+				writeNestedEvent(route, { type, ts, parentRunId: route.rootRunId, child: { ...child(`run-${i}`, state, ts), steps: [] } });
+			}
+		}
+		assert.equal(hasLiveNestedDescendants(projectNestedEvents(route).children), false);
+		fs.utimesSync(registryFile, 1, 1);
+
+		const second = projectNestedEvents(route);
+		assert.equal(hasLiveNestedDescendants(second.children), false);
+		assert.equal(fs.statSync(registryFile).mtimeMs, 1000);
+
+		// 8.5.1 could save a finished child as running while remembering only the last 1000 files.
+		fs.writeFileSync(registryFile, JSON.stringify({ ...second, terminalRunUpdates: undefined,
+			processedEvents: second.processedEvents.slice(-1000), children: [{ ...second.children[0], state: "running" }, ...second.children.slice(1)] }));
+		const saved = readNestedRegistry(route);
+		const eventFile = path.join(route.eventSink, saved.processedEvents.at(-1)!);
+		fs.renameSync(eventFile, `${eventFile}.held`);
+		fs.utimesSync(registryFile, 1, 1);
+		const interrupted = projectNestedEvents(route);
+		assert.equal(fs.statSync(registryFile).mtimeMs, 1000);
+		assert.deepEqual(interrupted, saved);
+		fs.renameSync(`${eventFile}.held`, eventFile);
+
+		const rebuilt = projectNestedEvents(route);
+		assert.deepEqual({ ...rebuilt, processedEvents: [...rebuilt.processedEvents].sort() }, second);
+		assert.equal(hasLiveNestedDescendants(rebuilt.children), false);
+		fs.utimesSync(registryFile, 1, 1);
+		projectNestedEvents(route);
+		assert.equal(fs.statSync(registryFile).mtimeMs, 1000);
+	});
+
+	it("consumes late starts and steps for a finished run outside the display list", () => {
+		const route = trackRoute();
+		for (let i = 0; i < 17; i++) {
+			writeNestedEvent(route, { type: "subagent.nested.completed", ts: 20 + i, parentRunId: route.rootRunId,
+				child: { ...child(`run-${i}`, "running", 20 + i), steps: [] } });
+		}
+		const id = "run-16";
+		assert.equal(findNestedRun(projectNestedEvents(route).children, id), undefined);
+		writeNestedEvent(route, { type: "subagent.nested.started", ts: 10, parentRunId: route.rootRunId, child: { ...child(id, "running", 10), steps: [] } });
+		writeNestedEvent(route, { type: "subagent.nested.child", ts: 11, runId: id, id: "step", agent: "worker", index: 0, status: "running" });
+		const settled = projectNestedEvents(route);
+		assert.equal(hasLiveNestedDescendants(settled.children), false);
+		assert.equal(findNestedRun(settled.children, id), undefined);
+		assert.deepEqual(settled.processedEvents.toSorted(), fs.readdirSync(route.eventSink).sort());
+		const registryFile = path.join(path.dirname(route.eventSink), "registry.json");
+		fs.utimesSync(registryFile, 1, 1);
+		projectNestedEvents(route);
+		assert.equal(fs.statSync(registryFile).mtimeMs, 1000);
+
+		writeNestedEvent(route, { type: "subagent.nested.started", ts: 40, parentRunId: route.rootRunId, child: child(id, "running", 40) });
+		nameEventsByType(route.eventSink, 40); // child sorts before started
+		const startFile = path.join(route.eventSink, "0000000000040-subagent.nested.started.json");
+		fs.renameSync(startFile, `${startFile}.held`);
+		fs.symlinkSync(`${startFile}.missing`, startFile, "file");
+		projectNestedEvents(route);
+		fs.renameSync(`${startFile}.held`, startFile);
+		const restarted = findNestedRun(projectNestedEvents(route).children, id);
+		assert.equal(restarted?.state, "running");
+		assert.equal(restarted.steps?.[0]?.id, `${id}-leaf`);
+		assert.equal(restarted.steps[0].status, "running");
+		// An update from before the settlement at 36 belongs to the finished run, not the restarted one.
+		writeNestedEvent(route, { type: "subagent.nested.updated", ts: 35, parentRunId: route.rootRunId, child: { ...child(id, "running", 35), steps: [], pid: 4242 } });
+		assert.deepEqual(findNestedRun(projectNestedEvents(route).children, id), restarted);
+		fs.utimesSync(registryFile, 1, 1);
+		assert.deepEqual(findNestedRun(projectNestedEvents(route).children, id), restarted);
+		assert.equal(fs.statSync(registryFile).mtimeMs, 1000);
+	});
+
+	it("recovers an older checkpoint without a running copy of a finished child or a second copy of a restarted one", () => {
+		const route = trackRoute();
+		const registryFile = path.join(path.dirname(route.eventSink), "registry.json");
+		const run = (id: string, state: "running" | "complete", ts: number, parentRunId = route.rootRunId) => ({ type: state === "running" ? "subagent.nested.started" as const : "subagent.nested.completed" as const,
+			ts, parentRunId, child: { ...child(id, state, ts, parentRunId), steps: [] } });
+		// The checkpoint applied only P's start and no longer shows P; C's start is read while P is absent.
+		writeNestedEvent(route, run("P", "running", 10));
+		fs.writeFileSync(registryFile, JSON.stringify({ rootRunId: route.rootRunId, updatedAt: 10, children: [], processedEvents: fs.readdirSync(route.eventSink) }));
+		for (const event of [run("C", "running", 11, "P"), { ...run("P", "running", 12), type: "subagent.nested.updated" as const }, run("C", "complete", 13, "P"), run("P", "complete", 14)]) writeNestedEvent(route, event);
+		const recovered = projectNestedEvents(route);
+		assert.deepEqual(findNestedRunMatchesById("C").map((match) => match.run.state), ["complete"]);
+		assert.equal(hasLiveNestedDescendants(recovered.children), false);
+
+		// R settled at 40 before its parent Q was readable, left the list, and restarted at 50.
+		for (let i = 0; i < 16; i++) writeNestedEvent(route, run(`old-${i}`, "complete", 15 + i));
+		for (const event of [run("R", "complete", 40, "Q"), run("R", "running", 50, "Q"), run("Q", "running", 51)]) {
+			writeNestedEvent(route, event);
+			projectNestedEvents(route);
+		}
+		const saved = readNestedRegistry(route);
+		assert.deepEqual(findNestedRunMatchesById("R").map((match) => match.run.state), ["running"]);
+		fs.writeFileSync(registryFile, JSON.stringify({ ...saved, terminalRunUpdates: undefined }));
+		assert.deepEqual(projectNestedEvents(route).children, saved.children);
+		fs.utimesSync(registryFile, 1, 1);
+		projectNestedEvents(route);
+		assert.equal(fs.statSync(registryFile).mtimeMs, 1000);
+	});
+
 	it("projects pending legacy events in memory while keeping active projection mutating by default", () => {
 		const created = trackRoute("readonly-root");
 		const legacyRoot = path.join(TEMP_ROOT_DIR, "nested-subagent-events", path.basename(path.dirname(created.eventSink)));
@@ -612,6 +728,62 @@ describe("nested event parsing and projection", () => {
 });
 
 describe("durable nested origins", () => {
+	it("keeps a finished child under its parent when the child's start file sorts first", () => {
+		const route = trackRoute();
+		const parent = { ...child("P", "running", 10), steps: [] };
+		const nested = { ...child("C", "running", 10, parent.id), depth: 2, path: [...parent.path, { runId: parent.id, stepIndex: 1 }], steps: [] };
+		for (const run of [parent, nested]) {
+			writeNestedEvent(route, { type: "subagent.nested.started", ts: 10, parentRunId: run.parentRunId, child: run });
+			projectNestedEvents(route);
+		}
+		writeNestedEvent(route, { type: "subagent.nested.completed", ts: 11, parentRunId: parent.id, child: { ...nested, state: "complete", lastUpdate: 11 } });
+		writeNestedEvent(route, { type: "subagent.nested.completed", ts: 12, parentRunId: route.rootRunId, child: { ...parent, state: "complete", lastUpdate: 12 } });
+		const saved = projectNestedEvents(route);
+		assert.equal(saved.children[0].id, parent.id);
+		assert.equal(saved.children[0].state, "complete");
+		assert.equal(saved.children[0].children?.[0].id, nested.id);
+		assert.equal(saved.children[0].children[0].state, "complete");
+
+		const prefix = "0000000000010-";
+		for (const name of saved.processedEvents.filter((entry) => entry.startsWith(prefix))) {
+			const file = path.join(route.eventSink, name);
+			const { child } = JSON.parse(fs.readFileSync(file, "utf8"));
+			fs.renameSync(file, path.join(route.eventSink, `${prefix}${child.id}.json`)); // C sorts before P
+		}
+		const registryFile = path.join(path.dirname(route.eventSink), "registry.json");
+		fs.writeFileSync(registryFile, JSON.stringify({ ...saved, terminalRunUpdates: undefined, processedEvents: fs.readdirSync(route.eventSink) }));
+		const rebuilt = projectNestedEvents(route);
+		assert.equal(hasLiveNestedDescendants(rebuilt.children), false);
+		assert.deepEqual(rebuilt.children, saved.children);
+		fs.utimesSync(registryFile, 1, 1);
+		projectNestedEvents(route);
+		assert.equal(fs.statSync(registryFile).mtimeMs, 1000);
+	});
+
+	it("keeps the saved origin and start fields when the completion file sorts before the start", () => {
+		const route = trackRoute();
+		const runtime = { nodeExecPath: process.execPath, piEntryPath: path.resolve("pi.js"), piPackageRoot: path.resolve("package") };
+		const sessionRoot = path.resolve("sessions/origin");
+		const run = { ...child("origin", "queued", 100), steps: [] };
+		writeNestedEvent(route, { type: "subagent.nested.started", ts: 100, parentRunId: route.rootRunId, child: { ...run, runtime, sessionRoot } });
+		projectNestedEvents(route);
+		const { id, parentRunId, parentStepIndex, depth, path: runPath, mode, lastUpdate } = run;
+		writeNestedEvent(route, { type: "subagent.nested.completed", ts: 100, parentRunId,
+			child: { id, parentRunId, parentStepIndex, depth, path: runPath, mode, state: "paused", lastUpdate } });
+		const saved = projectNestedEvents(route);
+		assert.equal(saved.children[0].state, "paused");
+		assert.deepEqual(saved.children[0].runtime, runtime);
+		assert.equal(saved.children[0].sessionRoot, sessionRoot);
+
+		nameEventsByType(route.eventSink, 100); // completed sorts before started
+		const registryFile = path.join(path.dirname(route.eventSink), "registry.json");
+		fs.writeFileSync(registryFile, JSON.stringify({ ...saved, terminalRunUpdates: undefined, processedEvents: fs.readdirSync(route.eventSink) }));
+		assert.deepEqual(projectNestedEvents(route).children, saved.children);
+		fs.utimesSync(registryFile, 1, 1);
+		assert.deepEqual(projectNestedEvents(route).children, saved.children);
+		assert.equal(fs.statSync(registryFile).mtimeMs, 1000);
+	});
+
 	it("creates persistent routes and retains private origins through authenticated projection only", () => {
 		const route = trackRoute();
 		assert.equal(path.dirname(path.dirname(route.eventSink)), NESTED_EVENTS_DIR);
