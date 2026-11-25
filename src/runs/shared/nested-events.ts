@@ -710,7 +710,7 @@ export function projectNestedEvents(route: NestedRoute, options: NestedProjectio
 		changed = true;
 	}
 	if (changed) {
-		registry = { ...registry, processedEvents: [...seen].slice(-1000) };
+		registry = { ...registry, processedEvents: [...seen] };
 		// Parent projection is the only writer to this sidecar registry. Child and
 		// runner processes only create immutable event files, so parent status.json
 		// remains owned by the existing runner writer and is never rewritten here.
