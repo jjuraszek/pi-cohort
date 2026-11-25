@@ -422,13 +422,20 @@ describe("nested event parsing and projection", () => {
 				writeNestedEvent(route, { type, ts, parentRunId: route.rootRunId, child: { ...child(`run-${i}`, state, ts), steps: [] } });
 			}
 		}
-		assert.equal(hasLiveNestedDescendants(projectNestedEvents(route).children), false);
+		const settled = projectNestedEvents(route);
+		assert.equal(settled.processedEvents.length, 1050);
+		assert.equal(hasLiveNestedDescendants(settled.children), false);
 		const registryFile = path.join(path.dirname(route.eventSink), "registry.json");
-		fs.utimesSync(registryFile, 1, 1);
-
-		const second = projectNestedEvents(route);
-		assert.equal(hasLiveNestedDescendants(second.children), false);
-		assert.equal(fs.statSync(registryFile).mtimeMs, 1000);
+		for (const truncated of [false, true]) {
+			if (truncated) {
+				// Older registries retained only the last 1000 applied event names.
+				fs.writeFileSync(registryFile, JSON.stringify({ ...settled, processedEvents: settled.processedEvents.slice(-1000) }));
+				assert.deepEqual(projectNestedEvents(route), settled);
+			}
+			fs.utimesSync(registryFile, 1, 1);
+			assert.equal(hasLiveNestedDescendants(projectNestedEvents(route).children), false);
+			assert.equal(fs.statSync(registryFile).mtimeMs, 1000);
+		}
 	});
 
 	it("projects pending legacy events in memory while keeping active projection mutating by default", () => {

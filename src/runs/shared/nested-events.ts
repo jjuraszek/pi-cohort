@@ -34,6 +34,7 @@ export const NESTED_EVENTS_DIR = path.join(RUN_STATE_ROOT_DIR, "nested-subagent-
 const LEGACY_NESTED_EVENTS_DIR = path.join(TEMP_ROOT_DIR, "nested-subagent-events");
 const ROUTE_FILE = "route.json";
 const REGISTRY_FILE = "registry.json";
+const LEGACY_PROCESSED_EVENT_LIMIT = 1000;
 const MAX_EVENT_BYTES = 64 * 1024;
 const MAX_STEPS = 12;
 const MAX_CHILDREN = 16;
@@ -643,6 +644,10 @@ export function findNestedRunById(id: string): { rootRunId: string; run: NestedR
 	return match ? { rootRunId: match.rootRunId, run: match.run } : undefined;
 }
 
+function emptyRegistry(route: NestedRoute): NestedRegistry {
+	return { rootRunId: route.rootRunId, updatedAt: 0, children: [], processedEvents: [] };
+}
+
 export function readNestedRegistry(route: NestedRoute): NestedRegistry {
 	validateRouteShape(route);
 	try {
@@ -661,22 +666,14 @@ export function readNestedRegistry(route: NestedRoute): NestedRegistry {
 		};
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-		return { rootRunId: route.rootRunId, updatedAt: 0, children: [], processedEvents: [] };
+		return emptyRegistry(route);
 	}
 }
 
-export function projectNestedEvents(route: NestedRoute, options: NestedProjectionOptions = {}): NestedRegistry {
-	validateRouteShape(route);
-	let registry = readNestedRegistry(route);
+function projectEntries(route: NestedRoute, entries: string[], registry: NestedRegistry): NestedRegistry {
 	const seen = new Set(registry.processedEvents);
 	let changed = false;
 	const pendingChildren: Array<{ entry: string; event: NestedChildEventRecord }> = [];
-	let entries: string[] = [];
-	try {
-		entries = fs.readdirSync(route.eventSink).filter((entry) => entry.endsWith(".json") || entry.endsWith(".jsonl")).sort();
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-	}
 	for (const entry of entries) {
 		if (seen.has(entry)) continue;
 		const eventPath = path.join(route.eventSink, entry);
@@ -709,8 +706,24 @@ export function projectNestedEvents(route: NestedRoute, options: NestedProjectio
 		if (pendingChildren.every((pending) => pending.entry !== entry || findNestedRun(registry.children, pending.event.runId))) seen.add(entry);
 		changed = true;
 	}
-	if (changed) {
-		registry = { ...registry, processedEvents: [...seen] };
+	return changed ? { ...registry, processedEvents: [...seen] } : registry;
+}
+
+export function projectNestedEvents(route: NestedRoute, options: NestedProjectionOptions = {}): NestedRegistry {
+	const checkpoint = readNestedRegistry(route);
+	let entries: string[] = [];
+	try {
+		entries = fs.readdirSync(route.eventSink).filter((entry) => entry.endsWith(".json") || entry.endsWith(".jsonl")).sort();
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
+	let registry = projectEntries(route, entries, checkpoint);
+	// A full legacy window may omit starts whose completions it still lists. Rebuild
+	// when the window grows, not on every poll with an unprocessable orphan file.
+	if (checkpoint.processedEvents.length === LEGACY_PROCESSED_EVENT_LIMIT && registry.processedEvents.length > LEGACY_PROCESSED_EVENT_LIMIT) {
+		registry = projectEntries(route, entries, emptyRegistry(route));
+	}
+	if (registry !== checkpoint) {
 		// Parent projection is the only writer to this sidecar registry. Child and
 		// runner processes only create immutable event files, so parent status.json
 		// remains owned by the existing runner writer and is never rewritten here.
