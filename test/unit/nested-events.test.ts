@@ -74,6 +74,15 @@ function trackRoute(rootRunId = "root-run") {
 	return route;
 }
 
+function nameEventsByType(eventSink: string, ts: number) {
+	const prefix = `${String(ts).padStart(13, "0")}-`;
+	for (const name of fs.readdirSync(eventSink).filter((entry) => entry.startsWith(prefix))) {
+		const file = path.join(eventSink, name);
+		const { type } = JSON.parse(fs.readFileSync(file, "utf8"));
+		fs.renameSync(file, path.join(eventSink, `${prefix}${type}.json`));
+	}
+}
+
 function child(id: string, state: "queued" | "running" | "complete" | "failed" | "paused", ts: number, parentRunId = "root-run") {
 	return {
 		id,
@@ -474,7 +483,14 @@ describe("nested event parsing and projection", () => {
 		assert.equal(fs.statSync(registryFile).mtimeMs, 1000);
 
 		writeNestedEvent(route, { type: "subagent.nested.started", ts: 40, parentRunId: route.rootRunId, child: child(id, "running", 40) });
-		assert.equal(findNestedRun(projectNestedEvents(route).children, id)?.state, "running");
+		nameEventsByType(route.eventSink, 40); // child sorts before started
+		const restarted = findNestedRun(projectNestedEvents(route).children, id);
+		assert.equal(restarted?.state, "running");
+		assert.equal(restarted.steps?.[0]?.id, `${id}-leaf`);
+		assert.equal(restarted.steps[0].status, "running");
+		fs.utimesSync(registryFile, 1, 1);
+		assert.deepEqual(findNestedRun(projectNestedEvents(route).children, id), restarted);
+		assert.equal(fs.statSync(registryFile).mtimeMs, 1000);
 	});
 
 	it("projects pending legacy events in memory while keeping active projection mutating by default", () => {
@@ -677,6 +693,28 @@ describe("nested event parsing and projection", () => {
 });
 
 describe("durable nested origins", () => {
+	it("keeps the saved origin when a checkpoint rebuild reads the completion before the start", () => {
+		const route = trackRoute();
+		const runtime = { nodeExecPath: process.execPath, piEntryPath: path.resolve("pi.js"), piPackageRoot: path.resolve("package") };
+		const sessionRoot = path.resolve("sessions/origin");
+		const run = { ...child("origin", "queued", 100), steps: [] };
+		writeNestedEvent(route, { type: "subagent.nested.started", ts: 100, parentRunId: route.rootRunId, child: { ...run, runtime, sessionRoot } });
+		projectNestedEvents(route);
+		writeNestedEvent(route, { type: "subagent.nested.completed", ts: 100, parentRunId: route.rootRunId, child: { ...run, state: "paused" } });
+		const saved = projectNestedEvents(route);
+		assert.equal(saved.children[0].state, "paused");
+		assert.deepEqual(saved.children[0].runtime, runtime);
+		assert.equal(saved.children[0].sessionRoot, sessionRoot);
+
+		nameEventsByType(route.eventSink, 100); // completed sorts before started
+		const registryFile = path.join(path.dirname(route.eventSink), "registry.json");
+		fs.writeFileSync(registryFile, JSON.stringify({ ...saved, terminalRunUpdates: undefined, processedEvents: fs.readdirSync(route.eventSink) }));
+		assert.deepEqual(projectNestedEvents(route).children, saved.children);
+		fs.utimesSync(registryFile, 1, 1);
+		assert.deepEqual(projectNestedEvents(route).children, saved.children);
+		assert.equal(fs.statSync(registryFile).mtimeMs, 1000);
+	});
+
 	it("creates persistent routes and retains private origins through authenticated projection only", () => {
 		const route = trackRoute();
 		assert.equal(path.dirname(path.dirname(route.eventSink)), NESTED_EVENTS_DIR);

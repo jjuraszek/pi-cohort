@@ -405,6 +405,20 @@ function terminal(state: NestedRunState): boolean {
 	return state === "complete" || state === "failed" || state === "paused";
 }
 
+function preserveOrigins(summary: NestedRunSummary, knownSummaries: NestedRunSummary[]): NestedRunSummary {
+	const known = findNestedRun(knownSummaries, summary.id);
+	const preserve = (child: NestedRunSummary) => preserveOrigins(child, knownSummaries);
+	return {
+		...summary,
+		...(known?.runtime && known.sessionRoot ? { runtime: known.runtime, sessionRoot: known.sessionRoot } : {}),
+		...(summary.children ? { children: summary.children.map(preserve) } : {}),
+		...(summary.steps ? { steps: summary.steps.map((step) => ({
+			...step,
+			...(step.children ? { children: step.children.map(preserve) } : {}),
+		})) } : {}),
+	};
+}
+
 type UpdatedSummary = NestedRunSummary & { lastUpdate: number };
 
 function mergeSummary(existing: NestedRunSummary | undefined, incoming: UpdatedSummary): NestedRunSummary {
@@ -414,21 +428,9 @@ function mergeSummary(existing: NestedRunSummary | undefined, incoming: UpdatedS
 	if (incomingUpdate < existingUpdate) return existing;
 	if (terminal(existing.state) && !terminal(incoming.state)) return existing;
 	if (terminal(existing.state) && terminal(incoming.state) && incomingUpdate === existingUpdate) return existing;
-	const preserveOrigins = (summary: NestedRunSummary): NestedRunSummary => {
-		const known = findNestedRun([existing], summary.id);
-		return {
-			...summary,
-			...(known?.runtime && known.sessionRoot ? { runtime: known.runtime, sessionRoot: known.sessionRoot } : {}),
-			...(summary.children ? { children: summary.children.map(preserveOrigins) } : {}),
-			...(summary.steps ? { steps: summary.steps.map((step) => ({
-				...step,
-				...(step.children ? { children: step.children.map(preserveOrigins) } : {}),
-			})) } : {}),
-		};
-	};
 	return {
 		...existing,
-		...preserveOrigins(incoming),
+		...preserveOrigins(incoming, [existing]),
 		state: incoming.state,
 		lastUpdate: Math.max(existingUpdate, incomingUpdate),
 	};
@@ -715,7 +717,7 @@ export function projectNestedEvents(route: NestedRoute, options: NestedProjectio
 		}
 		let deferred = false;
 		for (const event of parseNestedEventRecords(content, route)) {
-			if (event.type === "subagent.nested.child" && unknownRun(event.runId)) {
+			if (event.type === "subagent.nested.child" && !findNestedRun(registry.children, event.runId)) {
 				deferred = true;
 				pendingChildren.push({ entry, event });
 				continue;
@@ -734,6 +736,10 @@ export function projectNestedEvents(route: NestedRoute, options: NestedProjectio
 		changed = true;
 	}
 	if (changed) {
+		if (rebuild && saved.children.length) {
+			// Filename order can differ from the order in which earlier polls saw the same events.
+			registry.children = registry.children.map((child) => preserveOrigins(child, saved.children));
+		}
 		registry = { ...registry, processedEvents: [...seen] };
 		// Parent projection is the only writer to this sidecar registry. Child and
 		// runner processes only create immutable event files, so parent status.json
