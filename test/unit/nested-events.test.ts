@@ -500,6 +500,34 @@ describe("nested event parsing and projection", () => {
 		assert.equal(fs.statSync(registryFile).mtimeMs, 1000);
 	});
 
+	it("recovers an older checkpoint without a running copy of a finished child or a second copy of a restarted one", () => {
+		const route = trackRoute();
+		const registryFile = path.join(path.dirname(route.eventSink), "registry.json");
+		const run = (id: string, state: "running" | "complete", ts: number, parentRunId = route.rootRunId) => ({ type: state === "running" ? "subagent.nested.started" as const : "subagent.nested.completed" as const,
+			ts, parentRunId, child: { ...child(id, state, ts, parentRunId), steps: [] } });
+		// The checkpoint applied only P's start and no longer shows P; C's start is read while P is absent.
+		writeNestedEvent(route, run("P", "running", 10));
+		fs.writeFileSync(registryFile, JSON.stringify({ rootRunId: route.rootRunId, updatedAt: 10, children: [], processedEvents: fs.readdirSync(route.eventSink) }));
+		for (const event of [run("C", "running", 11, "P"), { ...run("P", "running", 12), type: "subagent.nested.updated" as const }, run("C", "complete", 13, "P"), run("P", "complete", 14)]) writeNestedEvent(route, event);
+		const recovered = projectNestedEvents(route);
+		assert.deepEqual(findNestedRunMatchesById("C").map((match) => match.run.state), ["complete"]);
+		assert.equal(hasLiveNestedDescendants(recovered.children), false);
+
+		// R settled at 40 before its parent Q was readable, left the list, and restarted at 50.
+		for (let i = 0; i < 16; i++) writeNestedEvent(route, run(`old-${i}`, "complete", 15 + i));
+		for (const event of [run("R", "complete", 40, "Q"), run("R", "running", 50, "Q"), run("Q", "running", 51)]) {
+			writeNestedEvent(route, event);
+			projectNestedEvents(route);
+		}
+		const saved = readNestedRegistry(route);
+		assert.deepEqual(findNestedRunMatchesById("R").map((match) => match.run.state), ["running"]);
+		fs.writeFileSync(registryFile, JSON.stringify({ ...saved, terminalRunUpdates: undefined }));
+		assert.deepEqual(projectNestedEvents(route).children, saved.children);
+		fs.utimesSync(registryFile, 1, 1);
+		projectNestedEvents(route);
+		assert.equal(fs.statSync(registryFile).mtimeMs, 1000);
+	});
+
 	it("projects pending legacy events in memory while keeping active projection mutating by default", () => {
 		const created = trackRoute("readonly-root");
 		const legacyRoot = path.join(TEMP_ROOT_DIR, "nested-subagent-events", path.basename(path.dirname(created.eventSink)));

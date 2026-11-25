@@ -436,11 +436,13 @@ function mergeSummary(existing: NestedRunSummary | undefined, incoming: UpdatedS
 
 function attachChild(children: NestedRunSummary[], { parentRunId, ts }: NestedRunEventRecord, incoming: UpdatedSummary): NestedRunSummary[] {
 	let updated = false;
+	// A run read before its parent sits at the root until an event finds the parent.
+	const orphan = children.find((item) => item.id === incoming.id);
 	const walk = (items: NestedRunSummary[]): NestedRunSummary[] => items.map((item) => {
 		if (item.id === parentRunId) {
 			const existingChildren = item.children ?? [];
 			const childIndex = existingChildren.findIndex((child) => child.id === incoming.id);
-			const nextChild = mergeSummary(existingChildren[childIndex], incoming);
+			const nextChild = mergeSummary(existingChildren[childIndex] ?? orphan, incoming);
 			const nextChildren = childIndex >= 0
 				? existingChildren.map((child, index) => index === childIndex ? nextChild : child)
 				: [...existingChildren, nextChild];
@@ -452,7 +454,7 @@ function attachChild(children: NestedRunSummary[], { parentRunId, ts }: NestedRu
 		return nextChildren === item.children ? item : { ...item, children: nextChildren };
 	});
 	const next = walk(children);
-	if (updated) return next;
+	if (updated) return orphan ? next.filter((item) => item.id !== incoming.id) : next;
 	const childIndex = next.findIndex((child) => child.id === incoming.id);
 	const nextChild = mergeSummary(next[childIndex], incoming);
 	return childIndex >= 0
@@ -723,9 +725,9 @@ export function projectNestedEvents(route: NestedRoute, options: NestedProjectio
 		if (applied) {
 			for (const event of parseNestedEventRecords(content, route)) {
 				if (event.type === "subagent.nested.child" || !(event.type === "subagent.nested.completed" || terminal(event.child.state))) continue;
-				// Only a run the checkpoint still shows as live is settled; any other run just gets its settlement recorded.
+				// Only a run the checkpoint shows as live and no newer than this event is settled; any other just gets its settlement recorded.
 				const shown = findNestedRun(registry.children, event.child.id);
-				const live = shown !== undefined && !terminal(shown.state);
+				const live = shown !== undefined && !terminal(shown.state) && (shown.lastUpdate ?? 0) <= (event.child.lastUpdate ?? event.ts);
 				const next = applyNestedEvent(live ? registry : { ...registry, children: [] }, event);
 				if (live) registry = next;
 			}
