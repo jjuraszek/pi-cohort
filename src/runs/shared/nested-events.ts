@@ -436,13 +436,11 @@ function mergeSummary(existing: NestedRunSummary | undefined, incoming: UpdatedS
 
 function attachChild(children: NestedRunSummary[], { parentRunId, ts }: NestedRunEventRecord, incoming: UpdatedSummary): NestedRunSummary[] {
 	let updated = false;
-	// A run read before its parent sits at the root until an event finds the parent.
-	const orphan = children.find((item) => item.id === incoming.id);
 	const walk = (items: NestedRunSummary[]): NestedRunSummary[] => items.map((item) => {
 		if (item.id === parentRunId) {
 			const existingChildren = item.children ?? [];
 			const childIndex = existingChildren.findIndex((child) => child.id === incoming.id);
-			const nextChild = mergeSummary(existingChildren[childIndex] ?? orphan, incoming);
+			const nextChild = mergeSummary(existingChildren[childIndex], incoming);
 			const nextChildren = childIndex >= 0
 				? existingChildren.map((child, index) => index === childIndex ? nextChild : child)
 				: [...existingChildren, nextChild];
@@ -454,7 +452,7 @@ function attachChild(children: NestedRunSummary[], { parentRunId, ts }: NestedRu
 		return nextChildren === item.children ? item : { ...item, children: nextChildren };
 	});
 	const next = walk(children);
-	if (updated) return orphan ? next.filter((item) => item.id !== incoming.id) : next;
+	if (updated) return next;
 	const childIndex = next.findIndex((child) => child.id === incoming.id);
 	const nextChild = mergeSummary(next[childIndex], incoming);
 	return childIndex >= 0
@@ -484,15 +482,7 @@ export function applyNestedEvent(registry: NestedRegistry, event: NestedEventRec
 	const settledAt = registry.terminalRunUpdates?.[incoming.id];
 	if (terminal(state)) {
 		(registry.terminalRunUpdates ??= Object.create(null))[incoming.id] = Math.max(settledAt ?? incoming.lastUpdate, incoming.lastUpdate);
-	} else if (settledAt !== undefined && settledAt >= incoming.lastUpdate) {
-		// A start read after its run settled is merged as if it had been read first.
-		const settled = findNestedRun(registry.children, incoming.id);
-		if (settled) {
-			const { children, steps, ...start } = incoming;
-			Object.assign(settled, mergeSummary(start, { ...settled, lastUpdate: Math.max(settled.lastUpdate ?? 0, settledAt) }));
-		}
-		return registry;
-	}
+	} else if (settledAt !== undefined && settledAt >= incoming.lastUpdate) return registry;
 	return {
 		...registry,
 		updatedAt: Math.max(registry.updatedAt, event.ts),
@@ -694,13 +684,11 @@ export function projectNestedEvents(route: NestedRoute, options: NestedProjectio
 	validateRouteShape(route);
 	const saved = readNestedRegistry(route);
 	const writable = !options.readOnlyLegacy || !isLegacyNestedRoute(route);
-	// Older checkpoints may have forgotten starts while marking their completions as applied.
-	const rebuild = writable && !saved.terminalRunUpdates;
-	let registry: NestedRegistry = rebuild
-		? { rootRunId: route.rootRunId, updatedAt: 0, children: [], processedEvents: [], terminalRunUpdates: Object.create(null) }
-		: saved;
+	// A checkpoint saved without settlements gets them back from the event files it already applied.
+	const recover = writable && !saved.terminalRunUpdates;
+	let registry: NestedRegistry = recover ? { ...saved, terminalRunUpdates: Object.create(null) } : saved;
 	const seen = new Set(registry.processedEvents);
-	let changed = false;
+	let changed = recover && seen.size > 0;
 	// A step for an absent run waits for its start unless the run settled at or after the step.
 	const awaitsRun = (event: NestedChildEventRecord) => !findNestedRun(registry.children, event.runId)
 		&& !((registry.terminalRunUpdates?.[event.runId] ?? -Infinity) >= event.ts);
@@ -711,8 +699,15 @@ export function projectNestedEvents(route: NestedRoute, options: NestedProjectio
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 	}
+	// Settlements come first, so a start the old checkpoint forgot cannot revive a finished run.
+	if (recover) {
+		const applied = entries.filter((entry) => seen.has(entry));
+		if (applied.length !== seen.size) return saved;
+		entries = [...applied, ...entries.filter((entry) => !seen.has(entry))];
+	}
 	for (const entry of entries) {
-		if (seen.has(entry)) continue;
+		const applied = seen.has(entry);
+		if (applied && !recover) continue;
 		const eventPath = path.join(route.eventSink, entry);
 		if (!containedPath(route.eventSink, eventPath)) continue;
 		let content: string;
@@ -721,8 +716,19 @@ export function projectNestedEvents(route: NestedRoute, options: NestedProjectio
 			if (!stat.isFile() || stat.size > MAX_EVENT_BYTES) continue;
 			content = fs.readFileSync(eventPath, "utf-8");
 		} catch {
-			// A partial replay can lose child state that the checkpoint already contains.
-			if (rebuild && saved.processedEvents.length) return saved;
+			// An applied file is never read again, so the recovery waits until it can be read.
+			if (applied) return saved;
+			continue;
+		}
+		if (applied) {
+			for (const event of parseNestedEventRecords(content, route)) {
+				if (event.type === "subagent.nested.child" || !(event.type === "subagent.nested.completed" || terminal(event.child.state))) continue;
+				// Only a run the checkpoint still shows as live is settled; any other run just gets its settlement recorded.
+				const shown = findNestedRun(registry.children, event.child.id);
+				const live = shown !== undefined && !terminal(shown.state);
+				const next = applyNestedEvent(live ? registry : { ...registry, children: [] }, event);
+				if (live) registry = next;
+			}
 			continue;
 		}
 		let deferred = false;

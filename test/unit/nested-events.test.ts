@@ -448,7 +448,6 @@ describe("nested event parsing and projection", () => {
 		const saved = readNestedRegistry(route);
 		const eventFile = path.join(route.eventSink, saved.processedEvents.at(-1)!);
 		fs.renameSync(eventFile, `${eventFile}.held`);
-		fs.symlinkSync(`${eventFile}.missing`, eventFile, "file");
 		fs.utimesSync(registryFile, 1, 1);
 		const interrupted = projectNestedEvents(route);
 		assert.equal(fs.statSync(registryFile).mtimeMs, 1000);
@@ -456,7 +455,7 @@ describe("nested event parsing and projection", () => {
 		fs.renameSync(`${eventFile}.held`, eventFile);
 
 		const rebuilt = projectNestedEvents(route);
-		assert.deepEqual(rebuilt, second);
+		assert.deepEqual({ ...rebuilt, processedEvents: [...rebuilt.processedEvents].sort() }, second);
 		assert.equal(hasLiveNestedDescendants(rebuilt.children), false);
 		fs.utimesSync(registryFile, 1, 1);
 		projectNestedEvents(route);
@@ -493,6 +492,9 @@ describe("nested event parsing and projection", () => {
 		assert.equal(restarted?.state, "running");
 		assert.equal(restarted.steps?.[0]?.id, `${id}-leaf`);
 		assert.equal(restarted.steps[0].status, "running");
+		// An update from before the settlement at 36 belongs to the finished run, not the restarted one.
+		writeNestedEvent(route, { type: "subagent.nested.updated", ts: 35, parentRunId: route.rootRunId, child: { ...child(id, "running", 35), steps: [], pid: 4242 } });
+		assert.deepEqual(findNestedRun(projectNestedEvents(route).children, id), restarted);
 		fs.utimesSync(registryFile, 1, 1);
 		assert.deepEqual(findNestedRun(projectNestedEvents(route).children, id), restarted);
 		assert.equal(fs.statSync(registryFile).mtimeMs, 1000);
@@ -698,7 +700,7 @@ describe("nested event parsing and projection", () => {
 });
 
 describe("durable nested origins", () => {
-	it("keeps a finished child under its parent when a checkpoint rebuild reads the child's start first", () => {
+	it("keeps a finished child under its parent when the child's start file sorts first", () => {
 		const route = trackRoute();
 		const parent = { ...child("P", "running", 10), steps: [] };
 		const nested = { ...child("C", "running", 10, parent.id), depth: 2, path: [...parent.path, { runId: parent.id, stepIndex: 1 }], steps: [] };
@@ -730,7 +732,7 @@ describe("durable nested origins", () => {
 		assert.equal(fs.statSync(registryFile).mtimeMs, 1000);
 	});
 
-	it("keeps the origin and start fields when a checkpoint rebuild reads the completion before the start", () => {
+	it("keeps the saved origin and start fields when the completion file sorts before the start", () => {
 		const route = trackRoute();
 		const runtime = { nodeExecPath: process.execPath, piEntryPath: path.resolve("pi.js"), piPackageRoot: path.resolve("package") };
 		const sessionRoot = path.resolve("sessions/origin");
