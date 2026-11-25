@@ -414,6 +414,10 @@ describe("nested event route validation", () => {
 describe("nested event parsing and projection", () => {
 	it("leaves the registry untouched and children settled on a second pass over 1050 event files", () => {
 		const route = trackRoute();
+		const registryFile = path.join(path.dirname(route.eventSink), "registry.json");
+		projectNestedEvents(route);
+		assert.equal(fs.existsSync(registryFile), false);
+
 		const types = ["subagent.nested.started", "subagent.nested.updated", "subagent.nested.completed"] as const;
 		for (let i = 0; i < 350; i++) {
 			for (const [offset, type] of types.entries()) {
@@ -423,7 +427,6 @@ describe("nested event parsing and projection", () => {
 			}
 		}
 		assert.equal(hasLiveNestedDescendants(projectNestedEvents(route).children), false);
-		const registryFile = path.join(path.dirname(route.eventSink), "registry.json");
 		fs.utimesSync(registryFile, 1, 1);
 
 		const second = projectNestedEvents(route);

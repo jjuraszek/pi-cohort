@@ -685,9 +685,9 @@ export function projectNestedEvents(route: NestedRoute, options: NestedProjectio
 	let registry = readNestedRegistry(route);
 	const writable = !options.readOnlyLegacy || !isLegacyNestedRoute(route);
 	// Older checkpoints may have forgotten starts while marking their completions as applied.
-	let changed = writable && !registry.terminalRunUpdates;
-	if (changed) registry = { rootRunId: route.rootRunId, updatedAt: 0, children: [], processedEvents: [], terminalRunUpdates: Object.create(null) };
+	if (writable && !registry.terminalRunUpdates) registry = { rootRunId: route.rootRunId, updatedAt: 0, children: [], processedEvents: [], terminalRunUpdates: Object.create(null) };
 	const seen = new Set(registry.processedEvents);
+	let changed = false;
 	const unknownRun = (id: string) => registry.terminalRunUpdates?.[id] === undefined && !findNestedRun(registry.children, id);
 	const pendingChildren: Array<{ entry: string; event: NestedChildEventRecord }> = [];
 	let entries: string[] = [];
